@@ -8,7 +8,7 @@ First-pass automation for the Macquarie Digital Workplace device-management requ
 - `big.har` — source network capture used to map the API workflow.
 - `requestform.txt` — source Angular DOM capture used to map labels and question IDs.
 
-The captures contain internal and personal data. Keep this repository private and do not commit authentication cookies or tokens.
+The captures contain internal and personal data. This repository is public by request; do not add authentication cookies, tokens, or additional sensitive captures.
 
 ## Run
 
@@ -18,23 +18,47 @@ User deployment:
 
 ```bash
 export DWP_COOKIE='...'
-python3 automate_device_request.py \\
-  --serial K9JQ6MYW9R \\
-  --request-for rkontos \\
-  --status 'Deployed - New Stock' \\
+python3 automate_device_request.py \
+  --serial K9JQ6MYW9R \
+  --request-for rkontos \
+  --status 'Deployed - New Stock' \
   --deployed-to rkontos
 ```
 
 Location deployment:
 
 ```bash
-python3 automate_device_request.py \\
-  --serial K9JQ6MYW9R \\
-  --request-for rkontos \\
-  --status 'Used Stock' \\
-  --city 'Sydney, AU' \\
-  --building '1 Elizabeth Street' \\
+python3 automate_device_request.py \
+  --serial K9JQ6MYW9R \
+  --request-for rkontos \
+  --status 'Used Stock' \
+  --city 'Sydney, AU' \
+  --building '1 Elizabeth Street' \
   --dropped-by rkontos
+```
+
+The examples above are dry runs with respect to the final order commit. To commit a request after checking the output, add `--submit`:
+
+```bash
+python3 automate_device_request.py \
+  --serial K9JQ6MYW9R \
+  --request-for rkontos \
+  --status 'Deployed - New Stock' \
+  --deployed-to rkontos \
+  --submit
+```
+
+For a location deployment:
+
+```bash
+python3 automate_device_request.py \
+  --serial K9JQ6MYW9R \
+  --request-for rkontos \
+  --status 'Used Stock' \
+  --city 'Sydney, AU' \
+  --building '1 Elizabeth Street' \
+  --dropped-by rkontos \
+  --submit
 ```
 
 By default the script stops before the final order commit. Note that creating the request and recording answers are still server-side actions. `--submit` performs the final order commit and should only be used after validating the dynamic path.
