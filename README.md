@@ -24,8 +24,10 @@ python3 automate_device_request.py --browser-profile ~/.dwp-device-request-chrom
 For a location deployment with browser-based SSO:
 
 ```bash
-python3 automate_device_request.py --browser-profile ~/.dwp-device-request-chrome --serial K9JQ6MYW9R --request-for rkontos --status 'Used Stock' --city 'Sydney, AU' --building '1 Elizabeth Street' --dropped-by rkontos
+python3 automate_device_request.py --browser-profile ~/.dwp-device-request-chrome --serial K9JQ6MYW9R --request-for rkontos --status 'Used Stock' --city 'Sydney, AU' --building '1 Elizabeth Street' --floor 'Level 15' --room 'Store Room' --dropped-by rkontos
 ```
+
+`--city` filters the available locations. The script then requires an exact building, floor, and room match before sending the opaque location ID returned by DWP. Add `--cabinet 'Cabinet Name'` if those three fields still match more than one row.
 
 The profile path is separate from your normal Chrome profile so the automation does not interfere with it. Subsequent runs can reuse the profile while its SSO session remains valid; cookies are not extracted and replayed through a separate HTTP client.
 
@@ -41,7 +43,7 @@ python3 automate_device_request.py --serial K9JQ6MYW9R --request-for rkontos --s
 Location deployment:
 
 ```bash
-python3 automate_device_request.py --serial K9JQ6MYW9R --request-for rkontos --status 'Used Stock' --city 'Sydney, AU' --building '1 Elizabeth Street' --dropped-by rkontos
+python3 automate_device_request.py --serial K9JQ6MYW9R --request-for rkontos --status 'Used Stock' --city 'Sydney, AU' --building '1 Elizabeth Street' --floor 'Level 15' --room 'Store Room' --dropped-by rkontos
 ```
 
 The examples above are dry runs with respect to the final order commit. To commit a request after checking the output, add `--submit`:
@@ -53,7 +55,7 @@ python3 automate_device_request.py --serial K9JQ6MYW9R --request-for rkontos --s
 For a location deployment:
 
 ```bash
-python3 automate_device_request.py --serial K9JQ6MYW9R --request-for rkontos --status 'Used Stock' --city 'Sydney, AU' --building '1 Elizabeth Street' --dropped-by rkontos --submit
+python3 automate_device_request.py --serial K9JQ6MYW9R --request-for rkontos --status 'Used Stock' --city 'Sydney, AU' --building '1 Elizabeth Street' --floor 'Level 15' --room 'Store Room' --dropped-by rkontos --submit
 ```
 
 By default the script stops before the final order commit. Note that creating the request and recording answers are still server-side actions. `--submit` performs the final order commit and should only be used after validating the dynamic path.

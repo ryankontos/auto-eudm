@@ -216,6 +216,37 @@ def choose_data_value(rows: list[dict[str, Any]], needle: str, *, exact: bool = 
     raise DWPError(f"No dynamic option matched {needle!r}; examples: {examples}")
 
 
+def choose_location_data_value(
+    rows: list[dict[str, Any]],
+    building: str,
+    floor: str,
+    room: str,
+    cabinet: str | None = None,
+) -> str:
+    """Select one exact Building/Floor/Room[/Cabinet] row from the city results."""
+    expected = [building, floor, room]
+    if cabinet is not None:
+        expected.append(cabinet)
+    matches = []
+    for row in rows:
+        displayed = [str(value) for value in row.get("displayValue", [])]
+        if len(displayed) >= len(expected) and all(
+            actual.casefold() == wanted.casefold()
+            for actual, wanted in zip(displayed, expected)
+        ):
+            matches.append(row)
+    if len(matches) == 1:
+        return matches[0]["dataValue"]
+    examples = [row.get("displayValue", []) for row in rows[:12]]
+    target = " --> ".join(expected)
+    if not matches:
+        raise DWPError(f"No location matched {target!r}; available rows: {examples}")
+    raise DWPError(
+        f"More than one location matched {target!r}; add --cabinet to identify one row: "
+        f"{[row.get('displayValue', []) for row in matches]}"
+    )
+
+
 def lookup_and_answer(
     client: Client,
     request_id: str,
@@ -251,7 +282,10 @@ def main() -> int:
     parser.add_argument("--serial", required=True, help="Hostname or serial number")
     parser.add_argument("--request-for", required=True, help="Remedy login ID requesting the change")
     parser.add_argument("--city", help="City filter label for location deployment, e.g. 'Sydney, AU'")
-    parser.add_argument("--building", help="Exact building label from the returned location list")
+    parser.add_argument("--building", help="Exact building from the returned location row")
+    parser.add_argument("--floor", help="Exact floor from the returned location row, e.g. 'Level 15'")
+    parser.add_argument("--room", help="Exact room from the returned location row, e.g. 'Store Room'")
+    parser.add_argument("--cabinet", help="Exact cabinet when multiple rows share building, floor, and room")
     parser.add_argument("--status", required=True, help="Exact status label, e.g. 'Deployed - New Stock'")
     parser.add_argument("--deployed-to", help="Login ID of the user receiving a user deployment")
     parser.add_argument("--dropped-by", help="Login ID of the user who dropped off a location deployment")
@@ -278,8 +312,12 @@ def main() -> int:
     user_deployment = args.status.startswith("Deployed - ")
     if user_deployment and not args.deployed_to:
         raise DWPError("--deployed-to is required for a 'Deployed - ...' status")
-    if not user_deployment and (not args.city or not args.building or not args.dropped_by):
-        raise DWPError("--city, --building, and --dropped-by are required for a location status")
+    if not user_deployment and (
+        not args.city or not args.building or not args.floor or not args.room or not args.dropped_by
+    ):
+        raise DWPError(
+            "--city, --building, --floor, --room, and --dropped-by are required for a location status"
+        )
 
     created = client.request("POST", "v2/sbe/services/requests", {
         "serviceId": "25301", "quantity": 1, "requestedForLoginIds": [args.request_for]
@@ -321,7 +359,10 @@ def main() -> int:
         locations = option_data(events, location_table["id"])
         if not locations:
             raise DWPError("The city selection did not return any selectable locations")
-        answer(client, request_id, questionnaire_id, location_table, choose_data_value(locations, args.building, exact=True))
+        location_value = choose_location_data_value(
+            locations, args.building, args.floor, args.room, args.cabinet
+        )
+        answer(client, request_id, questionnaire_id, location_table, location_value)
 
         # Location deployments require the return toggle before the drop-off user list appears.
         returned = field_by_label(all_items, "Is this a return from a user", type_="RadioButtons")
@@ -334,7 +375,10 @@ def main() -> int:
             "Select person who dropped device/s off",
             args.dropped_by, args.dropped_by,
         )
-        print(f"Deployment target: location {args.building}; dropped by {args.dropped_by}")
+        location_summary = " --> ".join([args.building, args.floor, args.room])
+        if args.cabinet:
+            location_summary += f" --> {args.cabinet}"
+        print(f"Deployment target: location {location_summary}; dropped by {args.dropped_by}")
 
     print("\nReached the dynamic questionnaire path.")
     if not args.submit:
