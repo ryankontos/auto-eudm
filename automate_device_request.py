@@ -17,6 +17,7 @@ import subprocess
 import sys
 import ssl
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Any
@@ -277,26 +278,77 @@ def lookup_and_answer(
     answer(client, request_id, questionnaire_id, table, value)
 
 
+def validate_args(args: argparse.Namespace) -> bool:
+    """Reject contradictory inputs before browser startup or any API request."""
+    for name in ("serial", "request_for", "status"):
+        value = getattr(args, name)
+        if not value or not value.strip():
+            raise DWPError(f"--{name.replace('_', '-')} cannot be empty")
+        if value != value.strip():
+            raise DWPError(f"--{name.replace('_', '-')} cannot begin or end with whitespace")
+    if any(character.isspace() for character in args.serial):
+        raise DWPError("--serial cannot contain whitespace")
+
+    parsed_base = urllib.parse.urlparse(args.base)
+    if parsed_base.scheme != "https" or not parsed_base.netloc or not parsed_base.path.rstrip("/").endswith("/rest"):
+        raise DWPError("--base must be an HTTPS DWP REST URL ending in /rest")
+
+    user_deployment = args.target == "user"
+    location_names = ("city", "building", "floor", "room", "cabinet", "dropped_by")
+    if user_deployment:
+        if not args.deployed_to or not args.deployed_to.strip():
+            raise DWPError("--deployed-to is required when --target user")
+        conflicting = [f"--{name.replace('_', '-')}" for name in location_names if getattr(args, name)]
+        if conflicting:
+            raise DWPError(
+                "User deployment cannot use location arguments: " + ", ".join(conflicting)
+            )
+    else:
+        if args.deployed_to:
+            raise DWPError("Location deployment cannot use --deployed-to; use --dropped-by")
+        required = ("city", "building", "floor", "room", "dropped_by")
+        missing = [f"--{name.replace('_', '-')}" for name in required if not getattr(args, name)]
+        if missing:
+            raise DWPError("Location deployment requires: " + ", ".join(missing))
+        for name in required:
+            if not getattr(args, name).strip():
+                raise DWPError(f"--{name.replace('_', '-')} cannot be empty")
+        if args.cabinet is not None and not args.cabinet.strip():
+            raise DWPError("--cabinet cannot be empty when supplied")
+
+    if args.browser_profile and os.getenv("DWP_COOKIE", "").strip():
+        raise DWPError("Choose either --browser-profile or DWP_COOKIE, not both")
+    return user_deployment
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--serial", required=True, help="Hostname or serial number")
     parser.add_argument("--request-for", required=True, help="Remedy login ID requesting the change")
+    parser.add_argument(
+        "--target",
+        required=True,
+        choices=("user", "location"),
+        help="Whether the selected status deploys the device to a user or a location",
+    )
     parser.add_argument("--city", help="City filter label for location deployment, e.g. 'Sydney, AU'")
     parser.add_argument("--building", help="Exact building from the returned location row")
     parser.add_argument("--floor", help="Exact floor from the returned location row, e.g. 'Level 15'")
     parser.add_argument("--room", help="Exact room from the returned location row, e.g. 'Store Room'")
     parser.add_argument("--cabinet", help="Exact cabinet when multiple rows share building, floor, and room")
-    parser.add_argument("--status", required=True, help="Exact status label, e.g. 'Deployed - New Stock'")
+    parser.add_argument("--status", required=True, help="Exact DWP status value, e.g. 'Deployed - New Stock'")
     parser.add_argument("--deployed-to", help="Login ID of the user receiving a user deployment")
     parser.add_argument("--dropped-by", help="Login ID of the user who dropped off a location deployment")
     parser.add_argument("--submit", action="store_true", help="Commit the order; otherwise print a dry-run summary")
     parser.add_argument(
         "--browser-profile",
-        help="Use a dedicated Chrome profile for SSO and extract DWP cookies automatically",
+        help="Use a dedicated authenticated Chrome context for SSO and API calls",
     )
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--base", default=os.getenv("DWP_BASE", DEFAULT_BASE))
     args = parser.parse_args()
+
+    user_deployment = validate_args(args)
 
     if args.browser_profile:
         client = browser_client_from_profile(
@@ -309,16 +361,6 @@ def main() -> int:
         if not cookie:
             raise DWPError("Set DWP_COOKIE or use --browser-profile for an authenticated Chrome session")
         client = Client(args.base, cookie, args.verbose)
-    user_deployment = args.status.startswith("Deployed - ")
-    if user_deployment and not args.deployed_to:
-        raise DWPError("--deployed-to is required for a 'Deployed - ...' status")
-    if not user_deployment and (
-        not args.city or not args.building or not args.floor or not args.room or not args.dropped_by
-    ):
-        raise DWPError(
-            "--city, --building, --floor, --room, and --dropped-by are required for a location status"
-        )
-
     created = client.request("POST", "v2/sbe/services/requests", {
         "serviceId": "25301", "quantity": 1, "requestedForLoginIds": [args.request_for]
     })
