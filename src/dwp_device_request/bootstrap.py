@@ -40,4 +40,13 @@ def ensure_runtime(*, requirement_file: str, import_name: str) -> None:
 
     env = os.environ.copy()
     env["DWP_BOOTSTRAPPED"] = "1"
-    os.execvpe(str(python), [str(python), *sys.argv], env)
+
+    # ``python -m package.module`` sets argv[0] to the module's source path.
+    # Replaying that path would execute it as a standalone file and make its
+    # relative imports fail. Preserve the original module invocation instead.
+    main_spec = getattr(sys.modules.get("__main__"), "__spec__", None)
+    if main_spec is not None and getattr(main_spec, "name", None):
+        command = [str(python), "-m", main_spec.name, *sys.argv[1:]]
+    else:
+        command = [str(python), *sys.argv]
+    os.execvpe(str(python), command, env)
