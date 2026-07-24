@@ -108,7 +108,7 @@ python3 inventory_sheet_cli.py --simulate --manual-review
 
 The review shows the request ID, requester, serial or serial list, status, and user or location destination. Declining leaves the populated request un-ordered. Spreadsheet results label it `NOT SUBMITTED` and include the request ID.
 
-Serial and user matching is strict. A zero-match or ambiguous exact match is reported in a friendly message. In spreadsheet runs, each failed action remains in the final grouped results and includes the request ID when DWP had already created one.
+Serial and user matching is strict. A zero-match or ambiguous exact match always pauses the request, even without `--manual-review`: enter a corrected serial/username to try again, or type `skip`. The prompt repeats until a unique match is found or the request is skipped. In spreadsheet runs, skipped actions remain in the final grouped results with the request ID when DWP had already created one.
 
 Simulation can demonstrate these outcomes safely: use serial `NO-MATCH` for no returned device, serial `AMBIGUOUS` for two returned devices, user `no.user` for no person, or user `ambiguous.user` for two matching people.
 

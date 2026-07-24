@@ -35,6 +35,14 @@ class DWPError(RuntimeError):
     pass
 
 
+class MatchError(DWPError):
+    """A search completed successfully but did not identify one record."""
+
+
+class MatchSkipped(DWPError):
+    """The operator chose not to continue after a failed or ambiguous match."""
+
+
 class DeploymentExecutionError(DWPError):
     def __init__(self, request_id: str, message: str) -> None:
         super().__init__(message)
@@ -83,6 +91,23 @@ def verbose_detail(client: Any, message: str) -> None:
     """Show implementation-level progress only when the caller asks for it."""
     if getattr(client, "verbose", False):
         print(message, file=sys.stderr)
+
+
+def retry_or_skip(kind: str, value: str, error: MatchError) -> str:
+    """Explain an unsuccessful exact match and obtain a replacement or skip.
+
+    Match correction is intentionally independent of --manual-review: selecting
+    a wrong asset or person must never be an automatic outcome.
+    """
+    print(f"\nCould not uniquely match {kind} {value!r}.")
+    print(f"  {error}")
+    while True:
+        replacement = input(f"Enter a different {kind}, or type 'skip': ").strip()
+        if replacement.casefold() == "skip":
+            raise MatchSkipped(f"Skipped because {kind} {value!r} was not uniquely matched.")
+        if replacement:
+            return replacement
+        print(f"Enter a {kind} or type 'skip'.")
 
 
 def manual_review(
@@ -583,11 +608,11 @@ def choose_data_value(
             matches.append(row)
     if not matches:
         qualifier = "exact " if exact else ""
-        raise DWPError(f"No {qualifier}{kind} match was returned for {needle!r}.")
+        raise MatchError(f"No {qualifier}{kind} match was returned for {needle!r}.")
     if len(matches) > 1:
         examples = [" → ".join(str(value) for value in row.get("displayValue", []) if str(value)) for row in matches[:3]]
         suffix = f" Examples: {'; '.join(examples)}." if examples else ""
-        raise DWPError(
+        raise MatchError(
             f"More than one {kind} matched {needle!r}; refine the value before retrying.{suffix}"
         )
     return matches[0]["dataValue"]
@@ -637,7 +662,7 @@ def batch_asset_selection(
         if option_data(events, question_id)
     ]
     if len(candidates) != 1:
-        raise DWPError(
+        raise MatchError(
             "Bulk serial entry did not expose exactly one populated 'Select Asset' table; "
             f"found {len(candidates)}"
         )
@@ -656,10 +681,43 @@ def batch_asset_selection(
         else:
             missing.append(f"{serial} (more than one exact serial match)")
     if missing:
-        raise DWPError(
+        raise MatchError(
             "The bulk search did not uniquely match these serials: " + ", ".join(missing)
         )
     return table, selected
+
+
+def answer_batch_assets_with_retry(
+    client: Any,
+    request_id: str,
+    questionnaire_id: str,
+    all_items: list[dict[str, Any]],
+    inventory_events: dict[str, Any],
+    serial_list: dict[str, Any],
+    serials: list[str],
+) -> list[str]:
+    """Resolve every bulk serial exactly, or let the operator skip the request."""
+    current = serials
+    while True:
+        serial_events = answer(client, request_id, questionnaire_id, serial_list, ",".join(current))
+        try:
+            asset_table, asset_values = batch_asset_selection(
+                all_items, merge_events(inventory_events, serial_events), current
+            )
+        except MatchError as exc:
+            raw = retry_or_skip("comma-separated serial numbers", ",".join(current), exc)
+            candidate = [value.strip() for value in raw.split(",")]
+            if (
+                not candidate
+                or any(not value or any(character.isspace() for character in value) for value in candidate)
+                or len({value.casefold() for value in candidate}) != len(candidate)
+            ):
+                print("Enter one or more comma-separated serial numbers without spaces or duplicates.")
+                continue
+            current = candidate
+            continue
+        answer_values(client, request_id, questionnaire_id, asset_table, asset_values)
+        return current
 
 
 def lookup_and_answer(
@@ -672,28 +730,55 @@ def lookup_and_answer(
     query: str,
     match: str,
     search_type: str = "TextField",
-) -> None:
+) -> str:
     """Search a server-backed person table, then persist the selected dataValue."""
     search = field_by_label(all_items, search_label, type_=search_type)
     table = field_by_label(all_items, table_label, type_="DataTable")
-    try:
-        result = client.request(
-            "POST",
-            f"v2/sbe/services/requests/{request_id}/questions/{search['id']}/lookup",
-            {"query": query},
-        ) or {}
-    except DWPError as exc:
-        raise DWPError(f"Could not search {search_label!r}: {exc}") from exc
-    rows = result.get("multiColumnOptions") or []
-    if not rows:
-        raise DWPError(f"No users matched {query!r}.")
-    value = choose_data_value(
-        [{"dataValue": row["dataValue"], "displayValue": row.get("displayValue", [])} for row in rows],
-        match,
-        exact=True,
-        kind="user",
-    )
-    answer(client, request_id, questionnaire_id, table, value)
+    current = query
+    while True:
+        try:
+            result = client.request(
+                "POST",
+                f"v2/sbe/services/requests/{request_id}/questions/{search['id']}/lookup",
+                {"query": current},
+            ) or {}
+        except DWPError as exc:
+            raise DWPError(f"Could not search {search_label!r}: {exc}") from exc
+        rows = result.get("multiColumnOptions") or []
+        try:
+            value = choose_data_value(
+                [{"dataValue": row["dataValue"], "displayValue": row.get("displayValue", [])} for row in rows],
+                current,
+                exact=True,
+                kind="user",
+            )
+        except MatchError as exc:
+            current = retry_or_skip("username", current, exc)
+            continue
+        answer(client, request_id, questionnaire_id, table, value)
+        return current
+
+
+def answer_single_asset_with_retry(
+    client: Any,
+    request_id: str,
+    questionnaire_id: str,
+    serial_field: dict[str, Any],
+    device_table: dict[str, Any],
+    serial: str,
+) -> str:
+    """Search and select one exact asset, asking for correction when needed."""
+    current = serial
+    while True:
+        events = answer(client, request_id, questionnaire_id, serial_field, current)
+        devices = option_data(events, device_table["id"])
+        try:
+            value = choose_data_value(devices, current, exact=True, kind="serial number")
+        except MatchError as exc:
+            current = retry_or_skip("serial number", current, exc)
+            continue
+        answer(client, request_id, questionnaire_id, device_table, value)
+        return current
 
 
 def deploy_device_to_user(
@@ -738,6 +823,12 @@ def deploy_device_to_user(
             submit=submit,
             manual_review_enabled=manual_review_enabled,
         )
+    except MatchSkipped as exc:
+        return DeploymentResult(
+            request_id=request_id,
+            order_id=None,
+            not_submitted_reason=str(exc),
+        )
     except DWPError as exc:
         raise DeploymentExecutionError(request_id, str(exc)) from exc
 
@@ -769,15 +860,14 @@ def _complete_user_deployment(
     serial_field = field_by_label(
         all_items, "Type Hostname or Serial Number", type_="TextField"
     )
-    events = answer(client, request_id, questionnaire_id, serial_field, serial)
     device_table = field_by_label(all_items, "----- Device List", type_="DataTable")
-    devices = option_data(events, device_table["id"])
-    device_value = choose_data_value(devices, serial, exact=True, kind="serial number")
-    answer(client, request_id, questionnaire_id, device_table, device_value)
+    serial = answer_single_asset_with_retry(
+        client, request_id, questionnaire_id, serial_field, device_table, serial
+    )
 
     status_item = field_by_label(all_items, "Change Status to", type_="Dropdown")
     answer(client, request_id, questionnaire_id, status_item, status)
-    lookup_and_answer(
+    deployed_to = lookup_and_answer(
         client,
         request_id,
         questionnaire_id,
@@ -997,44 +1087,38 @@ Safety:
     if args.batch:
         inventory_events = answer(client, request_id, questionnaire_id, inventory, "BULK")
         serial_list = field_by_label(all_items, "Please add serial number list", type_="TextArea")
-        serial_events = answer(
-            client, request_id, questionnaire_id, serial_list, ",".join(args.batch_serials)
+        selected_serials = answer_batch_assets_with_retry(
+            client,
+            request_id,
+            questionnaire_id,
+            all_items,
+            inventory_events,
+            serial_list,
+            args.batch_serials,
         )
-        events = merge_events(inventory_events, serial_events)
-        asset_table, asset_values = batch_asset_selection(all_items, events, args.batch_serials)
-        answer_values(client, request_id, questionnaire_id, asset_table, asset_values)
     else:
         answer(client, request_id, questionnaire_id, inventory, "ADD")
         search_by = field_by_label(all_items, "Search by", type_="RadioButtons")
         answer(client, request_id, questionnaire_id, search_by, "serial")
         serial_field = field_by_label(all_items, "Type Hostname or Serial Number", type_="TextField")
-        events = answer(client, request_id, questionnaire_id, serial_field, args.serial)
         device_table = field_by_label(all_items, "----- Device List", type_="DataTable")
-        devices = option_data(events, device_table["id"])
-        try:
-            device_value = choose_data_value(
-                devices, args.serial, exact=True, kind="serial number"
-            )
-        except DWPError as exc:
-            raise DeploymentExecutionError(request_id, str(exc)) from exc
-        answer(client, request_id, questionnaire_id, device_table, device_value)
+        selected_serial = answer_single_asset_with_retry(
+            client, request_id, questionnaire_id, serial_field, device_table, args.serial
+        )
 
     status = field_by_label(all_items, "Change Status to", type_="Dropdown")
     answer(client, request_id, questionnaire_id, status, args.status)
 
     if user_deployment:
         # User deployments expose a server-backed "deployed to" table.
-        try:
-            lookup_and_answer(
-                client, request_id, questionnaire_id, all_items,
-                "Please select user - device has been deployed to",
-                "Please select user - device has been deployed to",
-                args.deployed_to, args.deployed_to,
-                search_type="DataTable",
-            )
-        except DWPError as exc:
-            raise DeploymentExecutionError(request_id, str(exc)) from exc
-        verbose_detail(client, f"Deployment target: user {args.deployed_to}")
+        selected_deployed_to = lookup_and_answer(
+            client, request_id, questionnaire_id, all_items,
+            "Please select user - device has been deployed to",
+            "Please select user - device has been deployed to",
+            args.deployed_to, args.deployed_to,
+            search_type="DataTable",
+        )
+        verbose_detail(client, f"Deployment target: user {selected_deployed_to}")
     else:
         city = field_by_label(all_items, "Building Location (City - Country code)", type_="Dropdown")
         events = answer(client, request_id, questionnaire_id, city, args.city)
@@ -1061,14 +1145,16 @@ Safety:
             dropoff_table = field_by_label(
                 all_items, "Select person who dropped device/s off", type_="DataTable"
             )
-            dropoff_events = answer(
-                client, request_id, questionnaire_id, dropoff_search, args.dropped_by
+            lookup_and_answer(
+                client,
+                request_id,
+                questionnaire_id,
+                all_items,
+                "Search Name or User ID that dropped off devices",
+                "Select person who dropped device/s off",
+                args.dropped_by,
+                args.dropped_by,
             )
-            dropoff_rows = option_data(dropoff_events, dropoff_table["id"])
-            dropoff_value = choose_data_value(
-                dropoff_rows, args.dropped_by, exact=True, kind="drop-off user"
-            )
-            answer(client, request_id, questionnaire_id, dropoff_table, dropoff_value)
         location_summary = " --> ".join([args.building, args.floor, args.room])
         if args.cabinet:
             location_summary += f" --> {args.cabinet}"
@@ -1090,13 +1176,13 @@ Safety:
         return 0
     if user_deployment:
         review_target = "user"
-        review_destination = args.deployed_to
+        review_destination = selected_deployed_to
         review_detail = None
     else:
         review_target = "location"
         review_destination = location_summary
         review_detail = "No associated user" if args.batch else f"Dropped by {args.dropped_by}"
-    review_serials = args.batch_serials if args.batch else [args.serial]
+    review_serials = selected_serials if args.batch else [selected_serial]
     if args.manual_review and not manual_review(
         request_id=request_id,
         request_for=args.request_for,
@@ -1129,6 +1215,9 @@ if __name__ == "__main__":
     except EOFError:
         print("Input ended before the request was complete.", file=sys.stderr)
         raise SystemExit(2)
+    except MatchSkipped as exc:
+        print(f"Not submitted. {exc}")
+        raise SystemExit(0)
     except DeploymentExecutionError as exc:
         print(
             f"Error: Request {exc.request_id} was created but not ordered: {exc}",

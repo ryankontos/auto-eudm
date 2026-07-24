@@ -240,8 +240,8 @@ python3 inventory_sheet_cli.py --simulate --manual-review
 | SSO redirect or unauthenticated Chrome | Refresh/complete SSO in the dedicated DWP Chrome window, then retry. |
 | Cookie mode redirects to SSO | Refresh the browser session and replace the whole `DWP_COOKIE`, or use Chrome mode. |
 | Certificate validation error | Retry normally; macOS `curl` trust is attempted automatically. Add `--verbose` to confirm. |
-| No user, location, or serial match | Check spelling or use the live interactive wizard to see DWP’s choices. |
-| More than one exact serial/user match | Refine the serial or user ID; the automation deliberately refuses to guess. |
+| No serial or username match | The request pauses and asks for a corrected value or `skip`; it never guesses. |
+| More than one exact serial/user match | The request pauses and asks for a more specific value or `skip`; it never picks a match for you. |
 | `NOT SUBMITTED` in spreadsheet results | Manual review declined the final order; the shown request ID is populated but not ordered. |
 | No `Bookings 2026` tab | Select the correct tab from the numbered fallback list. |
 | No spreadsheet actions | Check date, red formatting, J serials, and D/F user data. |

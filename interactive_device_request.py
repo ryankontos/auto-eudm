@@ -80,19 +80,23 @@ def select_lookup_person(
     table: dict[str, Any],
     query: str,
 ) -> str:
-    result = dwp.request_step(
-        client,
-        "Could not search for a user",
-        "POST",
-        f"v2/sbe/services/requests/{request_id}/questions/{table['id']}/lookup",
-        {"query": query},
-    ) or {}
-    rows = result.get("multiColumnOptions") or []
-    if not rows:
-        raise dwp.DWPError(f"No users matched {query!r}.")
-    display, value = choose(table["label"], row_choices(rows))
-    dwp.answer(client, request_id, questionnaire_id, table, value)
-    return display
+    current = query
+    while True:
+        result = dwp.request_step(
+            client,
+            "Could not search for a user",
+            "POST",
+            f"v2/sbe/services/requests/{request_id}/questions/{table['id']}/lookup",
+            {"query": current},
+        ) or {}
+        rows = result.get("multiColumnOptions") or []
+        try:
+            value = dwp.choose_data_value(rows, current, exact=True, kind="user")
+        except dwp.MatchError as exc:
+            current = dwp.retry_or_skip("username", current, exc)
+            continue
+        dwp.answer(client, request_id, questionnaire_id, table, value)
+        return current
 
 
 def main() -> int:
@@ -190,13 +194,16 @@ Review:
             client, request_id, questionnaire_id, inventory, "BULK"
         )
         serial_list = dwp.field_by_label(all_items, "Please add serial number list", type_="TextArea")
-        serial_events = dwp.answer(
-            client, request_id, questionnaire_id, serial_list, ",".join(serials)
+        serials = dwp.answer_batch_assets_with_retry(
+            client,
+            request_id,
+            questionnaire_id,
+            all_items,
+            inventory_events,
+            serial_list,
+            serials,
         )
-        events = dwp.merge_events(inventory_events, serial_events)
-        asset_table, asset_values = dwp.batch_asset_selection(all_items, events, serials)
-        dwp.verbose_detail(client, f"Matched all {len(asset_values)} requested assets.")
-        dwp.answer_values(client, request_id, questionnaire_id, asset_table, asset_values)
+        dwp.verbose_detail(client, f"Matched all {len(serials)} requested assets.")
     else:
         dwp.answer(client, request_id, questionnaire_id, inventory, "ADD")
         search_by = dwp.field_by_label(all_items, "Search by", type_="RadioButtons")
@@ -204,15 +211,10 @@ Review:
         serial_field = dwp.field_by_label(
             all_items, "Type Hostname or Serial Number", type_="TextField"
         )
-        events = dwp.answer(
-            client, request_id, questionnaire_id, serial_field, serials[0]
-        )
         device_table = dwp.field_by_label(all_items, "----- Device List", type_="DataTable")
-        devices = dwp.option_data(events, device_table["id"])
-        if not devices:
-            raise dwp.DWPError(f"No devices matched serial {serials[0]!r}.")
-        _, device_value = choose("Select device", row_choices(devices))
-        dwp.answer(client, request_id, questionnaire_id, device_table, device_value)
+        serials[0] = dwp.answer_single_asset_with_retry(
+            client, request_id, questionnaire_id, serial_field, device_table, serials[0]
+        )
 
     status_item = dwp.field_by_label(all_items, "Change Status to", type_="Dropdown")
     statuses = static_choices(status_item)
@@ -277,21 +279,22 @@ Review:
                 table = dwp.field_by_label(
                     all_items, "Select person who dropped device/s off", type_="DataTable"
                 )
-                events = dwp.answer(
-                    client,
-                    request_id,
-                    questionnaire_id,
-                    search_item,
-                    prompt_text("Search drop-off user"),
-                )
-                dropoff_rows = dwp.option_data(events, table["id"])
-                if not dropoff_rows:
-                    raise dwp.DWPError("No users matched the drop-off user search.")
-                dropoff_display, dropoff_value = choose(
-                    "Select drop-off user", row_choices(dropoff_rows)
-                )
-                dwp.answer(client, request_id, questionnaire_id, table, dropoff_value)
-                review_detail = f"Dropped by {dropoff_display}"
+                dropoff_query = prompt_text("Search drop-off user")
+                while True:
+                    events = dwp.answer(
+                        client, request_id, questionnaire_id, search_item, dropoff_query
+                    )
+                    dropoff_rows = dwp.option_data(events, table["id"])
+                    try:
+                        dropoff_value = dwp.choose_data_value(
+                            dropoff_rows, dropoff_query, exact=True, kind="drop-off user"
+                        )
+                    except dwp.MatchError as exc:
+                        dropoff_query = dwp.retry_or_skip("username", dropoff_query, exc)
+                        continue
+                    dwp.answer(client, request_id, questionnaire_id, table, dropoff_value)
+                    review_detail = f"Dropped by {dropoff_query}"
+                    break
 
     if args.manual_review:
         approved = dwp.manual_review(
@@ -330,6 +333,9 @@ if __name__ == "__main__":
     except EOFError:
         print("Input ended before the request was complete.")
         raise SystemExit(2)
+    except dwp.MatchSkipped as exc:
+        print(f"Not submitted. {exc}")
+        raise SystemExit(0)
     except dwp.DWPError as exc:
         print(f"Error: {exc}")
         raise SystemExit(2)
