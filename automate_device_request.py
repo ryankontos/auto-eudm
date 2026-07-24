@@ -91,8 +91,8 @@ def browser_client_from_profile(profile: str, app_url: str, base: str, verbose: 
     except Exception as exc:
         raise DWPError(f"Browser startup or authentication failed: {exc}") from exc
     # Keep the browser context alive for every API call; do not extract/replay cookies.
-    atexit.register(context.close)
     atexit.register(playwright.stop)
+    atexit.register(context.close)
     return BrowserClient(base, context, verbose)
 
 
@@ -187,16 +187,26 @@ def field_by_label(all_items: list[dict[str, Any]], label: str, *, type_: str | 
     return matches[0]
 
 
-def answer(client: Client, request_id: str, questionnaire_id: str, item: dict[str, Any], value: Any) -> dict[str, Any]:
+def answer_values(
+    client: Any,
+    request_id: str,
+    questionnaire_id: str,
+    item: dict[str, Any],
+    values: list[Any],
+) -> dict[str, Any]:
     payload = {
         "serviceRequestId": request_id,
         "questionnaireId": questionnaire_id,
         "questionId": item["id"],
-        "answers": [value],
+        "answers": values,
     }
     result = client.request("POST", f"v2/sbe/services/{request_id}/questionnaire/answers", payload)
-    print(f"{item.get('label') or item['id']}: {value}")
+    print(f"{item.get('label') or item['id']}: {values if len(values) != 1 else values[0]}")
     return result or {}
+
+
+def answer(client: Any, request_id: str, questionnaire_id: str, item: dict[str, Any], value: Any) -> dict[str, Any]:
+    return answer_values(client, request_id, questionnaire_id, item, [value])
 
 
 def option_data(events: dict[str, Any], question_id: str) -> list[dict[str, Any]]:
@@ -205,6 +215,14 @@ def option_data(events: dict[str, Any], question_id: str) -> list[dict[str, Any]
         if change.get("type") == "ListOptionsChange":
             return change.get("questionMultiColumn", {}).get("data", [])
     return []
+
+
+def merge_events(*event_maps: dict[str, Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for event_map in event_maps:
+        for question_id, changes in event_map.items():
+            merged.setdefault(question_id, []).extend(changes)
+    return merged
 
 
 def choose_data_value(rows: list[dict[str, Any]], needle: str, *, exact: bool = True) -> str:
@@ -248,6 +266,42 @@ def choose_location_data_value(
     )
 
 
+def batch_asset_selection(
+    all_items: list[dict[str, Any]], events: dict[str, Any], serials: list[str]
+) -> tuple[dict[str, Any], list[str]]:
+    """Find the live bulk asset table and match every requested serial."""
+    tables_by_id = {
+        item["id"]: item
+        for item in all_items
+        if item.get("type") == "MultiSelectDataTable" and item.get("label") == "Select Asset"
+    }
+    candidates = [
+        (tables_by_id[question_id], option_data(events, question_id))
+        for question_id in tables_by_id
+        if option_data(events, question_id)
+    ]
+    if len(candidates) != 1:
+        raise DWPError(
+            "Bulk serial entry did not expose exactly one populated 'Select Asset' table; "
+            f"found {len(candidates)}"
+        )
+    table, rows = candidates[0]
+    selected: list[str] = []
+    missing: list[str] = []
+    for serial in serials:
+        matches = [
+            row for row in rows
+            if any(str(value).casefold() == serial.casefold() for value in row.get("displayValue", []))
+        ]
+        if len(matches) == 1:
+            selected.append(matches[0]["dataValue"])
+        else:
+            missing.append(serial)
+    if missing:
+        raise DWPError(f"Bulk asset results did not uniquely match serials: {', '.join(missing)}")
+    return table, selected
+
+
 def lookup_and_answer(
     client: Client,
     request_id: str,
@@ -280,14 +334,32 @@ def lookup_and_answer(
 
 def validate_args(args: argparse.Namespace) -> bool:
     """Reject contradictory inputs before browser startup or any API request."""
-    for name in ("serial", "request_for", "status"):
+    for name in ("request_for", "status"):
         value = getattr(args, name)
         if not value or not value.strip():
             raise DWPError(f"--{name.replace('_', '-')} cannot be empty")
         if value != value.strip():
             raise DWPError(f"--{name.replace('_', '-')} cannot begin or end with whitespace")
-    if any(character.isspace() for character in args.serial):
-        raise DWPError("--serial cannot contain whitespace")
+    if args.batch:
+        if args.serial:
+            raise DWPError("Batch mode uses --serials, not --serial")
+        if not args.serials:
+            raise DWPError("--serials is required in batch mode")
+        serials = [value.strip() for value in args.serials.split(",")]
+        if not serials or any(not value for value in serials):
+            raise DWPError("--serials must be a comma-separated list without empty entries")
+        if any(any(character.isspace() for character in value) for value in serials):
+            raise DWPError("Serial numbers in --serials cannot contain whitespace")
+        if len({value.casefold() for value in serials}) != len(serials):
+            raise DWPError("--serials cannot contain duplicates")
+        args.batch_serials = serials
+    else:
+        if args.serials:
+            raise DWPError("--serials requires --batch")
+        if not args.serial or not args.serial.strip():
+            raise DWPError("--serial is required outside batch mode")
+        if args.serial != args.serial.strip() or any(character.isspace() for character in args.serial):
+            raise DWPError("--serial cannot contain leading, trailing, or embedded whitespace")
 
     parsed_base = urllib.parse.urlparse(args.base)
     if parsed_base.scheme != "https" or not parsed_base.netloc or not parsed_base.path.rstrip("/").endswith("/rest"):
@@ -296,6 +368,8 @@ def validate_args(args: argparse.Namespace) -> bool:
     user_deployment = args.target == "user"
     location_names = ("city", "building", "floor", "room", "cabinet", "dropped_by")
     if user_deployment:
+        if args.batch:
+            raise DWPError("Batch mode supports --target location only")
         if not args.deployed_to or not args.deployed_to.strip():
             raise DWPError("--deployed-to is required when --target user")
         conflicting = [f"--{name.replace('_', '-')}" for name in location_names if getattr(args, name)]
@@ -304,9 +378,15 @@ def validate_args(args: argparse.Namespace) -> bool:
                 "User deployment cannot use location arguments: " + ", ".join(conflicting)
             )
     else:
+        if args.status.startswith("Deployed - "):
+            raise DWPError(
+                "A 'Deployed - ...' status is a user deployment; use --target user"
+            )
         if args.deployed_to:
             raise DWPError("Location deployment cannot use --deployed-to; use --dropped-by")
-        required = ("city", "building", "floor", "room", "dropped_by")
+        required = ("city", "building", "floor", "room")
+        if not args.batch:
+            required += ("dropped_by",)
         missing = [f"--{name.replace('_', '-')}" for name in required if not getattr(args, name)]
         if missing:
             raise DWPError("Location deployment requires: " + ", ".join(missing))
@@ -315,6 +395,8 @@ def validate_args(args: argparse.Namespace) -> bool:
                 raise DWPError(f"--{name.replace('_', '-')} cannot be empty")
         if args.cabinet is not None and not args.cabinet.strip():
             raise DWPError("--cabinet cannot be empty when supplied")
+        if args.batch and args.dropped_by:
+            raise DWPError("Batch location mode does not accept --dropped-by")
 
     if args.browser_profile and os.getenv("DWP_COOKIE", "").strip():
         raise DWPError("Choose either --browser-profile or DWP_COOKIE, not both")
@@ -323,7 +405,9 @@ def validate_args(args: argparse.Namespace) -> bool:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--serial", required=True, help="Hostname or serial number")
+    parser.add_argument("--serial", help="Hostname or serial number for normal mode")
+    parser.add_argument("--batch", action="store_true", help="Use DWP bulk-by-serial location mode")
+    parser.add_argument("--serials", help="Comma-separated serial numbers for --batch")
     parser.add_argument("--request-for", required=True, help="Remedy login ID requesting the change")
     parser.add_argument(
         "--target",
@@ -371,15 +455,25 @@ def main() -> int:
     print(f"Created request {request_id}; questionnaire {questionnaire_id}")
 
     inventory = field_by_label(all_items, "Inventory Request Type", type_="RadioButtons")
-    answer(client, request_id, questionnaire_id, inventory, "ADD")
-    search_by = field_by_label(all_items, "Search by", type_="RadioButtons")
-    answer(client, request_id, questionnaire_id, search_by, "serial")
-    serial_field = field_by_label(all_items, "Type Hostname or Serial Number", type_="TextField")
-    events = answer(client, request_id, questionnaire_id, serial_field, args.serial)
-    device_table = field_by_label(all_items, "----- Device List", type_="DataTable")
-    devices = option_data(events, device_table["id"])
-    device_value = choose_data_value(devices, args.serial, exact=True)
-    answer(client, request_id, questionnaire_id, device_table, device_value)
+    if args.batch:
+        inventory_events = answer(client, request_id, questionnaire_id, inventory, "BULK")
+        serial_list = field_by_label(all_items, "Please add serial number list", type_="TextArea")
+        serial_events = answer(
+            client, request_id, questionnaire_id, serial_list, ",".join(args.batch_serials)
+        )
+        events = merge_events(inventory_events, serial_events)
+        asset_table, asset_values = batch_asset_selection(all_items, events, args.batch_serials)
+        answer_values(client, request_id, questionnaire_id, asset_table, asset_values)
+    else:
+        answer(client, request_id, questionnaire_id, inventory, "ADD")
+        search_by = field_by_label(all_items, "Search by", type_="RadioButtons")
+        answer(client, request_id, questionnaire_id, search_by, "serial")
+        serial_field = field_by_label(all_items, "Type Hostname or Serial Number", type_="TextField")
+        events = answer(client, request_id, questionnaire_id, serial_field, args.serial)
+        device_table = field_by_label(all_items, "----- Device List", type_="DataTable")
+        devices = option_data(events, device_table["id"])
+        device_value = choose_data_value(devices, args.serial, exact=True)
+        answer(client, request_id, questionnaire_id, device_table, device_value)
 
     status = field_by_label(all_items, "Change Status to", type_="Dropdown")
     answer(client, request_id, questionnaire_id, status, args.status)
@@ -388,7 +482,7 @@ def main() -> int:
         # User deployments expose a server-backed "deployed to" table.
         lookup_and_answer(
             client, request_id, questionnaire_id, all_items,
-            "Type User ID or Full Name",
+            "Please select user - device has been deployed to",
             "Please select user - device has been deployed to",
             args.deployed_to, args.deployed_to,
             search_type="DataTable",
@@ -406,21 +500,36 @@ def main() -> int:
         )
         answer(client, request_id, questionnaire_id, location_table, location_value)
 
-        # Location deployments require the return toggle before the drop-off user list appears.
+        # Batch location changes have no associated user.
         returned = field_by_label(all_items, "Is this a return from a user", type_="RadioButtons")
-        answer(client, request_id, questionnaire_id, returned, "YES")
-        add_dropoff = field_by_label(all_items, "Add Name of person who dropped off device", type_="YesNo")
-        answer(client, request_id, questionnaire_id, add_dropoff, "true")
-        lookup_and_answer(
-            client, request_id, questionnaire_id, all_items,
-            "Search Name or User ID that dropped off devices",
-            "Select person who dropped device/s off",
-            args.dropped_by, args.dropped_by,
-        )
+        if args.batch:
+            answer(client, request_id, questionnaire_id, returned, "NO")
+        else:
+            answer(client, request_id, questionnaire_id, returned, "YES")
+            add_dropoff = field_by_label(all_items, "Add Name of person who dropped off device", type_="YesNo")
+            answer(client, request_id, questionnaire_id, add_dropoff, "true")
+            dropoff_search = field_by_label(
+                all_items, "Search Name or User ID that dropped off devices", type_="TextField"
+            )
+            dropoff_table = field_by_label(
+                all_items, "Select person who dropped device/s off", type_="DataTable"
+            )
+            dropoff_events = answer(
+                client, request_id, questionnaire_id, dropoff_search, args.dropped_by
+            )
+            dropoff_rows = option_data(dropoff_events, dropoff_table["id"])
+            dropoff_value = choose_data_value(dropoff_rows, args.dropped_by, exact=True)
+            answer(client, request_id, questionnaire_id, dropoff_table, dropoff_value)
         location_summary = " --> ".join([args.building, args.floor, args.room])
         if args.cabinet:
             location_summary += f" --> {args.cabinet}"
-        print(f"Deployment target: location {location_summary}; dropped by {args.dropped_by}")
+        if args.batch:
+            print(
+                f"Batch deployment target: location {location_summary}; "
+                f"serials {', '.join(args.batch_serials)}; no user"
+            )
+        else:
+            print(f"Deployment target: location {location_summary}; dropped by {args.dropped_by}")
 
     print("\nReached the dynamic questionnaire path.")
     if not args.submit:
