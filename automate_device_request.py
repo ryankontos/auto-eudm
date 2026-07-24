@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""First-pass automation for the Macquarie DWP device-management request.
+"""Automate one Macquarie DWP device-management request.
 
-This deliberately stops before order submission unless --submit is supplied.
-Authentication is supplied by DWP_COOKIE or an authenticated Playwright Chrome
-context; credentials are never written to disk.
+Normal mode talks to DWP using either DWP_COOKIE or a dedicated Chrome profile.
+It creates and populates a request, but only submits the final order with
+--submit. Creating/populating a non-submitted request is still a real DWP
+server-side change.
+
+Use --simulate to exercise the same validation and questionnaire path locally.
+Simulation never starts Chrome, reads cookies, reaches DWP, or changes data.
 """
 
 from __future__ import annotations
@@ -795,37 +799,61 @@ def validate_args(args: argparse.Namespace) -> bool:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--serial", help="Hostname or serial number for normal mode")
-    parser.add_argument("--batch", action="store_true", help="Use DWP bulk-by-serial location mode")
-    parser.add_argument("--serials", help="Comma-separated serial numbers for --batch")
-    parser.add_argument("--request-for", required=True, help="Remedy login ID requesting the change")
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""Modes:
+  Single user:     --serial ... --target user --status 'Deployed - New Stock' --deployed-to ...
+  Single location: --serial ... --target location --status 'Used Stock' --city ... --building ... --floor ... --room ... --dropped-by ...
+  Batch location:  --batch --serials 'SERIAL1,SERIAL2' --target location ... (no user fields)
+
+Safety:
+  Arguments are checked before authentication or API calls. Without --submit,
+  DWP still receives a created and populated request, but no final order is sent.
+  Use --simulate for a completely local rehearsal; it produces SIM-REQ IDs.
+""",
+    )
+    parser.add_argument("--serial", help="One hostname/serial. Required unless --batch is used.")
+    parser.add_argument(
+        "--batch",
+        action="store_true",
+        help="Use DWP BULK by Serial Number for one location; rejects all user fields.",
+    )
+    parser.add_argument(
+        "--serials",
+        help="Comma-separated serials for --batch; duplicates, spaces, and empty entries are rejected.",
+    )
+    parser.add_argument("--request-for", required=True, help="Remedy login ID that requests the change.")
     parser.add_argument(
         "--target",
         required=True,
         choices=("user", "location"),
-        help="Whether the selected status deploys the device to a user or a location",
+        help="Required deployment destination. This controls which mutually exclusive fields are valid.",
     )
-    parser.add_argument("--city", help="City filter label for location deployment, e.g. 'Sydney, AU'")
-    parser.add_argument("--building", help="Exact building from the returned location row")
-    parser.add_argument("--floor", help="Exact floor from the returned location row, e.g. 'Level 15'")
-    parser.add_argument("--room", help="Exact room from the returned location row, e.g. 'Store Room'")
-    parser.add_argument("--cabinet", help="Exact cabinet when multiple rows share building, floor, and room")
-    parser.add_argument("--status", required=True, help="Exact DWP status value, e.g. 'Deployed - New Stock'")
-    parser.add_argument("--deployed-to", help="Login ID of the user receiving a user deployment")
-    parser.add_argument("--dropped-by", help="Login ID of the user who dropped off a location deployment")
-    parser.add_argument("--submit", action="store_true", help="Commit the order; otherwise print a dry-run summary")
+    parser.add_argument("--city", help="Exact DWP city label for a location, for example 'Sydney, AU'.")
+    parser.add_argument("--building", help="Exact building value from the returned DWP location row.")
+    parser.add_argument("--floor", help="Exact floor value from the returned DWP location row, for example 'Level 15'.")
+    parser.add_argument("--room", help="Exact room value from the returned DWP location row, for example 'Store Room'.")
+    parser.add_argument("--cabinet", help="Exact cabinet value only when building/floor/room still match multiple locations.")
+    parser.add_argument("--status", required=True, help="Exact DWP data value, for example 'Deployed - New Stock' or 'Used Stock'.")
+    parser.add_argument("--deployed-to", help="Receiving login ID. Required for --target user; invalid for locations.")
+    parser.add_argument("--dropped-by", help="Drop-off login ID. Required for normal locations; invalid for batch locations.")
+    parser.add_argument(
+        "--submit",
+        action="store_true",
+        help="Send the final DWP order. Without it, the request is populated but not ordered.",
+    )
     parser.add_argument(
         "--browser-profile",
-        help="Use a dedicated authenticated Chrome context for SSO and API calls",
+        help="Dedicated installed-Chrome profile for SSO; cannot be combined with DWP_COOKIE.",
     )
-    parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--verbose", action="store_true", help="Show request method/path/status diagnostics; never prints cookies or response bodies.")
     parser.add_argument(
         "--simulate",
         action="store_true",
-        help="Run the full flow locally without authentication, network, or DWP changes",
+        help="Local in-memory rehearsal. Ignores authentication and makes no browser, network, or DWP changes.",
     )
-    parser.add_argument("--base", default=os.getenv("DWP_BASE", DEFAULT_BASE))
+    parser.add_argument("--base", default=os.getenv("DWP_BASE", DEFAULT_BASE), help="Override DWP REST base URL (HTTPS URL ending in /rest).")
     args = parser.parse_args()
 
     user_deployment = validate_args(args)

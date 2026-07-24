@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Interactive CLI frontend for the DWP device-management questionnaire."""
+"""Guided, numbered frontend for the DWP device-management questionnaire.
+
+The wizard asks for each dynamic DWP choice and asks before submitting. Use
+--simulate to rehearse all prompts and selections without Chrome, network, or
+real DWP changes.
+"""
 
 from __future__ import annotations
 
@@ -90,20 +95,31 @@ def select_lookup_person(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""Authentication:
+  By default, a separate Chrome profile is opened for SSO. Use --cookie-mode
+  only when DWP_COOKIE contains the complete browser Cookie request header.
+
+Simulation:
+  --simulate runs the same numbered flow using sample users, locations, devices,
+  and SIM-REQ IDs. It never opens Chrome or contacts DWP.
+""",
+    )
     parser.add_argument(
         "--browser-profile",
         default="~/.dwp-device-request-chrome",
-        help="Dedicated installed-Chrome profile used for SSO",
+        help="Dedicated installed-Chrome profile used for SSO. It is separate from normal browsing.",
     )
-    parser.add_argument("--cookie-mode", action="store_true", help="Use DWP_COOKIE instead of Chrome")
+    parser.add_argument("--cookie-mode", action="store_true", help="Use DWP_COOKIE instead of opening Chrome. The cookie is never saved.")
     parser.add_argument(
         "--simulate",
         action="store_true",
-        help="Run the full wizard locally without authentication, network, or DWP changes",
+        help="Local rehearsal with sample choices and SIM-REQ IDs; no Chrome, network, or DWP changes.",
     )
-    parser.add_argument("--verbose", action="store_true")
-    parser.add_argument("--base", default=os.getenv("DWP_BASE", dwp.DEFAULT_BASE))
+    parser.add_argument("--verbose", action="store_true", help="Show safe request/status diagnostics.")
+    parser.add_argument("--base", default=os.getenv("DWP_BASE", dwp.DEFAULT_BASE), help="Override DWP REST base URL (HTTPS URL ending in /rest).")
     args = parser.parse_args()
     if args.cookie_mode:
         args.browser_profile = None

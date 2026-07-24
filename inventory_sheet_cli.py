@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Import Sydney inventory tracking sheets and deploy selected device changes."""
+"""Guided importer for Sydney inventory tracking workbooks.
+
+The importer reads a dated sheet, previews the resulting device changes, then
+either stops (--dry-run), submits real DWP requests, or submits fully local
+simulation requests (--simulate). It never submits before showing the preview
+and receiving a final confirmation.
+"""
 
 from __future__ import annotations
 
@@ -404,27 +410,41 @@ def print_results(outcomes: list[Outcome]) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("file", nargs="?", help="Inventory Tracking - Sydney workbook")
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""Workbook rules:
+  The newest 'Inventory Tracking - Sydney*.xlsx' or .xlsm in Downloads is used
+  when FILE is omitted. 'Bookings 2026' is selected automatically; otherwise
+  you choose a sheet. A=deployment date, D=username, J=new serial, L=old serial.
+  Red rows and rows without a usable column-J serial are excluded before DWP.
+
+Modes:
+  --dry-run ends after the preview with zero browser or DWP API activity.
+  --simulate continues after confirmation using local SIM-REQ/SIM-ORDER IDs,
+  but never opens Chrome, reads cookies, contacts DWP, or changes real data.
+""",
+    )
+    parser.add_argument("file", nargs="?", metavar="FILE", help="Optional .xlsx/.xlsm workbook. If omitted, choose the newest matching Downloads file or enter a path.")
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Preview only; do not open Chrome or make any DWP API requests",
+        help="Preview only. Does not open Chrome or make any DWP API requests.",
     )
-    parser.add_argument("--request-for", help="Remedy login ID requesting all changes")
+    parser.add_argument("--request-for", help="Remedy login ID for every generated request. Prompts if omitted.")
     parser.add_argument(
         "--browser-profile",
         default=dwp.DEFAULT_BROWSER_PROFILE,
-        help="Dedicated installed-Chrome profile used for SSO",
+        help="Dedicated installed-Chrome profile for SSO, separate from normal browsing.",
     )
-    parser.add_argument("--cookie-mode", action="store_true", help="Use DWP_COOKIE instead of Chrome")
+    parser.add_argument("--cookie-mode", action="store_true", help="Use DWP_COOKIE instead of opening Chrome. The cookie is never saved.")
     parser.add_argument(
         "--simulate",
         action="store_true",
-        help="Run submissions locally without authentication, network, or DWP changes",
+        help="Submit into a local simulator after the preview. Produces SIM-REQ IDs with no browser, network, or DWP changes.",
     )
-    parser.add_argument("--verbose", action="store_true")
-    parser.add_argument("--base", default=os.getenv("DWP_BASE", dwp.DEFAULT_BASE))
+    parser.add_argument("--verbose", action="store_true", help="Show safe request/status diagnostics.")
+    parser.add_argument("--base", default=os.getenv("DWP_BASE", dwp.DEFAULT_BASE), help="Override DWP REST base URL (HTTPS URL ending in /rest).")
     args = parser.parse_args()
     if args.cookie_mode:
         args.browser_profile = None

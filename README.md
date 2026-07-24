@@ -7,10 +7,13 @@ First-pass automation for the Macquarie Digital Workplace device-management requ
 - `automate_device_request.py` — dynamic REST client for the captured questionnaire flow.
 - `interactive_device_request.py` — numbered CLI frontend for normal and batch flows.
 - `inventory_sheet_cli.py` — guided importer for `Inventory Tracking - Sydney` workbooks.
+- `USAGE.md` — operating guide with safety boundaries, workbook mapping, examples, and troubleshooting.
 - `big.har` — source network capture used to map the API workflow.
 - `requestform.txt` — source Angular DOM capture used to map labels and question IDs.
 
 The captures contain internal and personal data. This repository is public by request; do not add authentication cookies, tokens, or additional sensitive captures.
+
+See [USAGE.md](USAGE.md) for the complete operating guide. Every command also documents its arguments and safety behaviour through `--help`.
 
 ## Run
 
