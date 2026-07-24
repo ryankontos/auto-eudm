@@ -2,13 +2,14 @@
 """First-pass automation for the Macquarie DWP device-management request.
 
 This deliberately stops before order submission unless --submit is supplied.
-Authentication is supplied by DWP_COOKIE (copy the Cookie request header from
-an authenticated browser session); credentials are never written to disk.
+Authentication is supplied by DWP_COOKIE or an authenticated Playwright Chrome
+context; credentials are never written to disk.
 """
 
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import os
 from pathlib import Path
@@ -28,37 +29,70 @@ class DWPError(RuntimeError):
     pass
 
 
-def cookie_from_browser(profile: str, app_url: str) -> str:
-    """Open installed Google Chrome via Playwright; never use Apple Events."""
+class BrowserClient:
+    """API client that stays inside the authenticated Playwright browser context."""
+
+    def __init__(self, base: str, context: Any, verbose: bool = False) -> None:
+        self.base = base
+        self.context = context
+        self.verbose = verbose
+
+    def request(self, method: str, path: str, payload: Any | None = None) -> Any:
+        url = self.base.rstrip("/") + "/" + path.lstrip("/")
+        body = None if payload is None else json.dumps(payload)
+        headers = {
+            "Accept": "application/json, text/plain, */*",
+            "Origin": self.base.split("/rest", 1)[0],
+            "Referer": self.base.split("/rest", 1)[0] + "/",
+            "X-Requested-By": "XMLHttpRequest",
+            "User-Agent": "dwp-device-request-browser/0.1",
+        }
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+        response = self.context.request.fetch(
+            url, method=method, headers=headers, data=body, fail_on_status_code=False
+        )
+        raw = response.text()
+        if self.verbose:
+            print(f"{method} {path} -> {response.status}", file=sys.stderr)
+        if response.status >= 400:
+            if response.status in (401, 403) and "single sign on" in raw.lower():
+                raise DWPError(
+                    f"{method} {path} -> HTTP {response.status}: the browser context is not authenticated"
+                )
+            raise DWPError(f"{method} {path} -> HTTP {response.status}: {raw[:500]}")
+        if not raw:
+            return None
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise DWPError(f"{method} {path} returned non-JSON data") from exc
+
+
+def browser_client_from_profile(profile: str, app_url: str, base: str, verbose: bool) -> BrowserClient:
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
         raise DWPError(
             "Browser mode requires Playwright. Install it with: python3 -m pip install playwright"
         ) from exc
-    profile_path = str(Path(profile).expanduser())
     try:
-        with sync_playwright() as playwright:
-            context = playwright.chromium.launch_persistent_context(
-                user_data_dir=profile_path,
-                channel="chrome",
-                headless=False,
-            )
-            page = context.pages[0] if context.pages else context.new_page()
-            page.goto(app_url, wait_until="domcontentloaded", timeout=60_000)
-            print("Chrome opened for DWP authentication. Complete SSO in that window.")
-            input("After the DWP page is signed in, press Enter here to continue: ")
-            cookies = context.cookies()
-            context.close()
+        playwright = sync_playwright().start()
+        context = playwright.chromium.launch_persistent_context(
+            user_data_dir=str(Path(profile).expanduser()),
+            channel="chrome",
+            headless=False,
+        )
+        page = context.pages[0] if context.pages else context.new_page()
+        page.goto(app_url, wait_until="domcontentloaded", timeout=60_000)
+        print("Chrome opened for DWP authentication. Complete SSO in that window.")
+        input("After the DWP page is signed in, press Enter here to continue: ")
     except Exception as exc:
-        raise DWPError(f"Browser cookie extraction failed: {exc}") from exc
-    host_cookies = [
-        cookie for cookie in cookies
-        if "macquarie-dwp.onbmc.com" in cookie.get("domain", "")
-    ]
-    if not host_cookies:
-        raise DWPError("No macquarie-dwp.onbmc.com cookies found in the browser profile")
-    return "; ".join(f"{cookie['name']}={cookie['value']}" for cookie in host_cookies)
+        raise DWPError(f"Browser startup or authentication failed: {exc}") from exc
+    # Keep the browser context alive for every API call; do not extract/replay cookies.
+    atexit.register(context.close)
+    atexit.register(playwright.stop)
+    return BrowserClient(base, context, verbose)
 
 
 @dataclass
@@ -231,14 +265,16 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.browser_profile:
-        cookie = cookie_from_browser(args.browser_profile, args.base.split("/rest", 1)[0] + "/app/")
+        client = browser_client_from_profile(
+            args.browser_profile, args.base.split("/rest", 1)[0] + "/app/", args.base, args.verbose
+        )
     else:
         cookie = os.getenv("DWP_COOKIE", "").strip()
         if cookie.lower().startswith("cookie:"):
             cookie = cookie.split(":", 1)[1].strip()
-    if not cookie:
-        raise DWPError("Set DWP_COOKIE to the Cookie header from an authenticated DWP browser session")
-    client = Client(args.base, cookie, args.verbose)
+        if not cookie:
+            raise DWPError("Set DWP_COOKIE or use --browser-profile for an authenticated Chrome session")
+        client = Client(args.base, cookie, args.verbose)
     user_deployment = args.status.startswith("Deployed - ")
     if user_deployment and not args.deployed_to:
         raise DWPError("--deployed-to is required for a 'Deployed - ...' status")
