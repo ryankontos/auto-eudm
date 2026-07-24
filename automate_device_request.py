@@ -80,6 +80,12 @@ class Client:
                 status = response.status
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
+            if exc.code in (401, 403) and "single sign on" in detail.lower():
+                raise DWPError(
+                    f"{method} {path} -> HTTP {exc.code}: DWP redirected to SSO. "
+                    "Refresh the browser login and copy the Cookie value from a "
+                    "macquarie-dwp.onbmc.com /dwp/rest request (without the 'Cookie:' label)."
+                ) from exc
             raise DWPError(f"{method} {path} -> HTTP {exc.code}: {detail[:500]}") from exc
         except urllib.error.URLError as exc:
             reason = exc.reason
@@ -186,7 +192,9 @@ def main() -> int:
     parser.add_argument("--base", default=os.getenv("DWP_BASE", DEFAULT_BASE))
     args = parser.parse_args()
 
-    cookie = os.getenv("DWP_COOKIE", "")
+    cookie = os.getenv("DWP_COOKIE", "").strip()
+    if cookie.lower().startswith("cookie:"):
+        cookie = cookie.split(":", 1)[1].strip()
     if not cookie:
         raise DWPError("Set DWP_COOKIE to the Cookie header from an authenticated DWP browser session")
     client = Client(args.base, cookie, args.verbose)
