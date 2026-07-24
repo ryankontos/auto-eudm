@@ -11,7 +11,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
+import ssl
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -31,6 +33,32 @@ class Client:
     cookie: str
     verbose: bool = False
 
+    def _curl_request(self, method: str, url: str, body: bytes | None, headers: dict[str, str]) -> tuple[int, str]:
+        """Use the OS curl trust store when Python/OpenSSL rejects a chain."""
+        config: list[str] = [f"url = {json.dumps(url)}", f"request = {json.dumps(method)}"]
+        for name, value in headers.items():
+            config.append(f"header = {json.dumps(f'{name}: {value}')}")
+        if body is not None:
+            config.append(f"data-binary = {json.dumps(body.decode('utf-8'))}")
+        config.append('write-out = "\\n__DWP_HTTP_STATUS:%{http_code}"')
+        result = subprocess.run(
+            ["curl", "--silent", "--show-error", "--location", "--config", "-"],
+            input=("\n".join(config) + "\n").encode(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=60,
+            check=False,
+        )
+        if result.returncode:
+            detail = result.stderr.decode("utf-8", errors="replace").strip()
+            raise DWPError(f"curl transport failed: {detail[:500]}")
+        raw = result.stdout.decode("utf-8", errors="replace")
+        marker = "\n__DWP_HTTP_STATUS:"
+        if marker not in raw:
+            raise DWPError("curl transport returned no HTTP status")
+        content, status_text = raw.rsplit(marker, 1)
+        return int(status_text.strip()), content
+
     def request(self, method: str, path: str, payload: Any | None = None) -> Any:
         url = self.base.rstrip("/") + "/" + path.lstrip("/")
         body = None if payload is None else json.dumps(payload).encode()
@@ -49,11 +77,22 @@ class Client:
         try:
             with urllib.request.urlopen(req, timeout=45) as response:
                 raw = response.read().decode("utf-8", errors="replace")
-                if self.verbose:
-                    print(f"{method} {path} -> {response.status}", file=sys.stderr)
+                status = response.status
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
             raise DWPError(f"{method} {path} -> HTTP {exc.code}: {detail[:500]}") from exc
+        except urllib.error.URLError as exc:
+            reason = exc.reason
+            cert_error = isinstance(reason, ssl.SSLCertVerificationError) or "CERTIFICATE_VERIFY_FAILED" in str(reason)
+            if not cert_error:
+                raise DWPError(f"{method} {path} failed: {reason}") from exc
+            if self.verbose:
+                print("Python TLS validation failed; retrying with system curl trust store", file=sys.stderr)
+            status, raw = self._curl_request(method, url, body, headers)
+        if self.verbose:
+            print(f"{method} {path} -> {status}", file=sys.stderr)
+        if status >= 400:
+            raise DWPError(f"{method} {path} -> HTTP {status}: {raw[:500]}")
         if not raw:
             return None
         try:
