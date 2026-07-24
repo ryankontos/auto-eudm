@@ -6,6 +6,7 @@ First-pass automation for the Macquarie Digital Workplace device-management requ
 
 - `automate_device_request.py` — dynamic REST client for the captured questionnaire flow.
 - `interactive_device_request.py` — numbered CLI frontend for normal and batch flows.
+- `inventory_sheet_cli.py` — guided importer for `Inventory Tracking - Sydney` workbooks.
 - `big.har` — source network capture used to map the API workflow.
 - `requestform.txt` — source Angular DOM capture used to map labels and question IDs.
 
@@ -49,6 +50,58 @@ python3 interactive_device_request.py --cookie-mode
 If Python/OpenSSL rejects the work computer's certificate chain, the client automatically retries that request with the system `curl` trust store. This keeps certificate verification enabled and lets macOS Keychain trust be used. Run with `--verbose` to see when the fallback occurs.
 
 Expected failures are printed as short action-oriented messages. Response bodies, HTML SSO pages, cookies, and raw JSON are not printed; use `--verbose` only for transport-level request/status diagnostics.
+
+## Sydney inventory workbook
+
+Install spreadsheet support:
+
+```bash
+python3 -m pip install -r requirements-sheet.txt
+```
+
+For the normal Chrome-based flow on a fresh checkout, install both requirements in one command:
+
+```bash
+python3 -m pip install -r requirements-browser.txt -r requirements-sheet.txt
+```
+
+Run the guided importer. With no file argument it offers the newest `Inventory Tracking - Sydney*.xlsx` or `.xlsm` file in Downloads:
+
+```bash
+python3 inventory_sheet_cli.py
+```
+
+Run it with a specific workbook:
+
+```bash
+python3 inventory_sheet_cli.py '/path/to/Inventory Tracking - Sydney.xlsx'
+```
+
+Preview only, with no Chrome window and no DWP API requests:
+
+```bash
+python3 inventory_sheet_cli.py --dry-run
+```
+
+Use a specific workbook in true dry-run mode:
+
+```bash
+python3 inventory_sheet_cli.py '/path/to/Inventory Tracking - Sydney.xlsx' --dry-run
+```
+
+Use `DWP_COOKIE` instead of the dedicated installed-Chrome profile:
+
+```bash
+python3 inventory_sheet_cli.py --cookie-mode
+```
+
+The importer lists the dates from column A, then asks whether to process new devices from column J, old devices from column L, or both. Column D supplies the target username; if a formula result there is unavailable, the importer can use the login portion of the column F email address and calls this out in the preview.
+
+A row is excluded before authentication when any cell in columns A-L is marked with red font or red fill, when column J has no usable serial, or when no username can be resolved. An old serial from column L becomes a separate `Pending Return` request for the same user. Obvious non-serial sheet markers, such as the single digits `1`-`5`, are not treated as serial numbers.
+
+New devices default to `Deployed - New Stock`. Before the preview, enter one or more displayed numbers such as `2,4-6` to change those devices to `Deployed - Existing Stock`. The final preview includes every serial, username, source row, and status. The CLI asks once more before authentication and submission.
+
+After processing, request IDs are grouped under `New deployments` and `Old / pending return`. One failed device does not hide the results for the others; failed items include a useful message and, when DWP had already created it, the request ID.
 
 User deployment:
 

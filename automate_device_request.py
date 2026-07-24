@@ -24,10 +24,23 @@ from typing import Any
 
 
 DEFAULT_BASE = "https://macquarie-dwp.onbmc.com/dwp/rest"
+DEFAULT_BROWSER_PROFILE = "~/.dwp-device-request-chrome"
 
 
 class DWPError(RuntimeError):
     pass
+
+
+class DeploymentExecutionError(DWPError):
+    def __init__(self, request_id: str, message: str) -> None:
+        super().__init__(message)
+        self.request_id = request_id
+
+
+@dataclass(frozen=True)
+class DeploymentResult:
+    request_id: str
+    order_id: str | None
 
 
 def http_error_message(status: int, action: str) -> str:
@@ -139,6 +152,30 @@ def browser_client_from_profile(profile: str, app_url: str, base: str, verbose: 
     atexit.register(playwright.stop)
     atexit.register(context.close)
     return BrowserClient(base, context, verbose)
+
+
+def open_client(
+    *,
+    base: str = DEFAULT_BASE,
+    browser_profile: str | None = None,
+    verbose: bool = False,
+) -> Any:
+    """Open one authenticated client that can be reused for many requests."""
+    if browser_profile:
+        return browser_client_from_profile(
+            browser_profile,
+            base.split("/rest", 1)[0] + "/app/",
+            base,
+            verbose,
+        )
+    cookie = os.getenv("DWP_COOKIE", "").strip()
+    if cookie.lower().startswith("cookie:"):
+        cookie = cookie.split(":", 1)[1].strip()
+    if not cookie:
+        raise DWPError(
+            "Set DWP_COOKIE or use --browser-profile for an authenticated Chrome session"
+        )
+    return Client(base, cookie, verbose)
 
 
 @dataclass
@@ -397,6 +434,109 @@ def lookup_and_answer(
     answer(client, request_id, questionnaire_id, table, value)
 
 
+def deploy_device_to_user(
+    client: Any,
+    *,
+    serial: str,
+    request_for: str,
+    deployed_to: str,
+    status: str,
+    submit: bool = True,
+) -> DeploymentResult:
+    """Populate and optionally submit one user deployment request."""
+    for label, value in (
+        ("serial number", serial),
+        ("request-for login ID", request_for),
+        ("deployed-to login ID", deployed_to),
+        ("status", status),
+    ):
+        if not value or value != value.strip():
+            raise DWPError(f"The {label} cannot be empty or have surrounding whitespace.")
+    if any(character.isspace() for character in serial):
+        raise DWPError(f"Serial number {serial!r} cannot contain whitespace.")
+
+    created = request_step(
+        client,
+        "Could not create the DWP request",
+        "POST",
+        "v2/sbe/services/requests",
+        {"serviceId": "25301", "quantity": 1, "requestedForLoginIds": [request_for]},
+    )
+    request_id = str(created["requests"][0]["requestId"])
+    print(f"Created request {request_id}.")
+    try:
+        return _complete_user_deployment(
+            client,
+            request_id=request_id,
+            serial=serial,
+            deployed_to=deployed_to,
+            status=status,
+            submit=submit,
+        )
+    except DWPError as exc:
+        raise DeploymentExecutionError(request_id, str(exc)) from exc
+
+
+def _complete_user_deployment(
+    client: Any,
+    *,
+    request_id: str,
+    serial: str,
+    deployed_to: str,
+    status: str,
+    submit: bool,
+) -> DeploymentResult:
+    questionnaire = request_step(
+        client,
+        "Could not load the current questionnaire",
+        "GET",
+        f"v2/sbe/services/requests/{request_id}/questionnaire?timezoneId=Australia/Sydney",
+    )["questionnaire"]
+    questionnaire_id = str(questionnaire["id"])
+    all_items = items(questionnaire)
+
+    inventory = field_by_label(all_items, "Inventory Request Type", type_="RadioButtons")
+    answer(client, request_id, questionnaire_id, inventory, "ADD")
+    search_by = field_by_label(all_items, "Search by", type_="RadioButtons")
+    answer(client, request_id, questionnaire_id, search_by, "serial")
+    serial_field = field_by_label(
+        all_items, "Type Hostname or Serial Number", type_="TextField"
+    )
+    events = answer(client, request_id, questionnaire_id, serial_field, serial)
+    device_table = field_by_label(all_items, "----- Device List", type_="DataTable")
+    devices = option_data(events, device_table["id"])
+    device_value = choose_data_value(devices, serial, exact=True)
+    answer(client, request_id, questionnaire_id, device_table, device_value)
+
+    status_item = field_by_label(all_items, "Change Status to", type_="Dropdown")
+    answer(client, request_id, questionnaire_id, status_item, status)
+    lookup_and_answer(
+        client,
+        request_id,
+        questionnaire_id,
+        all_items,
+        "Please select user - device has been deployed to",
+        "Please select user - device has been deployed to",
+        deployed_to,
+        deployed_to,
+        search_type="DataTable",
+    )
+    if not submit:
+        print(f"Request {request_id} is populated but not submitted.")
+        return DeploymentResult(request_id=request_id, order_id=None)
+
+    order = request_step(
+        client,
+        "Could not submit the order",
+        "POST",
+        "v2/sbe/orders",
+        {"requestIds": [request_id], "title": None},
+    )
+    order_id = str(order["id"]) if isinstance(order, dict) and order.get("id") else None
+    print(f"Submitted request {request_id}{f' (order {order_id})' if order_id else ''}.")
+    return DeploymentResult(request_id=request_id, order_id=order_id)
+
+
 def validate_args(args: argparse.Namespace) -> bool:
     """Reject contradictory inputs before browser startup or any API request."""
     for name in ("request_for", "status"):
@@ -499,17 +639,11 @@ def main() -> int:
 
     user_deployment = validate_args(args)
 
-    if args.browser_profile:
-        client = browser_client_from_profile(
-            args.browser_profile, args.base.split("/rest", 1)[0] + "/app/", args.base, args.verbose
-        )
-    else:
-        cookie = os.getenv("DWP_COOKIE", "").strip()
-        if cookie.lower().startswith("cookie:"):
-            cookie = cookie.split(":", 1)[1].strip()
-        if not cookie:
-            raise DWPError("Set DWP_COOKIE or use --browser-profile for an authenticated Chrome session")
-        client = Client(args.base, cookie, args.verbose)
+    client = open_client(
+        base=args.base,
+        browser_profile=args.browser_profile,
+        verbose=args.verbose,
+    )
     created = request_step(client, "Could not create the DWP request", "POST", "v2/sbe/services/requests", {
         "serviceId": "25301", "quantity": 1, "requestedForLoginIds": [args.request_for]
     })
