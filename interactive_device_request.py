@@ -118,7 +118,11 @@ Simulation:
         action="store_true",
         help="Local rehearsal with sample choices and SIM-REQ IDs; no Chrome, network, or DWP changes.",
     )
-    parser.add_argument("--verbose", action="store_true", help="Show safe request/status diagnostics.")
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Show questionnaire field updates, match details, and safe request/status diagnostics.",
+    )
     parser.add_argument("--base", default=os.getenv("DWP_BASE", dwp.DEFAULT_BASE), help="Override DWP REST base URL (HTTPS URL ending in /rest).")
     args = parser.parse_args()
     if args.cookie_mode:
@@ -166,7 +170,7 @@ Simulation:
     )["questionnaire"]
     questionnaire_id = str(questionnaire["id"])
     all_items = dwp.items(questionnaire)
-    print(f"Created request {request_id}.")
+    dwp.verbose_detail(client, f"Created request {request_id}.")
 
     inventory = dwp.field_by_label(all_items, "Inventory Request Type", type_="RadioButtons")
     if mode == "batch":
@@ -179,7 +183,7 @@ Simulation:
         )
         events = dwp.merge_events(inventory_events, serial_events)
         asset_table, asset_values = dwp.batch_asset_selection(all_items, events, serials)
-        print(f"Matched all {len(asset_values)} requested assets.")
+        dwp.verbose_detail(client, f"Matched all {len(asset_values)} requested assets.")
         dwp.answer_values(client, request_id, questionnaire_id, asset_table, asset_values)
     else:
         dwp.answer(client, request_id, questionnaire_id, inventory, "ADD")

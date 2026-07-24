@@ -77,6 +77,12 @@ def request_step(
         raise DWPError(f"{action}: {exc}") from exc
 
 
+def verbose_detail(client: Any, message: str) -> None:
+    """Show implementation-level progress only when the caller asks for it."""
+    if getattr(client, "verbose", False):
+        print(message, file=sys.stderr)
+
+
 class BrowserClient:
     """API client that stays inside the authenticated Playwright browser context."""
 
@@ -483,11 +489,11 @@ def answer_values(
     except DWPError as exc:
         raise DWPError(f"Could not set {label!r}: {exc}") from exc
     if item.get("type") == "MultiSelectDataTable":
-        print(f"{label}: selected {len(values)} asset(s)")
+        verbose_detail(client, f"{label}: selected {len(values)} asset(s)")
     elif item.get("type") == "DataTable":
-        print(f"{label}: selected")
+        verbose_detail(client, f"{label}: selected")
     else:
-        print(f"{label}: {values if len(values) != 1 else values[0]}")
+        verbose_detail(client, f"{label}: {values if len(values) != 1 else values[0]}")
     return result or {}
 
 
@@ -649,7 +655,7 @@ def deploy_device_to_user(
         {"serviceId": "25301", "quantity": 1, "requestedForLoginIds": [request_for]},
     )
     request_id = str(created["requests"][0]["requestId"])
-    print(f"Created request {request_id}.")
+    verbose_detail(client, f"Created request {request_id}.")
     try:
         return _complete_user_deployment(
             client,
@@ -708,7 +714,7 @@ def _complete_user_deployment(
         search_type="DataTable",
     )
     if not submit:
-        print(f"Request {request_id} is populated but not submitted.")
+        verbose_detail(client, f"Request {request_id} is populated but not submitted.")
         return DeploymentResult(request_id=request_id, order_id=None)
 
     order = request_step(
@@ -719,7 +725,10 @@ def _complete_user_deployment(
         {"requestIds": [request_id], "title": None},
     )
     order_id = str(order["id"]) if isinstance(order, dict) and order.get("id") else None
-    print(f"Submitted request {request_id}{f' (order {order_id})' if order_id else ''}.")
+    verbose_detail(
+        client,
+        f"Submitted request {request_id}{f' (order {order_id})' if order_id else ''}.",
+    )
     return DeploymentResult(request_id=request_id, order_id=order_id)
 
 
@@ -847,7 +856,11 @@ Safety:
         "--browser-profile",
         help="Dedicated installed-Chrome profile for SSO; cannot be combined with DWP_COOKIE.",
     )
-    parser.add_argument("--verbose", action="store_true", help="Show request method/path/status diagnostics; never prints cookies or response bodies.")
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Show questionnaire field updates, matching details, and request/status diagnostics; never prints cookies or response bodies.",
+    )
     parser.add_argument(
         "--simulate",
         action="store_true",
@@ -876,7 +889,7 @@ Safety:
     )["questionnaire"]
     questionnaire_id = str(questionnaire["id"])
     all_items = items(questionnaire)
-    print(f"Created request {request_id}; questionnaire {questionnaire_id}")
+    verbose_detail(client, f"Created request {request_id}; questionnaire {questionnaire_id}")
 
     inventory = field_by_label(all_items, "Inventory Request Type", type_="RadioButtons")
     if args.batch:
@@ -911,7 +924,7 @@ Safety:
             args.deployed_to, args.deployed_to,
             search_type="DataTable",
         )
-        print(f"Deployment target: user {args.deployed_to}")
+        verbose_detail(client, f"Deployment target: user {args.deployed_to}")
     else:
         city = field_by_label(all_items, "Building Location (City - Country code)", type_="Dropdown")
         events = answer(client, request_id, questionnaire_id, city, args.city)
@@ -948,14 +961,18 @@ Safety:
         if args.cabinet:
             location_summary += f" --> {args.cabinet}"
         if args.batch:
-            print(
+            verbose_detail(
+                client,
                 f"Batch deployment target: location {location_summary}; "
                 f"serials {', '.join(args.batch_serials)}; no user"
             )
         else:
-            print(f"Deployment target: location {location_summary}; dropped by {args.dropped_by}")
+            verbose_detail(
+                client,
+                f"Deployment target: location {location_summary}; dropped by {args.dropped_by}",
+            )
 
-    print("\nReached the dynamic questionnaire path.")
+    verbose_detail(client, "Reached the dynamic questionnaire path.")
     if not args.submit:
         print(f"Dry run: request {request_id} was created but not submitted.")
         return 0

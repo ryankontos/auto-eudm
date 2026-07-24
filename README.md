@@ -82,7 +82,7 @@ python3 inventory_sheet_cli.py --simulate
 
 If Python/OpenSSL rejects the work computer's certificate chain, the client automatically retries that request with the system `curl` trust store. This keeps certificate verification enabled and lets macOS Keychain trust be used. Run with `--verbose` to see when the fallback occurs.
 
-Expected failures are printed as short action-oriented messages. Response bodies, HTML SSO pages, cookies, and raw JSON are not printed; use `--verbose` only for transport-level request/status diagnostics.
+Normal runs show prompts, final request IDs, results, and short action-oriented errors. Response bodies, HTML SSO pages, cookies, and raw JSON are never printed. Add `--verbose` only when you need field-by-field questionnaire progress, matching details, or transport-level diagnostics.
 
 ## Sydney inventory workbook
 

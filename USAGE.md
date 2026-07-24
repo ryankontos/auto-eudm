@@ -30,6 +30,11 @@ and `SIM-ORDER-*` identifiers and never starts Chrome, uses cookies, connects to
 DWP, or changes real data. It tests the interface and validation, not whether
 an actual serial or user exists.
 
+Normal output intentionally stays compact: prompts, previews, final IDs, results,
+and friendly errors are shown. Add `--verbose` only for field-by-field
+questionnaire progress, matches, per-request spreadsheet progress, and safe
+transport diagnostics.
+
 ## Real authentication
 
 The recommended real-DWP path is a dedicated Chrome profile:
@@ -48,7 +53,8 @@ them in source code, shared shell history, or the public repository.
 
 If Python cannot validate a corporate certificate chain, the real client retries
 using macOS system `curl` trust while retaining certificate verification. Add
-`--verbose` to see transport diagnostics; it never prints cookies or bodies.
+`--verbose` to see transport diagnostics, questionnaire field updates, matching
+details, and per-request spreadsheet progress; it never prints cookies or bodies.
 
 ## Direct script
 

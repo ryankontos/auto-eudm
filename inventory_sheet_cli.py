@@ -362,8 +362,10 @@ def execute(
 ) -> list[Outcome]:
     outcomes: list[Outcome] = []
     total = len(actions)
+    print(f"\nSubmitting {total} request{'s' if total != 1 else ''}...")
     for index, action in enumerate(actions, 1):
-        print(
+        dwp.verbose_detail(
+            client,
             f"\n[{index}/{total}] {action.group}: {action.serial} → "
             f"{action.username} ({action.status})"
         )
@@ -443,7 +445,11 @@ Modes:
         action="store_true",
         help="Submit into a local simulator after the preview. Produces SIM-REQ IDs with no browser, network, or DWP changes.",
     )
-    parser.add_argument("--verbose", action="store_true", help="Show safe request/status diagnostics.")
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Show each request, questionnaire field update, match detail, and safe request/status diagnostic.",
+    )
     parser.add_argument("--base", default=os.getenv("DWP_BASE", dwp.DEFAULT_BASE), help="Override DWP REST base URL (HTTPS URL ending in /rest).")
     args = parser.parse_args()
     if args.cookie_mode:
