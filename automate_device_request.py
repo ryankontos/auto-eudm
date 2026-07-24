@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from pathlib import Path
 import subprocess
 import sys
 import ssl
@@ -25,6 +26,39 @@ DEFAULT_BASE = "https://macquarie-dwp.onbmc.com/dwp/rest"
 
 class DWPError(RuntimeError):
     pass
+
+
+def cookie_from_browser(profile: str, app_url: str) -> str:
+    """Open a dedicated Chrome profile, allow SSO, and read its DWP cookies."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as exc:
+        raise DWPError(
+            "Browser mode requires Playwright. Install it with: python3 -m pip install playwright"
+        ) from exc
+    profile_path = str(Path(profile).expanduser())
+    try:
+        with sync_playwright() as playwright:
+            context = playwright.chromium.launch_persistent_context(
+                user_data_dir=profile_path,
+                channel="chrome",
+                headless=False,
+            )
+            page = context.pages[0] if context.pages else context.new_page()
+            page.goto(app_url, wait_until="domcontentloaded", timeout=60_000)
+            print("Chrome opened for DWP authentication. Complete SSO in that window.")
+            input("After the DWP page is signed in, press Enter here to continue: ")
+            cookies = context.cookies()
+            context.close()
+    except Exception as exc:
+        raise DWPError(f"Browser cookie extraction failed: {exc}") from exc
+    host_cookies = [
+        cookie for cookie in cookies
+        if "macquarie-dwp.onbmc.com" in cookie.get("domain", "")
+    ]
+    if not host_cookies:
+        raise DWPError("No macquarie-dwp.onbmc.com cookies found in the browser profile")
+    return "; ".join(f"{cookie['name']}={cookie['value']}" for cookie in host_cookies)
 
 
 @dataclass
@@ -188,13 +222,20 @@ def main() -> int:
     parser.add_argument("--deployed-to", help="Login ID of the user receiving a user deployment")
     parser.add_argument("--dropped-by", help="Login ID of the user who dropped off a location deployment")
     parser.add_argument("--submit", action="store_true", help="Commit the order; otherwise print a dry-run summary")
+    parser.add_argument(
+        "--browser-profile",
+        help="Use a dedicated Chrome profile for SSO and extract DWP cookies automatically",
+    )
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--base", default=os.getenv("DWP_BASE", DEFAULT_BASE))
     args = parser.parse_args()
 
-    cookie = os.getenv("DWP_COOKIE", "").strip()
-    if cookie.lower().startswith("cookie:"):
-        cookie = cookie.split(":", 1)[1].strip()
+    if args.browser_profile:
+        cookie = cookie_from_browser(args.browser_profile, args.base.split("/rest", 1)[0] + "/app/")
+    else:
+        cookie = os.getenv("DWP_COOKIE", "").strip()
+        if cookie.lower().startswith("cookie:"):
+            cookie = cookie.split(":", 1)[1].strip()
     if not cookie:
         raise DWPError("Set DWP_COOKIE to the Cookie header from an authenticated DWP browser session")
     client = Client(args.base, cookie, args.verbose)
