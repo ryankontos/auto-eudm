@@ -6,3 +6,7 @@ __pycache__/
 cookies.txt
 cookie*.txt
 work/
+
+# Local-only DWP captures. These must never be committed to the public repository.
+big.har
+requestform.txt
