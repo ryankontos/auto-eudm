@@ -56,6 +56,8 @@ class Outcome:
     request_id: str | None
     order_id: str | None
     error: str | None
+    submitted: bool = False
+    not_submitted_reason: str | None = None
 
 
 def clean_text(value: Any) -> str | None:
@@ -358,7 +360,7 @@ def print_preview(
 
 
 def execute(
-    client: Any, actions: list[Action], request_for: str
+    client: Any, actions: list[Action], request_for: str, manual_review_enabled: bool
 ) -> list[Outcome]:
     outcomes: list[Outcome] = []
     total = len(actions)
@@ -377,8 +379,18 @@ def execute(
                 deployed_to=action.username,
                 status=action.status,
                 submit=True,
+                manual_review_enabled=manual_review_enabled,
             )
-            outcomes.append(Outcome(action, result.request_id, result.order_id, None))
+            outcomes.append(
+                Outcome(
+                    action,
+                    result.request_id,
+                    result.order_id,
+                    None,
+                    submitted=result.submitted,
+                    not_submitted_reason=result.not_submitted_reason,
+                )
+            )
         except dwp.DWPError as exc:
             request_id = (
                 exc.request_id if isinstance(exc, dwp.DeploymentExecutionError) else None
@@ -401,13 +413,19 @@ def print_results(outcomes: list[Outcome]) -> None:
                     f" (request {outcome.request_id})" if outcome.request_id else ""
                 )
                 print(f"  {outcome.action.serial}: FAILED{request} — {outcome.error}")
+            elif not outcome.submitted:
+                request = f"request {outcome.request_id}" if outcome.request_id else "no request ID"
+                reason = outcome.not_submitted_reason or "not submitted"
+                print(f"  {outcome.action.serial}: NOT SUBMITTED — {request}; {reason}")
             else:
                 order = f" (order {outcome.order_id})" if outcome.order_id else ""
                 print(f"  {outcome.action.serial}: request {outcome.request_id}{order}")
     failures = sum(bool(outcome.error) for outcome in outcomes)
+    not_submitted = sum(not outcome.error and not outcome.submitted for outcome in outcomes)
+    submitted = len(outcomes) - failures - not_submitted
     print(
-        f"\nCompleted: {len(outcomes) - failures} succeeded, {failures} failed, "
-        f"{len(outcomes)} total."
+        f"\nCompleted: {submitted} submitted, {not_submitted} not submitted, "
+        f"{failures} failed, {len(outcomes)} total."
     )
 
 
@@ -425,6 +443,7 @@ Modes:
   --dry-run ends after the preview with zero browser or DWP API activity.
   --simulate continues after confirmation using local SIM-REQ/SIM-ORDER IDs,
   but never opens Chrome, reads cookies, contacts DWP, or changes real data.
+  --manual-review asks for a separate y/n approval after each request is populated.
 """,
     )
     parser.add_argument("file", nargs="?", metavar="FILE", help="Optional .xlsx/.xlsm workbook. If omitted, choose the newest matching Downloads file or enter a path.")
@@ -444,6 +463,13 @@ Modes:
         "--simulate",
         action="store_true",
         help="Submit into a local simulator after the preview. Produces SIM-REQ IDs with no browser, network, or DWP changes.",
+    )
+    parser.add_argument(
+        "--manual-review",
+        "--review",
+        "--manual",
+        action="store_true",
+        help="After the batch preview, display and approve each populated request separately before final submission.",
     )
     parser.add_argument(
         "--verbose",
@@ -511,7 +537,7 @@ Modes:
         simulate=args.simulate,
         verbose=args.verbose,
     )
-    outcomes = execute(client, actions, request_for)
+    outcomes = execute(client, actions, request_for, args.manual_review)
     print_results(outcomes)
     return 1 if any(outcome.error for outcome in outcomes) else 0
 

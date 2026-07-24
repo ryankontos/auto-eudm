@@ -80,6 +80,28 @@ python3 inventory_sheet_cli.py --simulate
 
 `--dry-run` on the spreadsheet CLI stops after the preview. `--simulate` continues through the submission interface locally, making it useful for testing request progress and result grouping.
 
+## Manual review before ordering
+
+Add `--manual-review` (also `--review` or `--manual`) when you want to inspect the populated request and approve its final order with `y` or `n`. The direct script requires `--submit` as well; the interactive wizard and spreadsheet importer already have an overall confirmation, then manual review adds a concise per-request approval.
+
+```bash
+python3 automate_device_request.py --simulate --serial ABC1234 --request-for tester --target user --status 'Deployed - New Stock' --deployed-to simulated.user --submit --manual-review
+```
+
+```bash
+python3 interactive_device_request.py --simulate --manual-review
+```
+
+```bash
+python3 inventory_sheet_cli.py --simulate --manual-review
+```
+
+The review shows the request ID, requester, serial or serial list, status, and user or location destination. Declining leaves the populated request un-ordered. Spreadsheet results label it `NOT SUBMITTED` and include the request ID.
+
+Serial and user matching is strict. A zero-match or ambiguous exact match is reported in a friendly message. In spreadsheet runs, each failed action remains in the final grouped results and includes the request ID when DWP had already created one.
+
+Simulation can demonstrate these outcomes safely: use serial `NO-MATCH` for no returned device, serial `AMBIGUOUS` for two returned devices, user `no.user` for no person, or user `ambiguous.user` for two matching people.
+
 If Python/OpenSSL rejects the work computer's certificate chain, the client automatically retries that request with the system `curl` trust store. This keeps certificate verification enabled and lets macOS Keychain trust be used. Run with `--verbose` to see when the fallback occurs.
 
 Normal runs show prompts, final request IDs, results, and short action-oriented errors. Response bodies, HTML SSO pages, cookies, and raw JSON are never printed. Add `--verbose` only when you need field-by-field questionnaire progress, matching details, or transport-level diagnostics.

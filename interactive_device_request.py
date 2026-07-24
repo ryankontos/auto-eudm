@@ -79,7 +79,7 @@ def select_lookup_person(
     questionnaire_id: str,
     table: dict[str, Any],
     query: str,
-) -> None:
+) -> str:
     result = dwp.request_step(
         client,
         "Could not search for a user",
@@ -90,8 +90,9 @@ def select_lookup_person(
     rows = result.get("multiColumnOptions") or []
     if not rows:
         raise dwp.DWPError(f"No users matched {query!r}.")
-    _, value = choose(table["label"], row_choices(rows))
+    display, value = choose(table["label"], row_choices(rows))
     dwp.answer(client, request_id, questionnaire_id, table, value)
+    return display
 
 
 def main() -> int:
@@ -105,6 +106,10 @@ def main() -> int:
 Simulation:
   --simulate runs the same numbered flow using sample users, locations, devices,
   and SIM-REQ IDs. It never opens Chrome or contacts DWP.
+
+Review:
+  --manual-review displays a concise summary of the populated request before the
+  final y/n submission prompt.
 """,
     )
     parser.add_argument(
@@ -117,6 +122,13 @@ Simulation:
         "--simulate",
         action="store_true",
         help="Local rehearsal with sample choices and SIM-REQ IDs; no Chrome, network, or DWP changes.",
+    )
+    parser.add_argument(
+        "--manual-review",
+        "--review",
+        "--manual",
+        action="store_true",
+        help="Show the populated request summary before the final y/n submission prompt.",
     )
     parser.add_argument(
         "--verbose",
@@ -197,6 +209,8 @@ Simulation:
         )
         device_table = dwp.field_by_label(all_items, "----- Device List", type_="DataTable")
         devices = dwp.option_data(events, device_table["id"])
+        if not devices:
+            raise dwp.DWPError(f"No devices matched serial {serials[0]!r}.")
         _, device_value = choose("Select device", row_choices(devices))
         dwp.answer(client, request_id, questionnaire_id, device_table, device_value)
 
@@ -212,13 +226,16 @@ Simulation:
         user_table = dwp.field_by_label(
             all_items, "Please select user - device has been deployed to", type_="DataTable"
         )
-        select_lookup_person(
+        deployed_to_display = select_lookup_person(
             client,
             request_id,
             questionnaire_id,
             user_table,
             prompt_text("Search deployed-to user"),
         )
+        review_target = "user"
+        review_destination = deployed_to_display
+        review_detail = None
     else:
         city_item = dwp.field_by_label(
             all_items, "Building Location (City - Country code)", type_="Dropdown"
@@ -229,8 +246,13 @@ Simulation:
             all_items, "Please select location", type_="DataTable"
         )
         locations = dwp.option_data(events, location_table["id"])
-        _, location_value = choose("Specific location", row_choices(locations))
+        if not locations:
+            raise dwp.DWPError("The selected city returned no selectable locations.")
+        location_display, location_value = choose("Specific location", row_choices(locations))
         dwp.answer(client, request_id, questionnaire_id, location_table, location_value)
+        review_target = "location"
+        review_destination = location_display
+        review_detail = "No associated user" if mode == "batch" else None
 
         returned = dwp.field_by_label(
             all_items, "Is this a return from a user", type_="RadioButtons"
@@ -262,13 +284,30 @@ Simulation:
                     search_item,
                     prompt_text("Search drop-off user"),
                 )
-                _, dropoff_value = choose(
-                    "Select drop-off user", row_choices(dwp.option_data(events, table["id"]))
+                dropoff_rows = dwp.option_data(events, table["id"])
+                if not dropoff_rows:
+                    raise dwp.DWPError("No users matched the drop-off user search.")
+                dropoff_display, dropoff_value = choose(
+                    "Select drop-off user", row_choices(dropoff_rows)
                 )
                 dwp.answer(client, request_id, questionnaire_id, table, dropoff_value)
+                review_detail = f"Dropped by {dropoff_display}"
 
-    print(f"\nRequest {request_id} is populated but not submitted.")
-    if not yes_no("Submit this request now?"):
+    if args.manual_review:
+        approved = dwp.manual_review(
+            request_id=request_id,
+            request_for=request_for,
+            serials=serials,
+            status=status_display,
+            target=review_target,
+            destination=review_destination,
+            detail=review_detail,
+        )
+    else:
+        print(f"\nRequest {request_id} is populated but not submitted.")
+        approved = yes_no("Submit this request now?")
+    if not approved:
+        print(f"Not submitted. Request {request_id} remains populated for review.")
         return 0
     order = dwp.request_step(
         client,

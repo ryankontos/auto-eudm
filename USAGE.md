@@ -35,6 +35,29 @@ and friendly errors are shown. Add `--verbose` only for field-by-field
 questionnaire progress, matches, per-request spreadsheet progress, and safe
 transport diagnostics.
 
+## Manual review before ordering
+
+All frontends support `--manual-review` (also available as `--review` or
+`--manual`). It
+displays the values already populated in the request — request ID, requester,
+serial or serial list, status, and destination — then asks for an explicit
+`y`/`n` before the final DWP order. It does not alter any answers.
+
+The direct script requires `--submit --manual-review`; otherwise it would have
+no final order to approve. The interactive wizard and spreadsheet importer still
+keep their existing overall confirmation. Spreadsheet manual review additionally
+asks for an approval after every request has been populated, so each device can
+be accepted or declined independently.
+
+When a review is declined, the populated request remains un-ordered. Spreadsheet
+results report this as `NOT SUBMITTED` with the request ID, separately from
+successful submissions and failures.
+
+The simulator includes safe matching-error fixtures: serial `NO-MATCH` returns
+no device, serial `AMBIGUOUS` returns two devices, `no.user` returns no person,
+and `ambiguous.user` returns two people. They are useful for checking error
+presentation without DWP access.
+
 ## Real authentication
 
 The recommended real-DWP path is a dedicated Chrome profile:
@@ -93,6 +116,8 @@ Local direct-script rehearsal:
 python3 automate_device_request.py --simulate --serial ABC1234 --request-for tester --target user --status 'Deployed - New Stock' --deployed-to simulated.user --submit
 ```
 
+Add `--manual-review` to the command above to rehearse the final review screen.
+
 ## Interactive wizard
 
 ```bash
@@ -112,6 +137,9 @@ Use this to rehearse every prompt locally:
 ```bash
 python3 interactive_device_request.py --simulate
 ```
+
+Add `--manual-review` to see the populated request summary immediately before
+the final approval.
 
 ## Spreadsheet importer
 
@@ -173,6 +201,12 @@ Full local rehearsal after the preview:
 python3 inventory_sheet_cli.py --simulate
 ```
 
+For independent per-device approval after the batch preview:
+
+```bash
+python3 inventory_sheet_cli.py --simulate --manual-review
+```
+
 ## Troubleshooting
 
 | Problem | Action |
@@ -181,6 +215,8 @@ python3 inventory_sheet_cli.py --simulate
 | Cookie mode redirects to SSO | Refresh the browser session and replace the whole `DWP_COOKIE`, or use Chrome mode. |
 | Certificate validation error | Retry normally; macOS `curl` trust is attempted automatically. Add `--verbose` to confirm. |
 | No user, location, or serial match | Check spelling or use the live interactive wizard to see DWP’s choices. |
+| More than one exact serial/user match | Refine the serial or user ID; the automation deliberately refuses to guess. |
+| `NOT SUBMITTED` in spreadsheet results | Manual review declined the final order; the shown request ID is populated but not ordered. |
 | No `Bookings 2026` tab | Select the correct tab from the numbered fallback list. |
 | No spreadsheet actions | Check date, red formatting, J serials, and D/F user data. |
 | Duplicate serial error | Correct the source sheet before submitting; duplicate requests are blocked deliberately. |

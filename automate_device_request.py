@@ -45,6 +45,8 @@ class DeploymentExecutionError(DWPError):
 class DeploymentResult:
     request_id: str
     order_id: str | None
+    submitted: bool = False
+    not_submitted_reason: str | None = None
 
 
 def http_error_message(status: int, action: str) -> str:
@@ -81,6 +83,34 @@ def verbose_detail(client: Any, message: str) -> None:
     """Show implementation-level progress only when the caller asks for it."""
     if getattr(client, "verbose", False):
         print(message, file=sys.stderr)
+
+
+def manual_review(
+    *,
+    request_id: str,
+    request_for: str,
+    serials: list[str],
+    status: str,
+    target: str,
+    destination: str,
+    detail: str | None = None,
+) -> bool:
+    """Display the populated values and require an explicit final approval."""
+    print("\nReview before final submission")
+    print(f"  Request: {request_id}")
+    print(f"  Request for: {request_for}")
+    print(f"  Device{'s' if len(serials) != 1 else ''}: {', '.join(serials)}")
+    print(f"  Change status to: {status}")
+    print(f"  Deploy to: {target} — {destination}")
+    if detail:
+        print(f"  Details: {detail}")
+    while True:
+        response = input("Submit this populated request? [y/N]: ").strip().casefold()
+        if not response or response in ("n", "no"):
+            return False
+        if response in ("y", "yes"):
+            return True
+        print("Enter y or n.")
 
 
 class BrowserClient:
@@ -265,6 +295,21 @@ class SimulationClient:
             return {"questionnaire": self.questionnaire()}
         if method == "POST" and path.endswith("/lookup"):
             query = str((payload or {}).get("query", "")).strip() or "simulated.user"
+            if query.casefold() == "no.user":
+                return {"multiColumnOptions": []}
+            if query.casefold() == "ambiguous.user":
+                return {
+                    "multiColumnOptions": [
+                        {
+                            "dataValue": "SIM-USER:ambiguous.one",
+                            "displayValue": [query, "Simulated User One", query],
+                        },
+                        {
+                            "dataValue": "SIM-USER:ambiguous.two",
+                            "displayValue": [query, "Simulated User Two", query],
+                        },
+                    ]
+                }
             return {
                 "multiColumnOptions": [
                     {
@@ -278,6 +323,16 @@ class SimulationClient:
             answers = (payload or {}).get("answers") or []
             value = str(answers[0]) if answers else ""
             if question_id == "serial-search":
+                if value.casefold() == "no-match":
+                    return self._event("device-list", [])
+                if value.casefold() == "ambiguous":
+                    return self._event(
+                        "device-list",
+                        [
+                            {"dataValue": "SIM-ASSET:ambiguous-one", "displayValue": [value, "Asset One"]},
+                            {"dataValue": "SIM-ASSET:ambiguous-two", "displayValue": [value, "Asset Two"]},
+                        ],
+                    )
                 return self._event(
                     "device-list",
                     [{"dataValue": f"SIM-ASSET:{value}", "displayValue": [value, value]}],
@@ -517,13 +572,25 @@ def merge_events(*event_maps: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
-def choose_data_value(rows: list[dict[str, Any]], needle: str, *, exact: bool = True) -> str:
+def choose_data_value(
+    rows: list[dict[str, Any]], needle: str, *, exact: bool = True, kind: str = "option"
+) -> str:
     needle_l = needle.casefold()
+    matches = []
     for row in rows:
         values = [str(v) for v in row.get("displayValue", [])]
-        if any((needle_l == v.casefold() if exact else needle_l in v.casefold()) for v in values):
-            return row["dataValue"]
-    raise DWPError(f"No returned option matched {needle!r}.")
+        if any((needle_l == value.casefold() if exact else needle_l in value.casefold()) for value in values):
+            matches.append(row)
+    if not matches:
+        qualifier = "exact " if exact else ""
+        raise DWPError(f"No {qualifier}{kind} match was returned for {needle!r}.")
+    if len(matches) > 1:
+        examples = [" → ".join(str(value) for value in row.get("displayValue", []) if str(value)) for row in matches[:3]]
+        suffix = f" Examples: {'; '.join(examples)}." if examples else ""
+        raise DWPError(
+            f"More than one {kind} matched {needle!r}; refine the value before retrying.{suffix}"
+        )
+    return matches[0]["dataValue"]
 
 
 def choose_location_data_value(
@@ -584,8 +651,10 @@ def batch_asset_selection(
         ]
         if len(matches) == 1:
             selected.append(matches[0]["dataValue"])
+        elif not matches:
+            missing.append(f"{serial} (no exact serial match)")
         else:
-            missing.append(serial)
+            missing.append(f"{serial} (more than one exact serial match)")
     if missing:
         raise DWPError(
             "The bulk search did not uniquely match these serials: " + ", ".join(missing)
@@ -594,7 +663,7 @@ def batch_asset_selection(
 
 
 def lookup_and_answer(
-    client: Client,
+    client: Any,
     request_id: str,
     questionnaire_id: str,
     all_items: list[dict[str, Any]],
@@ -622,6 +691,7 @@ def lookup_and_answer(
         [{"dataValue": row["dataValue"], "displayValue": row.get("displayValue", [])} for row in rows],
         match,
         exact=True,
+        kind="user",
     )
     answer(client, request_id, questionnaire_id, table, value)
 
@@ -634,6 +704,7 @@ def deploy_device_to_user(
     deployed_to: str,
     status: str,
     submit: bool = True,
+    manual_review_enabled: bool = False,
 ) -> DeploymentResult:
     """Populate and optionally submit one user deployment request."""
     for label, value in (
@@ -662,8 +733,10 @@ def deploy_device_to_user(
             request_id=request_id,
             serial=serial,
             deployed_to=deployed_to,
+            request_for=request_for,
             status=status,
             submit=submit,
+            manual_review_enabled=manual_review_enabled,
         )
     except DWPError as exc:
         raise DeploymentExecutionError(request_id, str(exc)) from exc
@@ -675,8 +748,10 @@ def _complete_user_deployment(
     request_id: str,
     serial: str,
     deployed_to: str,
+    request_for: str,
     status: str,
     submit: bool,
+    manual_review_enabled: bool,
 ) -> DeploymentResult:
     questionnaire = request_step(
         client,
@@ -697,7 +772,7 @@ def _complete_user_deployment(
     events = answer(client, request_id, questionnaire_id, serial_field, serial)
     device_table = field_by_label(all_items, "----- Device List", type_="DataTable")
     devices = option_data(events, device_table["id"])
-    device_value = choose_data_value(devices, serial, exact=True)
+    device_value = choose_data_value(devices, serial, exact=True, kind="serial number")
     answer(client, request_id, questionnaire_id, device_table, device_value)
 
     status_item = field_by_label(all_items, "Change Status to", type_="Dropdown")
@@ -715,7 +790,24 @@ def _complete_user_deployment(
     )
     if not submit:
         verbose_detail(client, f"Request {request_id} is populated but not submitted.")
-        return DeploymentResult(request_id=request_id, order_id=None)
+        return DeploymentResult(
+            request_id=request_id,
+            order_id=None,
+            not_submitted_reason="final submission was not requested",
+        )
+    if manual_review_enabled and not manual_review(
+        request_id=request_id,
+        request_for=request_for,
+        serials=[serial],
+        status=status,
+        target="user",
+        destination=deployed_to,
+    ):
+        return DeploymentResult(
+            request_id=request_id,
+            order_id=None,
+            not_submitted_reason="manual review declined final submission",
+        )
 
     order = request_step(
         client,
@@ -729,7 +821,7 @@ def _complete_user_deployment(
         client,
         f"Submitted request {request_id}{f' (order {order_id})' if order_id else ''}.",
     )
-    return DeploymentResult(request_id=request_id, order_id=order_id)
+    return DeploymentResult(request_id=request_id, order_id=order_id, submitted=True)
 
 
 def validate_args(args: argparse.Namespace) -> bool:
@@ -819,6 +911,7 @@ def main() -> int:
 Safety:
   Arguments are checked before authentication or API calls. Without --submit,
   DWP still receives a created and populated request, but no final order is sent.
+  --manual-review shows the populated values and asks before the final order.
   Use --simulate for a completely local rehearsal; it produces SIM-REQ IDs.
 """,
     )
@@ -853,6 +946,13 @@ Safety:
         help="Send the final DWP order. Without it, the request is populated but not ordered.",
     )
     parser.add_argument(
+        "--manual-review",
+        "--review",
+        "--manual",
+        action="store_true",
+        help="With --submit, show the populated request summary and require y/n approval before ordering.",
+    )
+    parser.add_argument(
         "--browser-profile",
         help="Dedicated installed-Chrome profile for SSO; cannot be combined with DWP_COOKIE.",
     )
@@ -870,6 +970,8 @@ Safety:
     args = parser.parse_args()
 
     user_deployment = validate_args(args)
+    if args.manual_review and not args.submit:
+        raise DWPError("--manual-review requires --submit; without --submit no final order is sent")
 
     client = open_client(
         base=args.base,
@@ -909,7 +1011,12 @@ Safety:
         events = answer(client, request_id, questionnaire_id, serial_field, args.serial)
         device_table = field_by_label(all_items, "----- Device List", type_="DataTable")
         devices = option_data(events, device_table["id"])
-        device_value = choose_data_value(devices, args.serial, exact=True)
+        try:
+            device_value = choose_data_value(
+                devices, args.serial, exact=True, kind="serial number"
+            )
+        except DWPError as exc:
+            raise DeploymentExecutionError(request_id, str(exc)) from exc
         answer(client, request_id, questionnaire_id, device_table, device_value)
 
     status = field_by_label(all_items, "Change Status to", type_="Dropdown")
@@ -917,13 +1024,16 @@ Safety:
 
     if user_deployment:
         # User deployments expose a server-backed "deployed to" table.
-        lookup_and_answer(
-            client, request_id, questionnaire_id, all_items,
-            "Please select user - device has been deployed to",
-            "Please select user - device has been deployed to",
-            args.deployed_to, args.deployed_to,
-            search_type="DataTable",
-        )
+        try:
+            lookup_and_answer(
+                client, request_id, questionnaire_id, all_items,
+                "Please select user - device has been deployed to",
+                "Please select user - device has been deployed to",
+                args.deployed_to, args.deployed_to,
+                search_type="DataTable",
+            )
+        except DWPError as exc:
+            raise DeploymentExecutionError(request_id, str(exc)) from exc
         verbose_detail(client, f"Deployment target: user {args.deployed_to}")
     else:
         city = field_by_label(all_items, "Building Location (City - Country code)", type_="Dropdown")
@@ -955,7 +1065,9 @@ Safety:
                 client, request_id, questionnaire_id, dropoff_search, args.dropped_by
             )
             dropoff_rows = option_data(dropoff_events, dropoff_table["id"])
-            dropoff_value = choose_data_value(dropoff_rows, args.dropped_by, exact=True)
+            dropoff_value = choose_data_value(
+                dropoff_rows, args.dropped_by, exact=True, kind="drop-off user"
+            )
             answer(client, request_id, questionnaire_id, dropoff_table, dropoff_value)
         location_summary = " --> ".join([args.building, args.floor, args.room])
         if args.cabinet:
@@ -975,6 +1087,26 @@ Safety:
     verbose_detail(client, "Reached the dynamic questionnaire path.")
     if not args.submit:
         print(f"Dry run: request {request_id} was created but not submitted.")
+        return 0
+    if user_deployment:
+        review_target = "user"
+        review_destination = args.deployed_to
+        review_detail = None
+    else:
+        review_target = "location"
+        review_destination = location_summary
+        review_detail = "No associated user" if args.batch else f"Dropped by {args.dropped_by}"
+    review_serials = args.batch_serials if args.batch else [args.serial]
+    if args.manual_review and not manual_review(
+        request_id=request_id,
+        request_for=args.request_for,
+        serials=review_serials,
+        status=args.status,
+        target=review_target,
+        destination=review_destination,
+        detail=review_detail,
+    ):
+        print(f"Not submitted. Request {request_id} remains populated for review.")
         return 0
     order = request_step(
         client,
@@ -996,6 +1128,12 @@ if __name__ == "__main__":
         raise SystemExit(130)
     except EOFError:
         print("Input ended before the request was complete.", file=sys.stderr)
+        raise SystemExit(2)
+    except DeploymentExecutionError as exc:
+        print(
+            f"Error: Request {exc.request_id} was created but not ordered: {exc}",
+            file=sys.stderr,
+        )
         raise SystemExit(2)
     except DWPError as exc:
         print(f"Error: {exc}", file=sys.stderr)
