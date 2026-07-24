@@ -60,19 +60,12 @@ def row_choices(rows: list[dict[str, Any]]) -> list[tuple[str, str]]:
 
 
 def open_client(args: argparse.Namespace) -> Any:
-    if args.browser_profile:
-        return dwp.browser_client_from_profile(
-            args.browser_profile,
-            args.base.split("/rest", 1)[0] + "/app/",
-            args.base,
-            args.verbose,
-        )
-    cookie = os.getenv("DWP_COOKIE", "").strip()
-    if cookie.lower().startswith("cookie:"):
-        cookie = cookie.split(":", 1)[1].strip()
-    if not cookie:
-        raise dwp.DWPError("Set DWP_COOKIE or use --browser-profile")
-    return dwp.Client(args.base, cookie, args.verbose)
+    return dwp.open_client(
+        base=args.base,
+        browser_profile=args.browser_profile,
+        simulate=args.simulate,
+        verbose=args.verbose,
+    )
 
 
 def select_lookup_person(
@@ -104,6 +97,11 @@ def main() -> int:
         help="Dedicated installed-Chrome profile used for SSO",
     )
     parser.add_argument("--cookie-mode", action="store_true", help="Use DWP_COOKIE instead of Chrome")
+    parser.add_argument(
+        "--simulate",
+        action="store_true",
+        help="Run the full wizard locally without authentication, network, or DWP changes",
+    )
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--base", default=os.getenv("DWP_BASE", dwp.DEFAULT_BASE))
     args = parser.parse_args()

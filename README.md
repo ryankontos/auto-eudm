@@ -47,6 +47,36 @@ It launches installed Google Chrome with the dedicated `~/.dwp-device-request-ch
 python3 interactive_device_request.py --cookie-mode
 ```
 
+## Local simulation
+
+Every CLI has `--simulate`. Simulation uses the same validation and interface but substitutes an in-memory DWP service, so it never opens Chrome, authenticates, connects to the network, or changes real DWP data.
+
+Simulate a direct user deployment:
+
+```bash
+python3 automate_device_request.py --simulate --serial ABC1234 --request-for tester --target user --status 'Deployed - New Stock' --deployed-to simulated.user --submit
+```
+
+Simulate a direct location deployment:
+
+```bash
+python3 automate_device_request.py --simulate --serial ABC1234 --request-for tester --target location --status 'Used Stock' --city 'Sydney, AU' --building '1 Elizabeth Street' --floor 'Level 15' --room 'Store Room' --dropped-by simulated.user --submit
+```
+
+Simulate the interactive questionnaire:
+
+```bash
+python3 interactive_device_request.py --simulate
+```
+
+Simulate spreadsheet submissions, including generated `SIM-REQ-...` request IDs:
+
+```bash
+python3 inventory_sheet_cli.py --simulate
+```
+
+`--dry-run` on the spreadsheet CLI stops after the preview. `--simulate` continues through the submission interface locally, making it useful for testing request progress and result grouping.
+
 If Python/OpenSSL rejects the work computer's certificate chain, the client automatically retries that request with the system `curl` trust store. This keeps certificate verification enabled and lets macOS Keychain trust be used. Run with `--verbose` to see when the fallback occurs.
 
 Expected failures are printed as short action-oriented messages. Response bodies, HTML SSO pages, cookies, and raw JSON are not printed; use `--verbose` only for transport-level request/status diagnostics.
@@ -65,7 +95,7 @@ For the normal Chrome-based flow on a fresh checkout, install both requirements 
 python3 -m pip install -r requirements-browser.txt -r requirements-sheet.txt
 ```
 
-Run the guided importer. With no file argument it offers the newest `Inventory Tracking - Sydney*.xlsx` or `.xlsm` file in Downloads:
+Run the guided importer. With no file argument it offers the newest `Inventory Tracking - Sydney*.xlsx` or `.xlsm` file in Downloads. It automatically uses a sheet named `Bookings 2026`; if that sheet is absent, it displays the available sheet names and asks you to choose one:
 
 ```bash
 python3 inventory_sheet_cli.py

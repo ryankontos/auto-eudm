@@ -119,6 +119,16 @@ def username_for(row: tuple[Any, ...]) -> tuple[str | None, bool]:
     return None, False
 
 
+def select_workbook_sheet(workbook: Any) -> Any:
+    if "Bookings 2026" in workbook.sheetnames:
+        return workbook["Bookings 2026"]
+    selected = choose_number(
+        "The workbook has no sheet named 'Bookings 2026'. Select a sheet",
+        list(workbook.sheetnames),
+    )
+    return workbook[workbook.sheetnames[selected]]
+
+
 def load_sheet(path: Path) -> tuple[str, list[SheetRow]]:
     try:
         from openpyxl import load_workbook
@@ -136,7 +146,7 @@ def load_sheet(path: Path) -> tuple[str, list[SheetRow]]:
             f"Could not read {path.name}. Use an unencrypted .xlsx or .xlsm workbook."
         ) from exc
     try:
-        sheet = workbook["Bookings 2026"] if "Bookings 2026" in workbook.sheetnames else workbook.active
+        sheet = select_workbook_sheet(workbook)
         rows: list[SheetRow] = []
         for values in sheet.iter_rows(min_row=2, min_col=1, max_col=12):
             deployment_date = normalize_date(values[0].value, workbook.epoch)
@@ -408,6 +418,11 @@ def main() -> int:
         help="Dedicated installed-Chrome profile used for SSO",
     )
     parser.add_argument("--cookie-mode", action="store_true", help="Use DWP_COOKIE instead of Chrome")
+    parser.add_argument(
+        "--simulate",
+        action="store_true",
+        help="Run submissions locally without authentication, network, or DWP changes",
+    )
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--base", default=os.getenv("DWP_BASE", dwp.DEFAULT_BASE))
     args = parser.parse_args()
@@ -467,6 +482,7 @@ def main() -> int:
     client = dwp.open_client(
         base=args.base,
         browser_profile=args.browser_profile,
+        simulate=args.simulate,
         verbose=args.verbose,
     )
     outcomes = execute(client, actions, request_for)

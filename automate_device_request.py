@@ -125,6 +125,184 @@ class BrowserClient:
             raise DWPError(f"{method} {path} returned non-JSON data") from exc
 
 
+class SimulationClient:
+    """Small in-memory implementation of the DWP paths used by these CLIs."""
+
+    def __init__(self, verbose: bool = False) -> None:
+        self.verbose = verbose
+        self.request_number = 0
+        self.order_number = 0
+
+    @staticmethod
+    def _item(
+        type_: str,
+        id_: str,
+        label: str,
+        options: list[tuple[str, str]] | None = None,
+    ) -> dict[str, Any]:
+        item: dict[str, Any] = {"type": type_, "id": id_, "label": label}
+        if options is not None:
+            item["options"] = [
+                {"dataValue": data, "displayValue": display}
+                for data, display in options
+            ]
+        return item
+
+    def questionnaire(self) -> dict[str, Any]:
+        status_options = [
+            ("Deployed - Existing Stock", "Deployed - Existing Stock"),
+            ("Deployed - New Stock", "Deployed - New Stock"),
+            ("Loan", "Deployed - Loan"),
+            ("Pending Return", "Deployed - Pending Return"),
+            ("New Stock", "New Stock"),
+            ("Used Stock", "Used Stock"),
+            ("Pending Pickup", "Pending Pickup"),
+        ]
+        page_items = [
+            self._item(
+                "RadioButtons",
+                "inventory-type",
+                "Inventory Request Type",
+                [("ADD", "Search Full devices Inventory"), ("BULK", "BULK by Serial Number")],
+            ),
+            self._item("TextArea", "serial-list", "Please add serial number list"),
+            self._item(
+                "RadioButtons",
+                "search-by",
+                "Search by",
+                [("serial", "Hostname/Serial Number"), ("userid", "User ID or Full Name")],
+            ),
+            self._item("TextField", "serial-search", "Type Hostname or Serial Number"),
+            self._item("DataTable", "device-list", "----- Device List"),
+            self._item("MultiSelectDataTable", "bulk-assets", "Select Asset"),
+            self._item("Dropdown", "status", "Change Status to", status_options),
+            self._item(
+                "DataTable",
+                "deployed-user",
+                "Please select user - device has been deployed to",
+            ),
+            self._item(
+                "Dropdown",
+                "city",
+                "Building Location (City - Country code)",
+                [
+                    ("Sydney, AU", "Sydney, AU"),
+                    ("Melbourne, AU", "Melbourne, AU"),
+                    ("London, UK", "London, UK"),
+                ],
+            ),
+            self._item("DataTable", "location", "Please select location"),
+            self._item(
+                "RadioButtons",
+                "is-return",
+                "Is this a return from a user",
+                [("YES", "Yes"), ("NO", "No")],
+            ),
+            self._item("YesNo", "add-dropoff", "Add Name of person who dropped off device"),
+            self._item(
+                "TextField",
+                "dropoff-search",
+                "Search Name or User ID that dropped off devices",
+            ),
+            self._item(
+                "DataTable",
+                "dropoff-user",
+                "Select person who dropped device/s off",
+            ),
+        ]
+        return {"id": "SIM-QUESTIONNAIRE", "pages": [{"pageItems": page_items}]}
+
+    @staticmethod
+    def _event(question_id: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            question_id: [
+                {
+                    "type": "ListOptionsChange",
+                    "questionMultiColumn": {"data": rows},
+                }
+            ]
+        }
+
+    @staticmethod
+    def _locations(city: str) -> list[dict[str, Any]]:
+        locations = {
+            "Sydney, AU": [
+                ("SIM-LOC-SYD-15", ["1 Elizabeth Street", "Level 15", "Store Room"]),
+                ("SIM-LOC-SYD-10", ["1 Elizabeth Street", "Level 10", "TA Storage"]),
+                ("SIM-LOC-SYD-50MP", ["50 Martin Place", "Level 05", "Hardware Room"]),
+            ],
+            "Melbourne, AU": [
+                ("SIM-LOC-MEL", ["Simulation Building", "Level 01", "IT Store"]),
+            ],
+            "London, UK": [
+                ("SIM-LOC-LON", ["28 Ropemaker Street", "Level 08", "Build Room"]),
+            ],
+        }
+        return [
+            {"dataValue": data_value, "displayValue": display}
+            for data_value, display in locations.get(city, [])
+        ]
+
+    def request(self, method: str, path: str, payload: Any | None = None) -> Any:
+        if self.verbose:
+            print(f"SIMULATE {method} {path}", file=sys.stderr)
+        if method == "POST" and path == "v2/sbe/services/requests":
+            self.request_number += 1
+            return {"requests": [{"requestId": f"SIM-REQ-{self.request_number:04d}"}]}
+        if method == "GET" and path.endswith(
+            "/questionnaire?timezoneId=Australia/Sydney"
+        ):
+            return {"questionnaire": self.questionnaire()}
+        if method == "POST" and path.endswith("/lookup"):
+            query = str((payload or {}).get("query", "")).strip() or "simulated.user"
+            return {
+                "multiColumnOptions": [
+                    {
+                        "dataValue": f"SIM-USER:{query}",
+                        "displayValue": [query, "Simulated User", query],
+                    }
+                ]
+            }
+        if method == "POST" and path.endswith("/questionnaire/answers"):
+            question_id = str((payload or {}).get("questionId", ""))
+            answers = (payload or {}).get("answers") or []
+            value = str(answers[0]) if answers else ""
+            if question_id == "serial-search":
+                return self._event(
+                    "device-list",
+                    [{"dataValue": f"SIM-ASSET:{value}", "displayValue": [value, value]}],
+                )
+            if question_id == "serial-list":
+                serials = [serial.strip() for serial in value.split(",") if serial.strip()]
+                return self._event(
+                    "bulk-assets",
+                    [
+                        {
+                            "dataValue": f"SIM-ASSET:{serial}",
+                            "displayValue": [serial, serial],
+                        }
+                        for serial in serials
+                    ],
+                )
+            if question_id == "city":
+                return self._event("location", self._locations(value))
+            if question_id == "dropoff-search":
+                return self._event(
+                    "dropoff-user",
+                    [
+                        {
+                            "dataValue": f"SIM-USER:{value}",
+                            "displayValue": [value, "Simulated User", value],
+                        }
+                    ],
+                )
+            return {}
+        if method == "POST" and path == "v2/sbe/orders":
+            self.order_number += 1
+            return {"id": f"SIM-ORDER-{self.order_number:04d}"}
+        raise DWPError(f"Simulation does not implement {method} {path}.")
+
+
 def browser_client_from_profile(profile: str, app_url: str, base: str, verbose: bool) -> BrowserClient:
     try:
         from playwright.sync_api import sync_playwright
@@ -158,9 +336,13 @@ def open_client(
     *,
     base: str = DEFAULT_BASE,
     browser_profile: str | None = None,
+    simulate: bool = False,
     verbose: bool = False,
 ) -> Any:
     """Open one authenticated client that can be reused for many requests."""
+    if simulate:
+        print("Simulation mode: no browser, authentication, network, or DWP data will be used.")
+        return SimulationClient(verbose)
     if browser_profile:
         return browser_client_from_profile(
             browser_profile,
@@ -603,7 +785,11 @@ def validate_args(args: argparse.Namespace) -> bool:
         if args.batch and args.dropped_by:
             raise DWPError("Batch location mode does not accept --dropped-by")
 
-    if args.browser_profile and os.getenv("DWP_COOKIE", "").strip():
+    if (
+        not getattr(args, "simulate", False)
+        and args.browser_profile
+        and os.getenv("DWP_COOKIE", "").strip()
+    ):
         raise DWPError("Choose either --browser-profile or DWP_COOKIE, not both")
     return user_deployment
 
@@ -634,6 +820,11 @@ def main() -> int:
         help="Use a dedicated authenticated Chrome context for SSO and API calls",
     )
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument(
+        "--simulate",
+        action="store_true",
+        help="Run the full flow locally without authentication, network, or DWP changes",
+    )
     parser.add_argument("--base", default=os.getenv("DWP_BASE", DEFAULT_BASE))
     args = parser.parse_args()
 
@@ -642,6 +833,7 @@ def main() -> int:
     client = open_client(
         base=args.base,
         browser_profile=args.browser_profile,
+        simulate=args.simulate,
         verbose=args.verbose,
     )
     created = request_step(client, "Could not create the DWP request", "POST", "v2/sbe/services/requests", {
