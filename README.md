@@ -48,6 +48,8 @@ python3 interactive_device_request.py --cookie-mode
 
 If Python/OpenSSL rejects the work computer's certificate chain, the client automatically retries that request with the system `curl` trust store. This keeps certificate verification enabled and lets macOS Keychain trust be used. Run with `--verbose` to see when the fallback occurs.
 
+Expected failures are printed as short action-oriented messages. Response bodies, HTML SSO pages, cookies, and raw JSON are not printed; use `--verbose` only for transport-level request/status diagnostics.
+
 User deployment:
 
 ```bash

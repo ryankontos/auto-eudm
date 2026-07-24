@@ -30,6 +30,36 @@ class DWPError(RuntimeError):
     pass
 
 
+def http_error_message(status: int, action: str) -> str:
+    messages = {
+        400: "The service rejected the request data.",
+        401: "Authentication was rejected. Refresh the DWP login and try again.",
+        403: "Your account is not allowed to perform this request.",
+        404: "The DWP endpoint or questionnaire field was not found.",
+        409: "DWP reported a conflict with this request.",
+        422: "DWP rejected one of the selected values.",
+    }
+    if status >= 500:
+        detail = "The DWP service is temporarily unavailable."
+    else:
+        detail = messages.get(status, f"DWP returned HTTP {status}.")
+    return f"{action}: {detail}"
+
+
+def is_sso_html(raw: str) -> bool:
+    sample = raw[:4000].casefold()
+    return "single sign on" in sample or "redirecting to single sign" in sample
+
+
+def request_step(
+    client: Any, action: str, method: str, path: str, payload: Any | None = None
+) -> Any:
+    try:
+        return client.request(method, path, payload)
+    except DWPError as exc:
+        raise DWPError(f"{action}: {exc}") from exc
+
+
 class BrowserClient:
     """API client that stays inside the authenticated Playwright browser context."""
 
@@ -50,20 +80,32 @@ class BrowserClient:
         }
         if body is not None:
             headers["Content-Type"] = "application/json"
-        response = self.context.request.fetch(
-            url, method=method, headers=headers, data=body, fail_on_status_code=False
-        )
+        try:
+            response = self.context.request.fetch(
+                url, method=method, headers=headers, data=body, fail_on_status_code=False
+            )
+        except Exception as exc:
+            raise DWPError(
+                "Could not reach DWP from the authenticated Chrome session. "
+                "Check the network connection and try again."
+            ) from exc
         raw = response.text()
         if self.verbose:
             print(f"{method} {path} -> {response.status}", file=sys.stderr)
         if response.status >= 400:
-            if response.status in (401, 403) and "single sign on" in raw.lower():
+            if response.status in (401, 403) and is_sso_html(raw):
                 raise DWPError(
-                    f"{method} {path} -> HTTP {response.status}: the browser context is not authenticated"
+                    "The Chrome session is not authenticated. Complete SSO in the DWP window, "
+                    "then press Enter to continue."
                 )
-            raise DWPError(f"{method} {path} -> HTTP {response.status}: {raw[:500]}")
+            raise DWPError(http_error_message(response.status, f"DWP request {method} {path}"))
         if not raw:
             return None
+        if is_sso_html(raw):
+            raise DWPError(
+                "DWP redirected to SSO. Refresh the login and provide a current "
+                "authenticated Chrome session or cookie."
+            )
         try:
             return json.loads(raw)
         except json.JSONDecodeError as exc:
@@ -89,7 +131,10 @@ def browser_client_from_profile(profile: str, app_url: str, base: str, verbose: 
         print("Chrome opened for DWP authentication. Complete SSO in that window.")
         input("After the DWP page is signed in, press Enter here to continue: ")
     except Exception as exc:
-        raise DWPError(f"Browser startup or authentication failed: {exc}") from exc
+        raise DWPError(
+            "Could not start Chrome or complete browser authentication. "
+            "Check that Google Chrome and Playwright are installed."
+        ) from exc
     # Keep the browser context alive for every API call; do not extract/replay cookies.
     atexit.register(playwright.stop)
     atexit.register(context.close)
@@ -119,12 +164,14 @@ class Client:
             check=False,
         )
         if result.returncode:
-            detail = result.stderr.decode("utf-8", errors="replace").strip()
-            raise DWPError(f"curl transport failed: {detail[:500]}")
+            raise DWPError(
+                "The system curl transport could not reach DWP. "
+                "Check the network connection or corporate certificate setup."
+            )
         raw = result.stdout.decode("utf-8", errors="replace")
         marker = "\n__DWP_HTTP_STATUS:"
         if marker not in raw:
-            raise DWPError("curl transport returned no HTTP status")
+            raise DWPError("The system curl transport returned an invalid response.")
         content, status_text = raw.rsplit(marker, 1)
         return int(status_text.strip()), content
 
@@ -151,25 +198,32 @@ class Client:
             detail = exc.read().decode("utf-8", errors="replace")
             if exc.code in (401, 403) and "single sign on" in detail.lower():
                 raise DWPError(
-                    f"{method} {path} -> HTTP {exc.code}: DWP redirected to SSO. "
-                    "Refresh the browser login and copy the Cookie value from a "
-                    "macquarie-dwp.onbmc.com /dwp/rest request (without the 'Cookie:' label)."
+                    "DWP redirected to SSO. Refresh the browser login and provide a "
+                    "current DWP cookie, or use --browser-profile."
                 ) from exc
-            raise DWPError(f"{method} {path} -> HTTP {exc.code}: {detail[:500]}") from exc
+            raise DWPError(http_error_message(exc.code, f"DWP request {method} {path}")) from exc
         except urllib.error.URLError as exc:
             reason = exc.reason
             cert_error = isinstance(reason, ssl.SSLCertVerificationError) or "CERTIFICATE_VERIFY_FAILED" in str(reason)
             if not cert_error:
-                raise DWPError(f"{method} {path} failed: {reason}") from exc
+                raise DWPError(
+                    f"DWP request {method} {path} could not connect. "
+                    "Check the network connection and try again."
+                ) from exc
             if self.verbose:
                 print("Python TLS validation failed; retrying with system curl trust store", file=sys.stderr)
             status, raw = self._curl_request(method, url, body, headers)
         if self.verbose:
             print(f"{method} {path} -> {status}", file=sys.stderr)
         if status >= 400:
-            raise DWPError(f"{method} {path} -> HTTP {status}: {raw[:500]}")
+            raise DWPError(http_error_message(status, f"DWP request {method} {path}"))
         if not raw:
             return None
+        if is_sso_html(raw):
+            raise DWPError(
+                "DWP redirected to SSO. Refresh the login and provide a current "
+                "authenticated Chrome session or cookie."
+            )
         try:
             return json.loads(raw)
         except json.JSONDecodeError as exc:
@@ -183,7 +237,7 @@ def items(questionnaire: dict[str, Any]) -> list[dict[str, Any]]:
 def field_by_label(all_items: list[dict[str, Any]], label: str, *, type_: str | None = None) -> dict[str, Any]:
     matches = [x for x in all_items if x.get("label") == label and (type_ is None or x.get("type") == type_)]
     if not matches:
-        raise DWPError(f"Question not found: {label!r}")
+        raise DWPError(f"The current questionnaire is missing the expected field {label!r}.")
     return matches[0]
 
 
@@ -200,8 +254,17 @@ def answer_values(
         "questionId": item["id"],
         "answers": values,
     }
-    result = client.request("POST", f"v2/sbe/services/{request_id}/questionnaire/answers", payload)
-    print(f"{item.get('label') or item['id']}: {values if len(values) != 1 else values[0]}")
+    label = item.get("label") or "this field"
+    try:
+        result = client.request("POST", f"v2/sbe/services/{request_id}/questionnaire/answers", payload)
+    except DWPError as exc:
+        raise DWPError(f"Could not set {label!r}: {exc}") from exc
+    if item.get("type") == "MultiSelectDataTable":
+        print(f"{label}: selected {len(values)} asset(s)")
+    elif item.get("type") == "DataTable":
+        print(f"{label}: selected")
+    else:
+        print(f"{label}: {values if len(values) != 1 else values[0]}")
     return result or {}
 
 
@@ -231,8 +294,7 @@ def choose_data_value(rows: list[dict[str, Any]], needle: str, *, exact: bool = 
         values = [str(v) for v in row.get("displayValue", [])]
         if any((needle_l == v.casefold() if exact else needle_l in v.casefold()) for v in values):
             return row["dataValue"]
-    examples = [row.get("displayValue", []) for row in rows[:5]]
-    raise DWPError(f"No dynamic option matched {needle!r}; examples: {examples}")
+    raise DWPError(f"No returned option matched {needle!r}.")
 
 
 def choose_location_data_value(
@@ -256,13 +318,11 @@ def choose_location_data_value(
             matches.append(row)
     if len(matches) == 1:
         return matches[0]["dataValue"]
-    examples = [row.get("displayValue", []) for row in rows[:12]]
     target = " --> ".join(expected)
     if not matches:
-        raise DWPError(f"No location matched {target!r}; available rows: {examples}")
+        raise DWPError(f"No returned location matched {target!r}.")
     raise DWPError(
-        f"More than one location matched {target!r}; add --cabinet to identify one row: "
-        f"{[row.get('displayValue', []) for row in matches]}"
+        f"More than one location matched {target!r}; add --cabinet to identify one row."
     )
 
 
@@ -298,7 +358,9 @@ def batch_asset_selection(
         else:
             missing.append(serial)
     if missing:
-        raise DWPError(f"Bulk asset results did not uniquely match serials: {', '.join(missing)}")
+        raise DWPError(
+            "The bulk search did not uniquely match these serials: " + ", ".join(missing)
+        )
     return table, selected
 
 
@@ -316,14 +378,17 @@ def lookup_and_answer(
     """Search a server-backed person table, then persist the selected dataValue."""
     search = field_by_label(all_items, search_label, type_=search_type)
     table = field_by_label(all_items, table_label, type_="DataTable")
-    result = client.request(
-        "POST",
-        f"v2/sbe/services/requests/{request_id}/questions/{search['id']}/lookup",
-        {"query": query},
-    ) or {}
+    try:
+        result = client.request(
+            "POST",
+            f"v2/sbe/services/requests/{request_id}/questions/{search['id']}/lookup",
+            {"query": query},
+        ) or {}
+    except DWPError as exc:
+        raise DWPError(f"Could not search {search_label!r}: {exc}") from exc
     rows = result.get("multiColumnOptions") or []
     if not rows:
-        raise DWPError(f"No lookup results for {query!r} in {search_label!r}")
+        raise DWPError(f"No users matched {query!r}.")
     value = choose_data_value(
         [{"dataValue": row["dataValue"], "displayValue": row.get("displayValue", [])} for row in rows],
         match,
@@ -445,11 +510,16 @@ def main() -> int:
         if not cookie:
             raise DWPError("Set DWP_COOKIE or use --browser-profile for an authenticated Chrome session")
         client = Client(args.base, cookie, args.verbose)
-    created = client.request("POST", "v2/sbe/services/requests", {
+    created = request_step(client, "Could not create the DWP request", "POST", "v2/sbe/services/requests", {
         "serviceId": "25301", "quantity": 1, "requestedForLoginIds": [args.request_for]
     })
     request_id = str(created["requests"][0]["requestId"])
-    questionnaire = client.request("GET", f"v2/sbe/services/requests/{request_id}/questionnaire?timezoneId=Australia/Sydney")["questionnaire"]
+    questionnaire = request_step(
+        client,
+        "Could not load the current questionnaire",
+        "GET",
+        f"v2/sbe/services/requests/{request_id}/questionnaire?timezoneId=Australia/Sydney",
+    )["questionnaire"]
     questionnaire_id = str(questionnaire["id"])
     all_items = items(questionnaire)
     print(f"Created request {request_id}; questionnaire {questionnaire_id}")
@@ -535,14 +605,33 @@ def main() -> int:
     if not args.submit:
         print(f"Dry run: request {request_id} was created but not submitted.")
         return 0
-    order = client.request("POST", "v2/sbe/orders", {"requestIds": [request_id], "title": None})
-    print(json.dumps(order, indent=2))
+    order = request_step(
+        client,
+        "Could not submit the order",
+        "POST",
+        "v2/sbe/orders",
+        {"requestIds": [request_id], "title": None},
+    )
+    order_id = order.get("id") if isinstance(order, dict) else None
+    print(f"Submitted successfully{f' (order {order_id})' if order_id else ''}. Request {request_id}.")
     return 0
 
 
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except (DWPError, KeyError, IndexError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
+    except KeyboardInterrupt:
+        print("Cancelled.", file=sys.stderr)
+        raise SystemExit(130)
+    except EOFError:
+        print("Input ended before the request was complete.", file=sys.stderr)
+        raise SystemExit(2)
+    except DWPError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        raise SystemExit(2)
+    except (KeyError, IndexError, TypeError):
+        print("Error: DWP returned an incomplete or unexpected response.", file=sys.stderr)
+        raise SystemExit(2)
+    except Exception:
+        print("Error: An unexpected problem occurred. Re-run with --verbose and report the step shown before it.", file=sys.stderr)
         raise SystemExit(2)

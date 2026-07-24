@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import urllib.parse
 from typing import Any
@@ -83,12 +82,16 @@ def select_lookup_person(
     table: dict[str, Any],
     query: str,
 ) -> None:
-    result = client.request(
+    result = dwp.request_step(
+        client,
+        "Could not search for a user",
         "POST",
         f"v2/sbe/services/requests/{request_id}/questions/{table['id']}/lookup",
         {"query": query},
     ) or {}
     rows = result.get("multiColumnOptions") or []
+    if not rows:
+        raise dwp.DWPError(f"No users matched {query!r}.")
     _, value = choose(table["label"], row_choices(rows))
     dwp.answer(client, request_id, questionnaire_id, table, value)
 
@@ -133,13 +136,17 @@ def main() -> int:
 
     print(f"\nStarting {mode_display.lower()} for {', '.join(serials)}.")
     client = open_client(args)
-    created = client.request(
+    created = dwp.request_step(
+        client,
+        "Could not create the DWP request",
         "POST",
         "v2/sbe/services/requests",
         {"serviceId": "25301", "quantity": 1, "requestedForLoginIds": [request_for]},
     )
     request_id = str(created["requests"][0]["requestId"])
-    questionnaire = client.request(
+    questionnaire = dwp.request_step(
+        client,
+        "Could not load the current questionnaire",
         "GET",
         f"v2/sbe/services/requests/{request_id}/questionnaire?timezoneId=Australia/Sydney",
     )["questionnaire"]
@@ -245,16 +252,33 @@ def main() -> int:
     print(f"\nRequest {request_id} is populated but not submitted.")
     if not yes_no("Submit this request now?"):
         return 0
-    order = client.request(
-        "POST", "v2/sbe/orders", {"requestIds": [request_id], "title": None}
+    order = dwp.request_step(
+        client,
+        "Could not submit the order",
+        "POST",
+        "v2/sbe/orders",
+        {"requestIds": [request_id], "title": None},
     )
-    print(json.dumps(order, indent=2))
+    order_id = order.get("id") if isinstance(order, dict) else None
+    print(f"Submitted successfully{f' (order {order_id})' if order_id else ''}. Request {request_id}.")
     return 0
 
 
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except (dwp.DWPError, KeyboardInterrupt, EOFError, KeyError, IndexError) as exc:
-        print(f"error: {exc}")
+    except KeyboardInterrupt:
+        print("Cancelled.")
+        raise SystemExit(130)
+    except EOFError:
+        print("Input ended before the request was complete.")
+        raise SystemExit(2)
+    except dwp.DWPError as exc:
+        print(f"Error: {exc}")
+        raise SystemExit(2)
+    except (KeyError, IndexError, TypeError):
+        print("Error: DWP returned an incomplete or unexpected response.")
+        raise SystemExit(2)
+    except Exception:
+        print("Error: An unexpected problem occurred. Re-run with --verbose and report the step shown before it.")
         raise SystemExit(2)
