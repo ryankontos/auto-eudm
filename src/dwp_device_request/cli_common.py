@@ -6,8 +6,8 @@ import argparse
 import urllib.parse
 from typing import Any, Sequence, TypeVar
 
-import automate_device_request as dwp
-from dwp_config import AppConfig
+from . import automate_device_request as dwp
+from .dwp_config import AppConfig
 
 
 T = TypeVar("T")

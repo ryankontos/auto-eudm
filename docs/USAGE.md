@@ -4,6 +4,19 @@ This guide covers the four command-line interfaces, their safety boundaries,
 and the Sydney workbook import rules. Run any command with `--help` to see the
 exact argument reference for the version you have checked out.
 
+The packaged Python code lives under `src/dwp_device_request/`, the macOS
+launchers live in `launchers/`, and the sample workbook lives in `samples/`.
+
+## Automatic setup
+
+Every launcher and Python entry point creates `.venv` on its first real run,
+installs the relevant requirements, and restarts with that interpreter.
+Spreadsheet commands install `openpyxl`; live browser commands install
+Playwright. Simulation mode avoids the browser install.
+
+Set `DWP_SKIP_AUTO_INSTALL=1` to disable this behaviour, or set
+`DWP_VENV_DIR=/path/to/venv` to choose a different environment location.
+
 ## Choose a command
 
 | Command | Best for | Result |
@@ -19,23 +32,23 @@ The repository includes double-clickable launchers:
 
 | File | Runs |
 | --- | --- |
-| `run-device-request.command` | `automate_device_request.py` |
-| `run-interactive-device-request.command` | `interactive_device_request.py` |
-| `run-inventory-sheet.command` | `inventory_sheet_cli.py` |
-| `run-serial-user-batch.command` | `serial_user_cli.py` |
+| `launchers/run-device-request.command` | `automate_device_request.py` |
+| `launchers/run-interactive-device-request.command` | `interactive_device_request.py` |
+| `launchers/run-inventory-sheet.command` | `inventory_sheet_cli.py` |
+| `launchers/run-serial-user-batch.command` | `serial_user_cli.py` |
 
 They locate the repository from the launcher’s own path, so they work from
 Finder or Terminal. Arguments are passed through unchanged:
 
 ```bash
-./run-interactive-device-request.command --simulate --manual
+./launchers/run-interactive-device-request.command --simulate --manual
 ```
 
 ```bash
-./run-inventory-sheet.command --dry-run
+./launchers/run-inventory-sheet.command --dry-run
 ```
 
-Opening `run-device-request.command` without arguments displays the direct
+Opening `launchers/run-device-request.command` without arguments displays the direct
 script help and a copyable example because that script requires request values.
 The other three launchers start their interactive flows when opened without
 arguments. The serial/user launcher accepts pasted lines until a blank line.
@@ -197,7 +210,7 @@ the final approval.
 Install the workbook reader once:
 
 ```bash
-python3 -m pip install -r requirements-sheet.txt
+python3 -m pip install -r requirements/requirements-sheet.txt
 ```
 
 ```bash
@@ -216,6 +229,9 @@ python3 inventory_sheet_cli.py '/path/to/Inventory Tracking - Sydney.xlsx'
 It selects `Bookings 2026` automatically. If that tab is absent, it displays
 all sheet names and asks you to select one, rather than silently using an active
 sheet.
+
+The repo also includes `samples/Inventory Tracking - Sydney - Test Data.xlsx`,
+which matches the same column layout for local rehearsals.
 
 ### Workbook mapping
 
@@ -271,7 +287,7 @@ GHI9012 user.three
 Start the interactive paste flow:
 
 ```bash
-./run-serial-user-batch.command
+./launchers/run-serial-user-batch.command
 ```
 
 Or pass the whole string in one shell argument:

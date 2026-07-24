@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any, Iterable
 
-import automate_device_request as dwp
+from . import automate_device_request as dwp
 
 
 USER_STATUSES: tuple[tuple[str, str], ...] = (

@@ -4,29 +4,39 @@ First-pass automation for the Macquarie Digital Workplace device-management requ
 
 ## Contents
 
-- `automate_device_request.py` — dynamic REST client for the captured questionnaire flow.
-- `interactive_device_request.py` — numbered CLI frontend for normal and batch flows.
-- `inventory_sheet_cli.py` — guided importer for `Inventory Tracking - Sydney` workbooks.
-- `serial_user_cli.py` — pasted or piped `SERIAL USERNAME` batch deployments.
-- `dwp_config.py`, `cli_common.py`, `user_deployments.py` — shared configuration, prompts, and user-deployment runner.
-- `USAGE.md` — operating guide with safety boundaries, workbook mapping, examples, and troubleshooting.
-- `big.har` — source network capture used to map the API workflow.
-- `requestform.txt` — source Angular DOM capture used to map labels and question IDs.
+- `src/dwp_device_request/` — the packaged Python implementation.
+- `launchers/` — double-clickable macOS `.command` launchers.
+- `docs/USAGE.md` — operating guide with safety boundaries, workbook mapping, examples, and troubleshooting.
+- `requirements/` — optional dependency sets for browser and spreadsheet support.
+- `samples/Inventory Tracking - Sydney - Test Data.xlsx` — sample workbook in the same layout as the real file.
 
 The captures contain internal and personal data. This repository is public by request; do not add authentication cookies, tokens, or additional sensitive captures.
 
-See [USAGE.md](USAGE.md) for the complete operating guide. Every command also documents its arguments and safety behaviour through `--help`.
+See [docs/USAGE.md](docs/USAGE.md) for the complete operating guide. Every command also documents its arguments and safety behaviour through `--help`.
 
-On macOS, the four `.command` files in the repository are double-clickable launchers:
+## Automatic setup
+
+Every launcher and Python entry point creates a local `.venv` on its first
+real run, installs only the dependency set it needs, and restarts inside that
+environment. Spreadsheet commands install `openpyxl`; live browser commands
+install Playwright. Simulation mode avoids the browser install.
+
+Set `DWP_SKIP_AUTO_INSTALL=1` to manage dependencies manually, or
+`DWP_VENV_DIR=/path/to/venv` to choose another environment location.
+
+On macOS, the four `.command` files in `launchers/` are double-clickable launchers:
 
 ```bash
-./run-device-request.command --help
-./run-interactive-device-request.command --simulate
-./run-inventory-sheet.command --dry-run
-./run-serial-user-batch.command --simulate
+./launchers/run-device-request.command --help
+./launchers/run-interactive-device-request.command --simulate
+./launchers/run-inventory-sheet.command --dry-run
+./launchers/run-serial-user-batch.command --simulate
 ```
 
-They change into the repository folder before running, use the system `python3`, and pass arguments through to the underlying CLI. If macOS blocks a newly downloaded launcher, right-click it in Finder and choose Open once.
+They change into the repository folder before running, start with the available
+`python3` (which performs the automatic setup above), and pass arguments
+through to the underlying CLI. If macOS blocks a newly downloaded launcher,
+right-click it in Finder and choose Open once.
 
 ## Shared configuration
 
@@ -56,7 +66,7 @@ Do not put `DWP_COOKIE` in `.env`; export short-lived cookies in the current she
 Run the new CLI and paste one `SERIAL USERNAME` pair per line. Finish with a blank line:
 
 ```bash
-./run-serial-user-batch.command
+./launchers/run-serial-user-batch.command
 ```
 
 It then displays user-only deployment statuses applied to the entire batch. Option 1 is **Used stock**, submitted to DWP as `Deployed - Existing Stock`. The remaining options are New stock, Loan, and Pending return. It previews every pair before authentication and uses the same strict retry-or-skip matching, manual review, simulation, and grouped result handling as the spreadsheet importer.
@@ -84,7 +94,7 @@ The script requires an authenticated DWP session. The configured Chrome profile 
 To avoid copying cookies, install Playwright and use a dedicated Chrome profile. The browser mode launches the installed Google Chrome binary directly through Playwright (no AppleScript, `osascript`, or Apple Events), keeps API calls inside that authenticated browser context, and asks you to complete SSO interactively:
 
 ```bash
-python3 -m pip install -r requirements-browser.txt
+python3 -m pip install -r requirements/requirements-browser.txt
 python3 automate_device_request.py --browser-profile ~/.dwp-device-request-chrome --serial K9JQ6MYW9R --request-for rkontos --target user --status 'Deployed - New Stock' --deployed-to rkontos
 ```
 
@@ -173,13 +183,13 @@ Normal runs show prompts, final request IDs, results, and short action-oriented 
 Install spreadsheet support:
 
 ```bash
-python3 -m pip install -r requirements-sheet.txt
+python3 -m pip install -r requirements/requirements-sheet.txt
 ```
 
 For the normal Chrome-based flow on a fresh checkout, install both requirements in one command:
 
 ```bash
-python3 -m pip install -r requirements-browser.txt -r requirements-sheet.txt
+python3 -m pip install -r requirements/requirements-browser.txt -r requirements/requirements-sheet.txt
 ```
 
 Run the guided importer. With no file argument it offers the newest `Inventory Tracking - Sydney*.xlsx` or `.xlsm` file in Downloads. It automatically uses a sheet named `Bookings 2026`; if that sheet is absent, it displays the available sheet names and asks you to choose one:
