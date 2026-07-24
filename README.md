@@ -18,12 +18,13 @@ To avoid copying cookies, install Playwright and use a dedicated Chrome profile.
 
 ```bash
 python3 -m pip install -r requirements-browser.txt
-python3 automate_device_request.py \
-  --browser-profile ~/.dwp-device-request-chrome \
-  --serial K9JQ6MYW9R \
-  --request-for rkontos \
-  --status 'Deployed - New Stock' \
-  --deployed-to rkontos
+python3 automate_device_request.py --browser-profile ~/.dwp-device-request-chrome --serial K9JQ6MYW9R --request-for rkontos --status 'Deployed - New Stock' --deployed-to rkontos
+```
+
+For a location deployment with browser-based SSO:
+
+```bash
+python3 automate_device_request.py --browser-profile ~/.dwp-device-request-chrome --serial K9JQ6MYW9R --request-for rkontos --status 'Used Stock' --city 'Sydney, AU' --building '1 Elizabeth Street' --dropped-by rkontos
 ```
 
 The profile path is separate from your normal Chrome profile so the automation does not interfere with it. Subsequent runs can reuse the profile while its SSO session remains valid.
@@ -34,47 +35,25 @@ User deployment:
 
 ```bash
 export DWP_COOKIE='...'
-python3 automate_device_request.py \
-  --serial K9JQ6MYW9R \
-  --request-for rkontos \
-  --status 'Deployed - New Stock' \
-  --deployed-to rkontos
+python3 automate_device_request.py --serial K9JQ6MYW9R --request-for rkontos --status 'Deployed - New Stock' --deployed-to rkontos
 ```
 
 Location deployment:
 
 ```bash
-python3 automate_device_request.py \
-  --serial K9JQ6MYW9R \
-  --request-for rkontos \
-  --status 'Used Stock' \
-  --city 'Sydney, AU' \
-  --building '1 Elizabeth Street' \
-  --dropped-by rkontos
+python3 automate_device_request.py --serial K9JQ6MYW9R --request-for rkontos --status 'Used Stock' --city 'Sydney, AU' --building '1 Elizabeth Street' --dropped-by rkontos
 ```
 
 The examples above are dry runs with respect to the final order commit. To commit a request after checking the output, add `--submit`:
 
 ```bash
-python3 automate_device_request.py \
-  --serial K9JQ6MYW9R \
-  --request-for rkontos \
-  --status 'Deployed - New Stock' \
-  --deployed-to rkontos \
-  --submit
+python3 automate_device_request.py --serial K9JQ6MYW9R --request-for rkontos --status 'Deployed - New Stock' --deployed-to rkontos --submit
 ```
 
 For a location deployment:
 
 ```bash
-python3 automate_device_request.py \
-  --serial K9JQ6MYW9R \
-  --request-for rkontos \
-  --status 'Used Stock' \
-  --city 'Sydney, AU' \
-  --building '1 Elizabeth Street' \
-  --dropped-by rkontos \
-  --submit
+python3 automate_device_request.py --serial K9JQ6MYW9R --request-for rkontos --status 'Used Stock' --city 'Sydney, AU' --building '1 Elizabeth Street' --dropped-by rkontos --submit
 ```
 
 By default the script stops before the final order commit. Note that creating the request and recording answers are still server-side actions. `--submit` performs the final order commit and should only be used after validating the dynamic path.
