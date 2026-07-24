@@ -3,6 +3,7 @@ __pycache__/
 .DS_Store
 .env
 .env.*
+!.env.example
 cookies.txt
 cookie*.txt
 work/

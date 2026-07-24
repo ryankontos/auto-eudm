@@ -9,45 +9,23 @@ real DWP changes.
 from __future__ import annotations
 
 import argparse
-import os
-import urllib.parse
 from typing import Any
 
 import automate_device_request as dwp
+from cli_common import add_runtime_arguments, console, open_client, validate_runtime_args
+from dwp_config import AppConfig
 
 
 def prompt_text(label: str) -> str:
-    while True:
-        value = input(f"{label}: ").strip()
-        if value:
-            return value
-        print("A value is required.")
+    return console.text(label)
 
 
 def choose(label: str, choices: list[tuple[str, Any]]) -> tuple[str, Any]:
-    if not choices:
-        raise dwp.DWPError(f"No choices are available for {label}")
-    print(f"\n{label}")
-    for index, (display, _) in enumerate(choices, 1):
-        print(f"  {index}. {display}")
-    while True:
-        raw = input(f"Choose 1-{len(choices)}: ").strip()
-        if raw.isdigit() and 1 <= int(raw) <= len(choices):
-            return choices[int(raw) - 1]
-        print("Enter one of the listed numbers.")
+    return console.choose(label, choices)
 
 
 def yes_no(label: str, *, default: bool = False) -> bool:
-    suffix = "[Y/n]" if default else "[y/N]"
-    while True:
-        value = input(f"{label} {suffix}: ").strip().casefold()
-        if not value:
-            return default
-        if value in ("y", "yes"):
-            return True
-        if value in ("n", "no"):
-            return False
-        print("Enter y or n.")
+    return console.yes_no(label, default=default)
 
 
 def static_choices(item: dict[str, Any]) -> list[tuple[str, str]]:
@@ -62,15 +40,6 @@ def row_choices(rows: list[dict[str, Any]]) -> list[tuple[str, str]]:
         (" → ".join(str(value) for value in row.get("displayValue", []) if str(value)), row["dataValue"])
         for row in rows
     ]
-
-
-def open_client(args: argparse.Namespace) -> Any:
-    return dwp.open_client(
-        base=args.base,
-        browser_profile=args.browser_profile,
-        simulate=args.simulate,
-        verbose=args.verbose,
-    )
 
 
 def select_lookup_person(
@@ -100,6 +69,10 @@ def select_lookup_person(
 
 
 def main() -> int:
+    try:
+        config = AppConfig.load()
+    except ValueError as exc:
+        raise dwp.DWPError(f"Could not load shared configuration: {exc}") from exc
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -116,46 +89,15 @@ Review:
   final y/n submission prompt.
 """,
     )
-    parser.add_argument(
-        "--browser-profile",
-        default="~/.dwp-device-request-chrome",
-        help="Dedicated installed-Chrome profile used for SSO. It is separate from normal browsing.",
-    )
-    parser.add_argument("--cookie-mode", action="store_true", help="Use DWP_COOKIE instead of opening Chrome. The cookie is never saved.")
-    parser.add_argument(
-        "--simulate",
-        action="store_true",
-        help="Local rehearsal with sample choices and SIM-REQ IDs; no Chrome, network, or DWP changes.",
-    )
-    parser.add_argument(
-        "--manual-review",
-        "--review",
-        "--manual",
-        action="store_true",
-        help="Show the populated request summary before the final y/n submission prompt.",
-    )
-    parser.add_argument(
-        "--verbose",
-        action="store_true",
-        help="Show questionnaire field updates, match details, and safe request/status diagnostics.",
-    )
-    parser.add_argument("--base", default=os.getenv("DWP_BASE", dwp.DEFAULT_BASE), help="Override DWP REST base URL (HTTPS URL ending in /rest).")
+    add_runtime_arguments(parser, config)
     args = parser.parse_args()
-    if args.cookie_mode:
-        args.browser_profile = None
-    parsed_base = urllib.parse.urlparse(args.base)
-    if (
-        parsed_base.scheme != "https"
-        or not parsed_base.netloc
-        or not parsed_base.path.rstrip("/").endswith("/rest")
-    ):
-        raise dwp.DWPError("--base must be an HTTPS DWP REST URL ending in /rest")
+    validate_runtime_args(args)
 
     mode_display, mode = choose(
         "Request mode",
         [("One device", "single"), ("Batch serial list to a location (no user)", "batch")],
     )
-    request_for = prompt_text("Request-for login ID")
+    request_for = console.text("Request-for login ID", default=config.request_for)
     if mode == "batch":
         raw_serials = prompt_text("Serial numbers, comma-separated").split(",")
         serials = [value.strip() for value in raw_serials]

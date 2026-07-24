@@ -13,15 +13,26 @@ import argparse
 from collections import Counter
 from dataclasses import dataclass, replace
 from datetime import date, datetime
-import getpass
-import os
 from pathlib import Path
 import re
 import sys
-import urllib.parse
 from typing import Any, Iterable
 
 import automate_device_request as dwp
+from cli_common import (
+    add_runtime_arguments,
+    console,
+    open_client,
+    request_for as resolve_request_for,
+    validate_runtime_args,
+)
+from dwp_config import AppConfig
+from user_deployments import (
+    DeploymentOutcome,
+    UserDeployment,
+    UserDeploymentRunner,
+    print_grouped_results,
+)
 
 
 NEW_STOCK = "Deployed - New Stock"
@@ -48,16 +59,6 @@ class Action:
     username: str
     serial: str
     status: str
-
-
-@dataclass(frozen=True)
-class Outcome:
-    action: Action
-    request_id: str | None
-    order_id: str | None
-    error: str | None
-    submitted: bool = False
-    not_submitted_reason: str | None = None
 
 
 def clean_text(value: Any) -> str | None:
@@ -208,29 +209,11 @@ def choose_file(argument: str | None) -> Path:
 
 
 def choose_number(label: str, options: list[str]) -> int:
-    if not options:
-        raise dwp.DWPError(f"No choices are available for {label}.")
-    print(f"\n{label}")
-    for index, option in enumerate(options, 1):
-        print(f"  {index}. {option}")
-    while True:
-        raw = input(f"Choose 1-{len(options)}: ").strip()
-        if raw.isdigit() and 1 <= int(raw) <= len(options):
-            return int(raw) - 1
-        print("Enter one of the listed numbers.")
+    return console.choose_index(label, options)
 
 
 def yes_no(label: str, *, default: bool = False) -> bool:
-    suffix = "[Y/n]" if default else "[y/N]"
-    while True:
-        value = input(f"{label} {suffix}: ").strip().casefold()
-        if not value:
-            return default
-        if value in ("y", "yes"):
-            return True
-        if value in ("n", "no"):
-            return False
-        print("Enter y or n.")
+    return console.yes_no(label, default=default)
 
 
 def parse_number_selection(raw: str, maximum: int) -> set[int]:
@@ -361,75 +344,31 @@ def print_preview(
 
 def execute(
     client: Any, actions: list[Action], request_for: str, manual_review_enabled: bool
-) -> list[Outcome]:
-    outcomes: list[Outcome] = []
-    total = len(actions)
-    print(f"\nSubmitting {total} request{'s' if total != 1 else ''}...")
-    for index, action in enumerate(actions, 1):
-        dwp.verbose_detail(
-            client,
-            f"\n[{index}/{total}] {action.group}: {action.serial} → "
-            f"{action.username} ({action.status})"
+) -> list[DeploymentOutcome]:
+    deployments = [
+        UserDeployment(
+            serial=action.serial,
+            username=action.username,
+            status=action.status,
+            group=action.group,
+            source=f"row {action.row_number}",
         )
-        try:
-            result = dwp.deploy_device_to_user(
-                client,
-                serial=action.serial,
-                request_for=request_for,
-                deployed_to=action.username,
-                status=action.status,
-                submit=True,
-                manual_review_enabled=manual_review_enabled,
-            )
-            outcomes.append(
-                Outcome(
-                    action,
-                    result.request_id,
-                    result.order_id,
-                    None,
-                    submitted=result.submitted,
-                    not_submitted_reason=result.not_submitted_reason,
-                )
-            )
-        except dwp.DWPError as exc:
-            request_id = (
-                exc.request_id if isinstance(exc, dwp.DeploymentExecutionError) else None
-            )
-            outcomes.append(Outcome(action, request_id, None, str(exc)))
-            print(f"Could not deploy {action.serial}: {exc}")
-    return outcomes
+        for action in actions
+    ]
+    return UserDeploymentRunner(
+        client, request_for, manual_review=manual_review_enabled
+    ).run(deployments)
 
 
-def print_results(outcomes: list[Outcome]) -> None:
-    print("\nResults")
-    for group in ("New deployments", "Old / pending return"):
-        grouped = [outcome for outcome in outcomes if outcome.action.group == group]
-        print(f"\n{group}")
-        if not grouped:
-            print("  None")
-        for outcome in grouped:
-            if outcome.error:
-                request = (
-                    f" (request {outcome.request_id})" if outcome.request_id else ""
-                )
-                print(f"  {outcome.action.serial}: FAILED{request} — {outcome.error}")
-            elif not outcome.submitted:
-                request = f"request {outcome.request_id}" if outcome.request_id else "no request ID"
-                reason = outcome.not_submitted_reason or "not submitted"
-                print(f"  {outcome.action.serial}: NOT SUBMITTED — {request}; {reason}")
-            else:
-                order = f" (order {outcome.order_id})" if outcome.order_id else ""
-                print(f"  {outcome.action.serial}: request {outcome.request_id}{order}")
-    failures = sum(bool(outcome.error) for outcome in outcomes)
-    not_submitted = sum(not outcome.error and not outcome.submitted for outcome in outcomes)
-    submitted = len(outcomes) - failures - not_submitted
-    print(
-        f"\nCompleted: {submitted} submitted, {not_submitted} not submitted, "
-        f"{failures} failed, {len(outcomes)} total."
-    )
+def print_results(outcomes: list[DeploymentOutcome]) -> None:
+    print_grouped_results(outcomes, ("New deployments", "Old / pending return"))
 
 
 def main() -> int:
+    try:
+        config = AppConfig.load()
+    except ValueError as exc:
+        raise dwp.DWPError(f"Could not load shared configuration: {exc}") from exc
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -452,41 +391,14 @@ Modes:
         action="store_true",
         help="Preview only. Does not open Chrome or make any DWP API requests.",
     )
-    parser.add_argument("--request-for", help="Remedy login ID for every generated request. Prompts if omitted.")
     parser.add_argument(
-        "--browser-profile",
-        default=dwp.DEFAULT_BROWSER_PROFILE,
-        help="Dedicated installed-Chrome profile for SSO, separate from normal browsing.",
+        "--request-for",
+        default=config.request_for,
+        help="Remedy login ID for every request (default: DWP_REQUEST_FOR).",
     )
-    parser.add_argument("--cookie-mode", action="store_true", help="Use DWP_COOKIE instead of opening Chrome. The cookie is never saved.")
-    parser.add_argument(
-        "--simulate",
-        action="store_true",
-        help="Submit into a local simulator after the preview. Produces SIM-REQ IDs with no browser, network, or DWP changes.",
-    )
-    parser.add_argument(
-        "--manual-review",
-        "--review",
-        "--manual",
-        action="store_true",
-        help="After the batch preview, display and approve each populated request separately before final submission.",
-    )
-    parser.add_argument(
-        "--verbose",
-        action="store_true",
-        help="Show each request, questionnaire field update, match detail, and safe request/status diagnostic.",
-    )
-    parser.add_argument("--base", default=os.getenv("DWP_BASE", dwp.DEFAULT_BASE), help="Override DWP REST base URL (HTTPS URL ending in /rest).")
+    add_runtime_arguments(parser, config)
     args = parser.parse_args()
-    if args.cookie_mode:
-        args.browser_profile = None
-    parsed_base = urllib.parse.urlparse(args.base)
-    if (
-        parsed_base.scheme != "https"
-        or not parsed_base.netloc
-        or not parsed_base.path.rstrip("/").endswith("/rest")
-    ):
-        raise dwp.DWPError("--base must be an HTTPS DWP REST URL ending in /rest")
+    validate_runtime_args(args)
 
     path = choose_file(args.file)
     sheet_name, rows = load_sheet(path)
@@ -521,23 +433,13 @@ Modes:
     if args.dry_run:
         print("\nDry run complete. No browser was opened and no DWP API requests were made.")
         return 0
-    request_for = (args.request_for or "").strip()
-    if not request_for:
-        suggested = getpass.getuser()
-        request_for = input(f"\nRequest-for login ID [{suggested}]: ").strip() or suggested
-    if not request_for or any(character.isspace() for character in request_for):
-        raise dwp.DWPError("The request-for login ID cannot be empty or contain whitespace.")
+    requester = resolve_request_for(args, config)
     if not yes_no(f"Submit all {len(actions)} requests now?"):
         print("Cancelled before authentication. No DWP API requests were made.")
         return 0
 
-    client = dwp.open_client(
-        base=args.base,
-        browser_profile=args.browser_profile,
-        simulate=args.simulate,
-        verbose=args.verbose,
-    )
-    outcomes = execute(client, actions, request_for, args.manual_review)
+    client = open_client(args)
+    outcomes = execute(client, actions, requester, args.manual_review)
     print_results(outcomes)
     return 1 if any(outcome.error for outcome in outcomes) else 0
 

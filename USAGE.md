@@ -1,6 +1,6 @@
 # Operating guide
 
-This guide covers the three command-line interfaces, their safety boundaries,
+This guide covers the four command-line interfaces, their safety boundaries,
 and the Sydney workbook import rules. Run any command with `--help` to see the
 exact argument reference for the version you have checked out.
 
@@ -11,6 +11,7 @@ exact argument reference for the version you have checked out.
 | `automate_device_request.py` | Repeatable, fully specified single or batch requests | Populates one DWP request; batch mode applies several serials to one location. |
 | `interactive_device_request.py` | Choosing from live DWP devices, statuses, locations, and people | A numbered wizard for one device or batch-to-location flow. |
 | `inventory_sheet_cli.py` | Deploying devices from an Inventory Tracking - Sydney workbook | One user request per selected new or old serial, with grouped results. |
+| `serial_user_cli.py` | Pasting or piping `SERIAL USERNAME` pairs | One user request per line, with one status applied to the entire batch. |
 
 ## macOS launchers
 
@@ -21,6 +22,7 @@ The repository includes double-clickable launchers:
 | `run-device-request.command` | `automate_device_request.py` |
 | `run-interactive-device-request.command` | `interactive_device_request.py` |
 | `run-inventory-sheet.command` | `inventory_sheet_cli.py` |
+| `run-serial-user-batch.command` | `serial_user_cli.py` |
 
 They locate the repository from the launcher’s own path, so they work from
 Finder or Terminal. Arguments are passed through unchanged:
@@ -35,8 +37,31 @@ Finder or Terminal. Arguments are passed through unchanged:
 
 Opening `run-device-request.command` without arguments displays the direct
 script help and a copyable example because that script requires request values.
-The other two launchers start their interactive flows when opened without
-arguments.
+The other three launchers start their interactive flows when opened without
+arguments. The serial/user launcher accepts pasted lines until a blank line.
+
+## Shared `.env` configuration
+
+All four CLIs load the gitignored `.env` beside the scripts. The repository also
+contains `.env.example`, which documents every supported setting. On a new clone,
+run `cp .env.example .env`, then edit the local file to match the work computer.
+This current checkout already has that generated local file. Set `DWP_ENV_FILE`
+to use a configuration file elsewhere.
+
+| Variable | Used for |
+| --- | --- |
+| `DWP_REQUEST_FOR` | Default requesting login ID. |
+| `DWP_BROWSER_PROFILE` | Dedicated installed-Chrome profile. |
+| `DWP_BASE` | DWP REST base URL. |
+| `DWP_CITY`, `DWP_BUILDING`, `DWP_FLOOR`, `DWP_ROOM`, `DWP_CABINET` | Direct-script location defaults. |
+| `DWP_DEFAULT_USER_STATUS` | Default direct/new pasted-pair user status. |
+| `DWP_DEFAULT_LOCATION_STATUS` | Default direct location status. |
+| `DWP_SIMULATE`, `DWP_VERBOSE`, `DWP_MANUAL_REVIEW` | Shared default CLI modes. |
+
+Command-line options take precedence over shell variables, which take precedence
+over `.env`. Use `--no-simulate`, `--no-verbose`, or `--no-manual-review` when a
+boolean is enabled in `.env` but should be disabled for one run. `DWP_COOKIE` is
+deliberately excluded from the file; keep it short-lived in the shell.
 
 ## Safety and modes
 
@@ -97,7 +122,7 @@ is separate from normal Chrome. The automation launches Chrome through
 Playwright; it does not use Apple Events, AppleScript, or `osascript`.
 
 Alternatively set `DWP_COOKIE` to the full browser `Cookie` request header and
-use `--cookie-mode` in an interactive CLI. Cookies are never saved. Do not put
+use `--cookie-mode` in any CLI. Cookies are never saved. Do not put
 them in source code, shared shell history, or the public repository.
 
 If Python cannot validate a corporate certificate chain, the real client retries
@@ -232,6 +257,43 @@ For independent per-device approval after the batch preview:
 ```bash
 python3 inventory_sheet_cli.py --simulate --manual-review
 ```
+
+## Serial/user text batch
+
+Each nonblank input line must contain exactly two whitespace-separated values:
+
+```text
+ABC1234 user.one
+DEF5678 user.two
+GHI9012 user.three
+```
+
+Start the interactive paste flow:
+
+```bash
+./run-serial-user-batch.command
+```
+
+Or pass the whole string in one shell argument:
+
+```bash
+python3 serial_user_cli.py $'ABC1234 user.one\nDEF5678 user.two' --simulate
+```
+
+The status menu is intentionally limited to user-deployment statuses:
+
+1. Used stock (`Deployed - Existing Stock`)
+2. New stock (`Deployed - New Stock`)
+3. Loan (`Loan`)
+4. Pending return (`Pending Return`)
+
+The selected status applies to every line. Duplicate serials and malformed lines
+are rejected before authentication. A preview is always shown; `--dry-run` stops
+there, while `--simulate` runs the complete local workflow. `--file FILE` reads a
+text file, and `-` reads standard input, including `pbpaste` output.
+
+The batch runner is shared with the spreadsheet importer, so results, request IDs,
+manual review, and retry-or-skip matching behave identically.
 
 ## Troubleshooting
 

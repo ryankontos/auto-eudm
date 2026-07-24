@@ -26,6 +26,8 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
+from dwp_config import AppConfig
+
 
 DEFAULT_BASE = "https://macquarie-dwp.onbmc.com/dwp/rest"
 DEFAULT_BROWSER_PROFILE = "~/.dwp-device-request-chrome"
@@ -55,6 +57,8 @@ class DeploymentResult:
     order_id: str | None
     submitted: bool = False
     not_submitted_reason: str | None = None
+    resolved_serial: str | None = None
+    resolved_username: str | None = None
 
 
 def http_error_message(status: int, action: str) -> str:
@@ -728,7 +732,6 @@ def lookup_and_answer(
     search_label: str,
     table_label: str,
     query: str,
-    match: str,
     search_type: str = "TextField",
 ) -> str:
     """Search a server-backed person table, then persist the selected dataValue."""
@@ -875,7 +878,6 @@ def _complete_user_deployment(
         "Please select user - device has been deployed to",
         "Please select user - device has been deployed to",
         deployed_to,
-        deployed_to,
         search_type="DataTable",
     )
     if not submit:
@@ -884,6 +886,8 @@ def _complete_user_deployment(
             request_id=request_id,
             order_id=None,
             not_submitted_reason="final submission was not requested",
+            resolved_serial=serial,
+            resolved_username=deployed_to,
         )
     if manual_review_enabled and not manual_review(
         request_id=request_id,
@@ -897,6 +901,8 @@ def _complete_user_deployment(
             request_id=request_id,
             order_id=None,
             not_submitted_reason="manual review declined final submission",
+            resolved_serial=serial,
+            resolved_username=deployed_to,
         )
 
     order = request_step(
@@ -911,7 +917,13 @@ def _complete_user_deployment(
         client,
         f"Submitted request {request_id}{f' (order {order_id})' if order_id else ''}.",
     )
-    return DeploymentResult(request_id=request_id, order_id=order_id, submitted=True)
+    return DeploymentResult(
+        request_id=request_id,
+        order_id=order_id,
+        submitted=True,
+        resolved_serial=serial,
+        resolved_username=deployed_to,
+    )
 
 
 def validate_args(args: argparse.Namespace) -> bool:
@@ -990,6 +1002,10 @@ def validate_args(args: argparse.Namespace) -> bool:
 
 
 def main() -> int:
+    try:
+        config = AppConfig.load()
+    except ValueError as exc:
+        raise DWPError(f"Could not load shared configuration: {exc}") from exc
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1015,19 +1031,19 @@ Safety:
         "--serials",
         help="Comma-separated serials for --batch; duplicates, spaces, and empty entries are rejected.",
     )
-    parser.add_argument("--request-for", required=True, help="Remedy login ID that requests the change.")
+    parser.add_argument("--request-for", default=config.request_for, help="Remedy login ID (default: DWP_REQUEST_FOR).")
     parser.add_argument(
         "--target",
         required=True,
         choices=("user", "location"),
         help="Required deployment destination. This controls which mutually exclusive fields are valid.",
     )
-    parser.add_argument("--city", help="Exact DWP city label for a location, for example 'Sydney, AU'.")
-    parser.add_argument("--building", help="Exact building value from the returned DWP location row.")
-    parser.add_argument("--floor", help="Exact floor value from the returned DWP location row, for example 'Level 15'.")
-    parser.add_argument("--room", help="Exact room value from the returned DWP location row, for example 'Store Room'.")
-    parser.add_argument("--cabinet", help="Exact cabinet value only when building/floor/room still match multiple locations.")
-    parser.add_argument("--status", required=True, help="Exact DWP data value, for example 'Deployed - New Stock' or 'Used Stock'.")
+    parser.add_argument("--city", help="Exact city (location default: DWP_CITY).")
+    parser.add_argument("--building", help="Exact building (location default: DWP_BUILDING).")
+    parser.add_argument("--floor", help="Exact floor (location default: DWP_FLOOR).")
+    parser.add_argument("--room", help="Exact room (location default: DWP_ROOM).")
+    parser.add_argument("--cabinet", help="Optional exact cabinet (location default: DWP_CABINET).")
+    parser.add_argument("--status", help="Exact DWP data value; defaults by target from the shared env.")
     parser.add_argument("--deployed-to", help="Receiving login ID. Required for --target user; invalid for locations.")
     parser.add_argument("--dropped-by", help="Drop-off login ID. Required for normal locations; invalid for batch locations.")
     parser.add_argument(
@@ -1039,25 +1055,47 @@ Safety:
         "--manual-review",
         "--review",
         "--manual",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=config.manual_review,
         help="With --submit, show the populated request summary and require y/n approval before ordering.",
     )
     parser.add_argument(
         "--browser-profile",
-        help="Dedicated installed-Chrome profile for SSO; cannot be combined with DWP_COOKIE.",
+        default=config.browser_profile,
+        help="Dedicated installed-Chrome profile for SSO (default: DWP_BROWSER_PROFILE).",
+    )
+    parser.add_argument(
+        "--cookie-mode",
+        action="store_true",
+        help="Use DWP_COOKIE instead of the configured Chrome profile.",
     )
     parser.add_argument(
         "--verbose",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=config.verbose,
         help="Show questionnaire field updates, matching details, and request/status diagnostics; never prints cookies or response bodies.",
     )
     parser.add_argument(
         "--simulate",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=config.simulate,
         help="Local in-memory rehearsal. Ignores authentication and makes no browser, network, or DWP changes.",
     )
-    parser.add_argument("--base", default=os.getenv("DWP_BASE", DEFAULT_BASE), help="Override DWP REST base URL (HTTPS URL ending in /rest).")
+    parser.add_argument("--base", default=config.base, help="Override DWP REST base URL (default: DWP_BASE).")
     args = parser.parse_args()
+
+    if args.cookie_mode:
+        args.browser_profile = None
+    if args.target == "location":
+        for name in ("city", "building", "floor", "room", "cabinet"):
+            if getattr(args, name) is None:
+                setattr(args, name, getattr(config, name))
+    if not args.status:
+        args.status = (
+            config.default_user_status
+            if args.target == "user"
+            else config.default_location_status
+        )
 
     user_deployment = validate_args(args)
     if args.manual_review and not args.submit:
@@ -1115,7 +1153,7 @@ Safety:
             client, request_id, questionnaire_id, all_items,
             "Please select user - device has been deployed to",
             "Please select user - device has been deployed to",
-            args.deployed_to, args.deployed_to,
+            args.deployed_to,
             search_type="DataTable",
         )
         verbose_detail(client, f"Deployment target: user {selected_deployed_to}")
@@ -1139,12 +1177,6 @@ Safety:
             answer(client, request_id, questionnaire_id, returned, "YES")
             add_dropoff = field_by_label(all_items, "Add Name of person who dropped off device", type_="YesNo")
             answer(client, request_id, questionnaire_id, add_dropoff, "true")
-            dropoff_search = field_by_label(
-                all_items, "Search Name or User ID that dropped off devices", type_="TextField"
-            )
-            dropoff_table = field_by_label(
-                all_items, "Select person who dropped device/s off", type_="DataTable"
-            )
             lookup_and_answer(
                 client,
                 request_id,
@@ -1152,7 +1184,6 @@ Safety:
                 all_items,
                 "Search Name or User ID that dropped off devices",
                 "Select person who dropped device/s off",
-                args.dropped_by,
                 args.dropped_by,
             )
         location_summary = " --> ".join([args.building, args.floor, args.room])
