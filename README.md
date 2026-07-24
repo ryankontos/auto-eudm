@@ -14,7 +14,7 @@ The captures contain internal and personal data. This repository is public by re
 
 The script requires an authenticated DWP session. Supply the browser session's `Cookie` request header through `DWP_COOKIE`; it is not stored by the script.
 
-To avoid copying cookies, install Playwright and use a dedicated Chrome profile. The browser mode keeps the cookies inside the script process and asks you to complete SSO interactively:
+To avoid copying cookies, install Playwright and use a dedicated Chrome profile. The browser mode launches the installed Google Chrome binary directly through Playwright (no AppleScript, `osascript`, or Apple Events), keeps the cookies inside the script process, and asks you to complete SSO interactively:
 
 ```bash
 python3 -m pip install -r requirements-browser.txt

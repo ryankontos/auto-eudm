@@ -29,7 +29,7 @@ class DWPError(RuntimeError):
 
 
 def cookie_from_browser(profile: str, app_url: str) -> str:
-    """Open a dedicated Chrome profile, allow SSO, and read its DWP cookies."""
+    """Open installed Google Chrome via Playwright; never use Apple Events."""
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
