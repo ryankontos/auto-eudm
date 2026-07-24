@@ -12,6 +12,32 @@ exact argument reference for the version you have checked out.
 | `interactive_device_request.py` | Choosing from live DWP devices, statuses, locations, and people | A numbered wizard for one device or batch-to-location flow. |
 | `inventory_sheet_cli.py` | Deploying devices from an Inventory Tracking - Sydney workbook | One user request per selected new or old serial, with grouped results. |
 
+## macOS launchers
+
+The repository includes double-clickable launchers:
+
+| File | Runs |
+| --- | --- |
+| `run-device-request.command` | `automate_device_request.py` |
+| `run-interactive-device-request.command` | `interactive_device_request.py` |
+| `run-inventory-sheet.command` | `inventory_sheet_cli.py` |
+
+They locate the repository from the launcher’s own path, so they work from
+Finder or Terminal. Arguments are passed through unchanged:
+
+```bash
+./run-interactive-device-request.command --simulate --manual
+```
+
+```bash
+./run-inventory-sheet.command --dry-run
+```
+
+Opening `run-device-request.command` without arguments displays the direct
+script help and a copyable example because that script requires request values.
+The other two launchers start their interactive flows when opened without
+arguments.
+
 ## Safety and modes
 
 | Mode | Browser/network | Real DWP request | Final DWP order |

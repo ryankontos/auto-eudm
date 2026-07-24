@@ -15,6 +15,16 @@ The captures contain internal and personal data. This repository is public by re
 
 See [USAGE.md](USAGE.md) for the complete operating guide. Every command also documents its arguments and safety behaviour through `--help`.
 
+On macOS, the three `.command` files in the repository are double-clickable launchers:
+
+```bash
+./run-device-request.command --help
+./run-interactive-device-request.command --simulate
+./run-inventory-sheet.command --dry-run
+```
+
+They change into the repository folder before running, use the system `python3`, and pass arguments through to the underlying CLI. If macOS blocks a newly downloaded launcher, right-click it in Finder and choose Open once.
+
 ## Run
 
 The script requires an authenticated DWP session. Supply the browser session's `Cookie` request header through `DWP_COOKIE`; it is not stored by the script.
