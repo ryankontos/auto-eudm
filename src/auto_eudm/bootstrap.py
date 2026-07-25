@@ -13,20 +13,42 @@ def _venv_python(venv: Path) -> Path:
     return venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
 
+def _restart_in(python: Path) -> None:
+    env = os.environ.copy()
+    env["EUDM_BOOTSTRAPPED"] = "1"
+    # ``python -m package.module`` sets argv[0] to the module source path.
+    # Preserve the module invocation so package-relative imports still work.
+    main_spec = getattr(sys.modules.get("__main__"), "__spec__", None)
+    if main_spec is not None and getattr(main_spec, "name", None):
+        command = [str(python), "-m", main_spec.name, *sys.argv[1:]]
+    else:
+        command = [str(python), *sys.argv]
+    os.execvpe(str(python), command, env)
+
+
 def ensure_runtime(*, requirement_file: str, import_name: str) -> None:
     """Create/use the repository .venv and install an optional dependency set."""
-    if os.getenv("DWP_SKIP_AUTO_INSTALL", "").casefold() in {"1", "true", "yes", "on"}:
+    if os.getenv("EUDM_SKIP_AUTO_INSTALL", "").casefold() in {"1", "true", "yes", "on"}:
         return
-    if os.getenv("DWP_BOOTSTRAPPED") or any(arg in {"-h", "--help"} for arg in sys.argv[1:]):
+    if os.getenv("EUDM_BOOTSTRAPPED") or any(arg in {"-h", "--help"} for arg in sys.argv[1:]):
         return
     if importlib.util.find_spec(import_name) is not None:
         return
 
     root = Path(__file__).resolve().parents[2]
-    venv = Path(os.getenv("DWP_VENV_DIR", str(root / ".venv"))).expanduser()
+    venv = Path(os.getenv("EUDM_VENV_DIR", str(root / ".venv"))).expanduser()
     python = _venv_python(venv)
     requirements = root / "requirements" / requirement_file
     try:
+        if python.exists():
+            available = subprocess.run(
+                [str(python), "-c", f"import {import_name}"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            ).returncode == 0
+            if available:
+                _restart_in(python)
         if not python.exists():
             print("Setting up the project environment (one time)...", file=sys.stderr)
             subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True)
@@ -35,18 +57,7 @@ def ensure_runtime(*, requirement_file: str, import_name: str) -> None:
     except (OSError, subprocess.CalledProcessError) as exc:
         raise SystemExit(
             f"Could not prepare the local Python environment. Install {requirements} manually, "
-            f"or set DWP_SKIP_AUTO_INSTALL=1. ({exc})"
+            f"or set EUDM_SKIP_AUTO_INSTALL=1. ({exc})"
         ) from exc
 
-    env = os.environ.copy()
-    env["DWP_BOOTSTRAPPED"] = "1"
-
-    # ``python -m package.module`` sets argv[0] to the module's source path.
-    # Replaying that path would execute it as a standalone file and make its
-    # relative imports fail. Preserve the original module invocation instead.
-    main_spec = getattr(sys.modules.get("__main__"), "__spec__", None)
-    if main_spec is not None and getattr(main_spec, "name", None):
-        command = [str(python), "-m", main_spec.name, *sys.argv[1:]]
-    else:
-        command = [str(python), *sys.argv]
-    os.execvpe(str(python), command, env)
+    _restart_in(python)

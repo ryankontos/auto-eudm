@@ -1,4 +1,4 @@
-"""Reusable console prompts and runtime options for the DWP frontends."""
+"""Reusable console prompts and runtime options for the EUDM frontends."""
 
 from __future__ import annotations
 
@@ -6,8 +6,9 @@ import argparse
 import urllib.parse
 from typing import Any, Sequence, TypeVar
 
-from . import automate_device_request as dwp
-from .dwp_config import AppConfig
+from . import eudm_request as eudm
+from .eudm_config import AppConfig
+from . import run_reporting
 
 
 T = TypeVar("T")
@@ -26,7 +27,7 @@ class Console:
 
     def choose(self, label: str, choices: Sequence[tuple[str, T]]) -> tuple[str, T]:
         if not choices:
-            raise dwp.DWPError(f"No choices are available for {label}")
+            raise eudm.EUDMError(f"No choices are available for {label}")
         print(f"\n{label}")
         for index, (display, _) in enumerate(choices, 1):
             print(f"  {index}. {display}")
@@ -65,18 +66,24 @@ def add_runtime_arguments(
     parser.add_argument(
         "--browser-profile",
         default=config.browser_profile,
-        help="Dedicated installed-Chrome profile for SSO (default: DWP_BROWSER_PROFILE).",
+        help="Dedicated installed-Chrome profile for SSO (default: EUDM_BROWSER_PROFILE).",
+    )
+    parser.add_argument(
+        "--headless",
+        action=argparse.BooleanOptionalAction,
+        default=config.browser_headless,
+        help="Run the dedicated Chrome profile without a visible window (default: EUDM_BROWSER_HEADLESS).",
     )
     parser.add_argument(
         "--cookie-mode",
         action="store_true",
-        help="Use DWP_COOKIE instead of opening Chrome. The cookie is never saved.",
+        help="Use EUDM_COOKIE instead of opening Chrome. The cookie is never saved.",
     )
     parser.add_argument(
         "--simulate",
         action=argparse.BooleanOptionalAction,
         default=config.simulate,
-        help="Use the local simulator; default can be set with DWP_SIMULATE.",
+        help="Use the local simulator; default can be set with EUDM_SIMULATE.",
     )
     if include_manual_review:
         parser.add_argument(
@@ -85,18 +92,32 @@ def add_runtime_arguments(
             "--manual",
             action=argparse.BooleanOptionalAction,
             default=config.manual_review,
-            help="Approve each populated request; default can be set with DWP_MANUAL_REVIEW.",
+            help="Approve each populated request; default can be set with EUDM_MANUAL_REVIEW.",
         )
     parser.add_argument(
         "--verbose",
         action=argparse.BooleanOptionalAction,
         default=config.verbose,
-        help="Show safe internal progress; default can be set with DWP_VERBOSE.",
+        help="Show safe internal progress; default can be set with EUDM_VERBOSE.",
+    )
+    parser.add_argument(
+        "--logging",
+        action=argparse.BooleanOptionalAction,
+        default=config.logging,
+        help="Write safe API/authentication activity to logs/ (default: EUDM_LOGGING).",
+    )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=config.concurrency,
+        choices=range(1, 9),
+        metavar="1-8",
+        help="Parallel user requests (default: EUDM_CONCURRENCY; review mode stays sequential).",
     )
     parser.add_argument(
         "--base",
         default=config.base,
-        help="DWP REST URL (default: DWP_BASE).",
+        help="EUDM REST URL (default: EUDM_BASE).",
     )
 
 
@@ -109,17 +130,23 @@ def validate_runtime_args(args: argparse.Namespace) -> None:
         or not parsed.netloc
         or not parsed.path.rstrip("/").endswith("/rest")
     ):
-        raise dwp.DWPError("--base must be an HTTPS DWP REST URL ending in /rest")
+        raise eudm.EUDMError("--base must be an HTTPS EUDM REST URL ending in /rest")
 
 
 def open_client(args: argparse.Namespace) -> Any:
     validate_runtime_args(args)
-    return dwp.open_client(
+    return eudm.open_client(
         base=args.base,
         browser_profile=args.browser_profile,
+        headless=args.headless,
         simulate=args.simulate,
         verbose=args.verbose,
     )
+
+
+def start_run(args: argparse.Namespace, command: str) -> None:
+    """Enable the optional safe activity log before authentication starts."""
+    run_reporting.configure_logging(enabled=getattr(args, "logging", False), command=command)
 
 
 def request_for(args: argparse.Namespace, config: AppConfig) -> str:
@@ -127,5 +154,5 @@ def request_for(args: argparse.Namespace, config: AppConfig) -> str:
     if not value:
         value = console.text("Request-for login ID")
     if any(character.isspace() for character in value):
-        raise dwp.DWPError("The request-for login ID cannot contain whitespace.")
+        raise eudm.EUDMError("The request-for login ID cannot contain whitespace.")
     return value

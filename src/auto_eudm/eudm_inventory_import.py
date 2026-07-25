@@ -2,7 +2,7 @@
 """Guided importer for Sydney inventory tracking workbooks.
 
 The importer reads a dated sheet, previews the resulting device changes, then
-either stops (--dry-run), submits real DWP requests, or submits fully local
+either stops (--dry-run), submits real EUDM requests, or submits fully local
 simulation requests (--simulate). It never submits before showing the preview
 and receiving a final confirmation.
 """
@@ -19,16 +19,17 @@ import sys
 from typing import Any, Iterable
 
 from .bootstrap import ensure_runtime
-from . import automate_device_request as dwp
+from . import eudm_request as eudm
 from .cli_common import (
     add_runtime_arguments,
     console,
     open_client,
     request_for as resolve_request_for,
+    start_run,
     validate_runtime_args,
 )
-from .dwp_config import AppConfig
-from .user_deployments import (
+from .eudm_config import AppConfig
+from .user_assignments import (
     DeploymentOutcome,
     UserDeployment,
     UserDeploymentRunner,
@@ -47,7 +48,6 @@ class SheetRow:
     row_number: int
     deployment_date: date
     username: str | None
-    username_from_email: bool
     new_serial: str | None
     old_serial: str | None
     marked_red: bool
@@ -119,14 +119,9 @@ def normalize_date(value: Any, epoch: datetime) -> date | None:
     return None
 
 
-def username_for(row: tuple[Any, ...]) -> tuple[str | None, bool]:
-    username = clean_text(row[3].value)
-    if username:
-        return username, False
-    email = clean_text(row[5].value)
-    if email and "@" in email:
-        return email.split("@", 1)[0], True
-    return None, False
+def username_for(row: tuple[Any, ...]) -> str | None:
+    """Read the EUDM username from column D only; column F is never a fallback."""
+    return clean_text(row[3].value)
 
 
 def select_workbook_sheet(workbook: Any) -> Any:
@@ -143,16 +138,16 @@ def load_sheet(path: Path) -> tuple[str, list[SheetRow]]:
     try:
         from openpyxl import load_workbook
     except ImportError as exc:
-        raise dwp.DWPError(
+        raise eudm.EUDMError(
             "Spreadsheet support is not installed. Run: "
             "python3 -m pip install -r requirements-sheet.txt"
         ) from exc
     try:
         workbook = load_workbook(path, data_only=True, read_only=False)
     except FileNotFoundError as exc:
-        raise dwp.DWPError(f"Spreadsheet not found: {path}") from exc
+        raise eudm.EUDMError(f"Spreadsheet not found: {path}") from exc
     except Exception as exc:
-        raise dwp.DWPError(
+        raise eudm.EUDMError(
             f"Could not read {path.name}. Use an unencrypted .xlsx or .xlsm workbook."
         ) from exc
     try:
@@ -162,20 +157,19 @@ def load_sheet(path: Path) -> tuple[str, list[SheetRow]]:
             deployment_date = normalize_date(values[0].value, workbook.epoch)
             if deployment_date is None:
                 continue
-            username, from_email = username_for(values)
+            username = username_for(values)
             rows.append(
                 SheetRow(
                     row_number=values[0].row,
                     deployment_date=deployment_date,
                     username=username,
-                    username_from_email=from_email,
                     new_serial=clean_text(values[9].value),
                     old_serial=clean_text(values[11].value),
                     marked_red=any(cell_is_red(cell) for cell in values),
                 )
             )
         if not rows:
-            raise dwp.DWPError(
+            raise eudm.EUDMError(
                 f"No dated data rows were found in columns A-L of sheet {sheet.title!r}."
             )
         return sheet.title, rows
@@ -203,7 +197,7 @@ def choose_file(argument: str | None) -> Path:
         return Path(raw).expanduser().resolve() if raw else latest.resolve()
     raw = input("Spreadsheet path: ").strip()
     if not raw:
-        raise dwp.DWPError(
+        raise eudm.EUDMError(
             f"No {FILE_PREFIX!r} workbook was found in Downloads and no file was entered."
         )
     return Path(raw).expanduser().resolve()
@@ -235,12 +229,11 @@ def parse_number_selection(raw: str, maximum: int) -> set[int]:
 
 
 def eligible_counts(rows: Iterable[SheetRow]) -> tuple[int, int]:
-    eligible = [
-        row
-        for row in rows
-        if not row.marked_red and looks_like_serial(row.new_serial) and row.username
-    ]
-    return len(eligible), sum(looks_like_serial(row.old_serial) for row in eligible)
+    eligible = [row for row in rows if not row.marked_red and row.username]
+    return (
+        sum(looks_like_serial(row.new_serial) for row in eligible),
+        sum(looks_like_serial(row.old_serial) for row in eligible),
+    )
 
 
 def build_actions(
@@ -254,20 +247,24 @@ def build_actions(
         if row.marked_red:
             ignored["marked red"] += 1
             continue
-        if not looks_like_serial(row.new_serial):
-            ignored["no usable new serial in column J"] += 1
-            continue
         if not row.username:
-            ignored["no username in column D or email in column F"] += 1
+            if mode in ("new", "both") and looks_like_serial(row.new_serial):
+                ignored["new serial has no username in column D"] += 1
+            if mode in ("returns", "both") and looks_like_serial(row.old_serial):
+                ignored["return serial has no username in column D"] += 1
+            if (
+                not looks_like_serial(row.new_serial)
+                and not looks_like_serial(row.old_serial)
+            ):
+                ignored["no username in column D"] += 1
             continue
         if mode in ("new", "both"):
-            actions.append(
-                Action("New deployments", row.row_number, row.username, row.new_serial, NEW_STOCK)
-            )
+            if looks_like_serial(row.new_serial):
+                actions.append(Action("New deployments", row.row_number, row.username, row.new_serial, NEW_STOCK))
+            else:
+                ignored["no usable new serial in column J"] += 1
         if mode in ("returns", "both") and looks_like_serial(row.old_serial):
-            actions.append(
-                Action("Old / pending return", row.row_number, row.username, row.old_serial, PENDING_RETURN)
-            )
+            actions.append(Action("Old / pending return", row.row_number, row.username, row.old_serial, PENDING_RETURN))
         elif mode in ("returns", "both"):
             ignored["no usable old serial in column L"] += 1
 
@@ -279,7 +276,7 @@ def build_actions(
         serial_spellings.setdefault(key, action.serial)
     duplicates = [serial_spellings[key] for key, count in counts.items() if count > 1]
     if duplicates:
-        raise dwp.DWPError(
+        raise eudm.EUDMError(
             "The selected work contains duplicate serial numbers: " + ", ".join(duplicates)
         )
     return actions, ignored
@@ -292,7 +289,7 @@ def override_new_statuses(actions: list[Action]) -> list[Action]:
     print("\nNew deployments (default: Deployed - New Stock)")
     for display_index, action_index in enumerate(new_indexes, 1):
         action = actions[action_index]
-        print(f"  {display_index}. row {action.row_number}: {action.serial} → {action.username}")
+        print(f"  {display_index}. {action.serial} → {action.username}")
     while True:
         raw = input(
             "Numbers to change to Deployed - Existing Stock "
@@ -316,7 +313,6 @@ def print_preview(
     selected_date: date,
     actions: list[Action],
     ignored: Counter[str],
-    fallback_count: int,
 ) -> None:
     print("\nPreview")
     print(f"  File: {path}")
@@ -329,22 +325,17 @@ def print_preview(
             print("  None")
         for index, action in enumerate(grouped, 1):
             print(
-                f"  {index}. row {action.row_number} | {action.serial} | "
+                f"  {index}. {action.serial} | "
                 f"{action.username} | {action.status}"
             )
     if ignored:
-        print("\nIgnored rows")
+        print("\nIgnored serial numbers")
         for reason, count in sorted(ignored.items()):
             print(f"  {count} × {reason}")
-    if fallback_count:
-        print(
-            f"\nNote: {fallback_count} selected row(s) used the column F email prefix "
-            "because column D did not contain a usable username."
-        )
 
 
 def execute(
-    client: Any, actions: list[Action], request_for: str, manual_review_enabled: bool
+    client: Any, actions: list[Action], request_for: str, manual_review_enabled: bool, concurrency: int
 ) -> list[DeploymentOutcome]:
     deployments = [
         UserDeployment(
@@ -357,12 +348,14 @@ def execute(
         for action in actions
     ]
     return UserDeploymentRunner(
-        client, request_for, manual_review=manual_review_enabled
+        client, request_for, manual_review=manual_review_enabled, concurrency=concurrency
     ).run(deployments)
 
 
 def print_results(outcomes: list[DeploymentOutcome]) -> None:
-    print_grouped_results(outcomes, ("New deployments", "Old / pending return"))
+    print_grouped_results(
+        outcomes, ("New deployments", "Old / pending return"), command="eudm-inventory-import"
+    )
 
 
 def main() -> int:
@@ -370,7 +363,11 @@ def main() -> int:
     try:
         config = AppConfig.load()
     except ValueError as exc:
-        raise dwp.DWPError(f"Could not load shared configuration: {exc}") from exc
+        raise eudm.EUDMError(f"Could not load shared configuration: {exc}") from exc
+    if "--no-simulate" in sys.argv[1:] or (
+        "--simulate" not in sys.argv[1:] and not config.simulate
+    ):
+        ensure_runtime(requirement_file="requirements-browser.txt", import_name="playwright")
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -378,12 +375,13 @@ def main() -> int:
   The newest 'Inventory Tracking - Sydney*.xlsx' or .xlsm in Downloads is used
   when FILE is omitted. 'Bookings 2026' is selected automatically; otherwise
   you choose a sheet. A=deployment date, D=username, J=new serial, L=old serial.
-  Red rows and rows without a usable column-J serial are excluded before DWP.
+  Red rows and rows without a username in D are excluded before EUDM. New and
+  return serials are assessed independently from columns J and L.
 
 Modes:
-  --dry-run ends after the preview with zero browser or DWP API activity.
+  --dry-run ends after the preview with zero browser or EUDM API activity.
   --simulate continues after confirmation using local SIM-REQ/SIM-ORDER IDs,
-  but never opens Chrome, reads cookies, contacts DWP, or changes real data.
+  but never opens Chrome, reads cookies, contacts EUDM, or changes real data.
   --manual-review asks for a separate y/n approval after each request is populated.
 """,
     )
@@ -391,16 +389,17 @@ Modes:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Preview only. Does not open Chrome or make any DWP API requests.",
+        help="Preview only. Does not open Chrome or make any EUDM API requests.",
     )
     parser.add_argument(
         "--request-for",
         default=config.request_for,
-        help="Remedy login ID for every request (default: DWP_REQUEST_FOR).",
+        help="Remedy login ID for every request (default: EUDM_REQUEST_FOR).",
     )
     add_runtime_arguments(parser, config)
     args = parser.parse_args()
     validate_runtime_args(args)
+    start_run(args, "eudm-inventory-import")
 
     path = choose_file(args.file)
     sheet_name, rows = load_sheet(path)
@@ -415,33 +414,34 @@ Modes:
             f"({new_count} new, {return_count} returns)"
         )
     selected_date = dates[choose_number("Deployment date", date_options)]
+    selected_counts = eligible_counts(
+        row for row in rows if row.deployment_date == selected_date
+    )
     mode_index = choose_number(
         "What should be deployed?",
-        ["New serials from column J", "Returns from column L", "Both new serials and returns"],
+        [
+            f"New serials from column J [{selected_counts[0]}]",
+            f"Returns from column L [{selected_counts[1]}]",
+            f"Both new serials and returns [{sum(selected_counts)}]",
+        ],
     )
     mode = ("new", "returns", "both")[mode_index]
     actions, ignored = build_actions(rows, selected_date, mode)
     if not actions:
-        raise dwp.DWPError("No deployable rows remain for that date and selection.")
+        raise eudm.EUDMError("No deployable rows remain for that date and selection.")
     actions = override_new_statuses(actions)
-    selected_rows = {
-        action.row_number for action in actions
-    }
-    fallback_count = sum(
-        row.username_from_email for row in rows if row.row_number in selected_rows
-    )
-    print_preview(path, sheet_name, selected_date, actions, ignored, fallback_count)
+    print_preview(path, sheet_name, selected_date, actions, ignored)
 
     if args.dry_run:
-        print("\nDry run complete. No browser was opened and no DWP API requests were made.")
+        print("\nDry run complete. No browser was opened and no EUDM API requests were made.")
         return 0
     requester = resolve_request_for(args, config)
     if not yes_no(f"Submit all {len(actions)} requests now?"):
-        print("Cancelled before authentication. No DWP API requests were made.")
+        print("Cancelled before authentication. No EUDM API requests were made.")
         return 0
 
     client = open_client(args)
-    outcomes = execute(client, actions, requester, args.manual_review)
+    outcomes = execute(client, actions, requester, args.manual_review, args.concurrency)
     print_results(outcomes)
     return 1 if any(outcome.error for outcome in outcomes) else 0
 
@@ -455,7 +455,7 @@ if __name__ == "__main__":
     except EOFError:
         print("\nInput ended before the import was complete.", file=sys.stderr)
         raise SystemExit(2)
-    except dwp.DWPError as exc:
+    except eudm.EUDMError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         raise SystemExit(2)
     except Exception:

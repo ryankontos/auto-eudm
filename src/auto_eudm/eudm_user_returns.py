@@ -13,10 +13,10 @@ from pathlib import Path
 import sys
 
 from .bootstrap import ensure_runtime
-from . import automate_device_request as dwp
-from .cli_common import add_runtime_arguments, console, open_client, request_for, validate_runtime_args
-from .dwp_config import AppConfig
-from .user_deployments import (
+from . import eudm_request as eudm
+from .cli_common import add_runtime_arguments, console, open_client, request_for, start_run, validate_runtime_args
+from .eudm_config import AppConfig
+from .user_assignments import (
     USER_STATUSES,
     UserDeployment,
     UserDeploymentRunner,
@@ -33,11 +33,11 @@ class SerialUserCLI:
             description=__doc__,
             formatter_class=argparse.RawDescriptionHelpFormatter,
             epilog="""Input examples:
-  python3 serial_user_cli.py $'ABC123 user.one\\nDEF456 user.two'
-  python3 serial_user_cli.py --file assignments.txt
-  pbpaste | python3 serial_user_cli.py -
+  python3 eudm_user_returns.py $'ABC123 user.one\\nDEF456 user.two'
+  python3 eudm_user_returns.py --file assignments.txt
+  pbpaste | python3 eudm_user_returns.py -
 
-Status option 1 is Used stock (the DWP value Deployed - Existing Stock).
+Status option 1 is Used stock (the EUDM value Deployed - Existing Stock).
 All values are previewed before authentication. Use --dry-run for no API work
 or --simulate for a complete local rehearsal.
 """,
@@ -51,12 +51,12 @@ or --simulate for a complete local rehearsal.
         parser.add_argument(
             "--request-for",
             default=self.config.request_for,
-            help="Requesting login ID (default: DWP_REQUEST_FOR).",
+            help="Requesting login ID (default: EUDM_REQUEST_FOR).",
         )
         parser.add_argument(
             "--dry-run",
             action="store_true",
-            help="Parse and preview only; no browser or DWP requests.",
+            help="Parse and preview only; no browser or EUDM requests.",
         )
         parser.add_argument(
             "--yes",
@@ -83,12 +83,12 @@ or --simulate for a complete local rehearsal.
     @staticmethod
     def read_input(args: argparse.Namespace) -> str:
         if args.file and args.pairs is not None:
-            raise dwp.DWPError("Use either PAIRS or --file, not both.")
+            raise eudm.EUDMError("Use either PAIRS or --file, not both.")
         if args.file:
             try:
                 return args.file.expanduser().read_text(encoding="utf-8")
             except OSError as exc:
-                raise dwp.DWPError(f"Could not read input file: {args.file}") from exc
+                raise eudm.EUDMError(f"Could not read input file: {args.file}") from exc
         if args.pairs == "-" or (args.pairs is None and not sys.stdin.isatty()):
             return sys.stdin.read()
         if args.pairs is not None:
@@ -109,13 +109,13 @@ or --simulate for a complete local rehearsal.
             serial, username = fields
             pairs.append((serial, username))
         if errors:
-            raise dwp.DWPError("Invalid input: " + "; ".join(errors))
+            raise eudm.EUDMError("Invalid input: " + "; ".join(errors))
         if not pairs:
-            raise dwp.DWPError("No SERIAL USERNAME pairs were supplied.")
+            raise eudm.EUDMError("No SERIAL USERNAME pairs were supplied.")
         serials = [serial.casefold() for serial, _ in pairs]
         duplicates = sorted({serial for serial in serials if serials.count(serial) > 1})
         if duplicates:
-            raise dwp.DWPError("Duplicate serial numbers: " + ", ".join(duplicates))
+            raise eudm.EUDMError("Duplicate serial numbers: " + ", ".join(duplicates))
         return pairs
 
     def choose_status(self) -> tuple[str, str]:
@@ -146,6 +146,7 @@ or --simulate for a complete local rehearsal.
     def run(self) -> int:
         args = self.parser().parse_args()
         validate_runtime_args(args)
+        start_run(args, "eudm-user-returns")
         pairs = self.parse_pairs(self.read_input(args))
         status_label, status_value = self.choose_status()
         deployments = [
@@ -153,24 +154,27 @@ or --simulate for a complete local rehearsal.
         ]
         self.preview(deployments, status_label)
         if args.dry_run:
-            print("\nDry run complete. No browser was opened and no DWP requests were made.")
+            print("\nDry run complete. No browser was opened and no EUDM requests were made.")
             return 0
         requester = request_for(args, self.config)
         if not args.yes and not console.yes_no(f"Submit all {len(deployments)} requests now?"):
-            print("Cancelled before authentication. No DWP requests were made.")
+            print("Cancelled before authentication. No EUDM requests were made.")
             return 0
         client = open_client(args)
         outcomes = UserDeploymentRunner(
-            client, requester, manual_review=args.manual_review
+            client, requester, manual_review=args.manual_review, concurrency=args.concurrency
         ).run(deployments)
-        print_grouped_results(outcomes)
+        print_grouped_results(outcomes, command="eudm-user-returns")
         return 1 if any(outcome.error for outcome in outcomes) else 0
 
 
 def main() -> int:
-    if not any(arg in {"--simulate", "--no-simulate"} for arg in sys.argv[1:]):
+    config = AppConfig.load()
+    if "--no-simulate" in sys.argv[1:] or (
+        "--simulate" not in sys.argv[1:] and not config.simulate
+    ):
         ensure_runtime(requirement_file="requirements-browser.txt", import_name="playwright")
-    return SerialUserCLI(AppConfig.load()).run()
+    return SerialUserCLI(config).run()
 
 
 if __name__ == "__main__":
@@ -182,7 +186,7 @@ if __name__ == "__main__":
     except EOFError:
         print("\nInput ended before the batch was complete.", file=sys.stderr)
         raise SystemExit(2)
-    except (dwp.DWPError, ValueError) as exc:
+    except (eudm.EUDMError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         raise SystemExit(2)
     except Exception:

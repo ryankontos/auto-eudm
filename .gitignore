@@ -9,6 +9,8 @@ cookie*.txt
 work/
 .venv/
 venv/
+logs/
+results/
 
 # Local-only DWP captures. These must never be committed to the public repository.
 big.har

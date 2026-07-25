@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Automate one Macquarie DWP device-management request.
+"""Automate one Macquarie EUDM device-management request.
 
-Normal mode talks to DWP using either DWP_COOKIE or a dedicated Chrome profile.
+Normal mode talks to EUDM using either EUDM_COOKIE or a dedicated Chrome profile.
 It creates and populates a request, but only submits the final order with
---submit. Creating/populating a non-submitted request is still a real DWP
+--submit. Creating/populating a non-submitted request is still a real EUDM
 server-side change.
 
 Use --simulate to exercise the same validation and questionnaire path locally.
-Simulation never starts Chrome, reads cookies, reaches DWP, or changes data.
+Simulation never starts Chrome, reads cookies, reaches EUDM, or changes data.
 """
 
 from __future__ import annotations
@@ -20,6 +20,8 @@ from pathlib import Path
 import subprocess
 import sys
 import ssl
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -27,26 +29,28 @@ from dataclasses import dataclass
 from typing import Any
 
 from .bootstrap import ensure_runtime
-from .dwp_config import AppConfig
+from .eudm_config import AppConfig
+from . import run_reporting
+from . import presentation
 
 
 DEFAULT_BASE = "https://macquarie-dwp.onbmc.com/dwp/rest"
-DEFAULT_BROWSER_PROFILE = "~/.dwp-device-request-chrome"
+DEFAULT_BROWSER_PROFILE = "~/.auto-eudm-chrome"
 
 
-class DWPError(RuntimeError):
+class EUDMError(RuntimeError):
     pass
 
 
-class MatchError(DWPError):
+class MatchError(EUDMError):
     """A search completed successfully but did not identify one record."""
 
 
-class MatchSkipped(DWPError):
+class MatchSkipped(EUDMError):
     """The operator chose not to continue after a failed or ambiguous match."""
 
 
-class DeploymentExecutionError(DWPError):
+class DeploymentExecutionError(EUDMError):
     def __init__(self, request_id: str, message: str) -> None:
         super().__init__(message)
         self.request_id = request_id
@@ -62,19 +66,22 @@ class DeploymentResult:
     resolved_username: str | None = None
 
 
+PROMPT_LOCK = threading.Lock()
+
+
 def http_error_message(status: int, action: str) -> str:
     messages = {
         400: "The service rejected the request data.",
-        401: "Authentication was rejected. Refresh the DWP login and try again.",
+        401: "Authentication was rejected. Refresh the EUDM login and try again.",
         403: "Your account is not allowed to perform this request.",
-        404: "The DWP endpoint or questionnaire field was not found.",
-        409: "DWP reported a conflict with this request.",
-        422: "DWP rejected one of the selected values.",
+        404: "The EUDM endpoint or questionnaire field was not found.",
+        409: "EUDM reported a conflict with this request.",
+        422: "EUDM rejected one of the selected values.",
     }
     if status >= 500:
-        detail = "The DWP service is temporarily unavailable."
+        detail = "The EUDM service is temporarily unavailable."
     else:
-        detail = messages.get(status, f"DWP returned HTTP {status}.")
+        detail = messages.get(status, f"EUDM returned HTTP {status}.")
     return f"{action}: {detail}"
 
 
@@ -88,14 +95,15 @@ def request_step(
 ) -> Any:
     try:
         return client.request(method, path, payload)
-    except DWPError as exc:
-        raise DWPError(f"{action}: {exc}") from exc
+    except EUDMError as exc:
+        raise EUDMError(f"{action}: {exc}") from exc
 
 
 def verbose_detail(client: Any, message: str) -> None:
     """Show implementation-level progress only when the caller asks for it."""
     if getattr(client, "verbose", False):
         print(message, file=sys.stderr)
+    run_reporting.event("%s", message)
 
 
 def retry_or_skip(kind: str, value: str, error: MatchError) -> str:
@@ -104,15 +112,16 @@ def retry_or_skip(kind: str, value: str, error: MatchError) -> str:
     Match correction is intentionally independent of --manual-review: selecting
     a wrong asset or person must never be an automatic outcome.
     """
-    print(f"\nCould not uniquely match {kind} {value!r}.")
-    print(f"  {error}")
-    while True:
-        replacement = input(f"Enter a different {kind}, or type 'skip': ").strip()
-        if replacement.casefold() == "skip":
-            raise MatchSkipped(f"Skipped because {kind} {value!r} was not uniquely matched.")
-        if replacement:
-            return replacement
-        print(f"Enter a {kind} or type 'skip'.")
+    with PROMPT_LOCK:
+        print(f"\nCould not uniquely match {kind} {value!r}.")
+        print(f"  {error}")
+        while True:
+            replacement = input(f"Enter a different {kind}, or type 'skip': ").strip()
+            if replacement.casefold() == "skip":
+                raise MatchSkipped(f"Skipped because {kind} {value!r} was not uniquely matched.")
+            if replacement:
+                return replacement
+            print(f"Enter a {kind} or type 'skip'.")
 
 
 def manual_review(
@@ -152,6 +161,7 @@ class BrowserClient:
         self.verbose = verbose
 
     def request(self, method: str, path: str, payload: Any | None = None) -> Any:
+        started = time.monotonic()
         url = self.base.rstrip("/") + "/" + path.lstrip("/")
         body = None if payload is None else json.dumps(payload)
         headers = {
@@ -159,7 +169,7 @@ class BrowserClient:
             "Origin": self.base.split("/rest", 1)[0],
             "Referer": self.base.split("/rest", 1)[0] + "/",
             "X-Requested-By": "XMLHttpRequest",
-            "User-Agent": "dwp-device-request-browser/0.1",
+            "User-Agent": "auto-eudm/1.0",
         }
         if body is not None:
             headers["Content-Type"] = "application/json"
@@ -168,40 +178,66 @@ class BrowserClient:
                 url, method=method, headers=headers, data=body, fail_on_status_code=False
             )
         except Exception as exc:
-            raise DWPError(
-                "Could not reach DWP from the authenticated Chrome session. "
+            run_reporting.network(
+                method, path, duration_ms=int((time.monotonic() - started) * 1000),
+                transport="browser", error=type(exc).__name__,
+            )
+            raise EUDMError(
+                "Could not reach EUDM from the authenticated Chrome session. "
                 "Check the network connection and try again."
             ) from exc
         raw = response.text()
+        run_reporting.network(
+            method, path, status=response.status,
+            duration_ms=int((time.monotonic() - started) * 1000), transport="browser",
+        )
         if self.verbose:
             print(f"{method} {path} -> {response.status}", file=sys.stderr)
         if response.status >= 400:
             if response.status in (401, 403) and is_sso_html(raw):
-                raise DWPError(
-                    "The Chrome session is not authenticated. Complete SSO in the DWP window, "
+                raise EUDMError(
+                    "The Chrome session is not authenticated. Complete SSO in the EUDM window, "
                     "then press Enter to continue."
                 )
-            raise DWPError(http_error_message(response.status, f"DWP request {method} {path}"))
+            raise EUDMError(http_error_message(response.status, f"EUDM request {method} {path}"))
         if not raw:
             return None
         if is_sso_html(raw):
-            raise DWPError(
-                "DWP redirected to SSO. Refresh the login and provide a current "
+            raise EUDMError(
+                "EUDM redirected to SSO. Refresh the login and provide a current "
                 "authenticated Chrome session or cookie."
             )
         try:
             return json.loads(raw)
         except json.JSONDecodeError as exc:
-            raise DWPError(f"{method} {path} returned non-JSON data") from exc
+            raise EUDMError(f"{method} {path} returned non-JSON data") from exc
+
+    def parallel_clients(self, count: int) -> list["Client"]:
+        """Create short-lived in-memory HTTP clients from the signed-in Chrome session."""
+        host = urllib.parse.urlparse(self.base).hostname or ""
+        cookies = [
+            item for item in self.context.cookies()
+            if host == item.get("domain", "").lstrip(".")
+            or host.endswith(item.get("domain", "").lstrip("."))
+        ]
+        header = "; ".join(f"{item['name']}={item['value']}" for item in cookies)
+        if not header:
+            raise EUDMError("The authenticated Chrome session did not provide any EUDM cookies.")
+        run_reporting.event("Prepared %d in-memory clients from authenticated Chrome session", count)
+        return [Client(self.base, header, self.verbose) for _ in range(count)]
 
 
 class SimulationClient:
-    """Small in-memory implementation of the DWP paths used by these CLIs."""
+    """Small in-memory implementation of the EUDM paths used by these CLIs."""
 
     def __init__(self, verbose: bool = False) -> None:
         self.verbose = verbose
         self.request_number = 0
         self.order_number = 0
+        self._lock = threading.Lock()
+
+    def parallel_clients(self, count: int) -> list["SimulationClient"]:
+        return [self] * count
 
     @staticmethod
     def _item(
@@ -316,9 +352,11 @@ class SimulationClient:
     def request(self, method: str, path: str, payload: Any | None = None) -> Any:
         if self.verbose:
             print(f"SIMULATE {method} {path}", file=sys.stderr)
+        run_reporting.network(method, path, status=200, duration_ms=0, transport="simulation")
         if method == "POST" and path == "v2/sbe/services/requests":
-            self.request_number += 1
-            return {"requests": [{"requestId": f"SIM-REQ-{self.request_number:04d}"}]}
+            with self._lock:
+                self.request_number += 1
+                return {"requests": [{"requestId": f"SIM-REQ-{self.request_number:04d}"}]}
         if method == "GET" and path.endswith(
             "/questionnaire?timezoneId=Australia/Sydney"
         ):
@@ -393,31 +431,41 @@ class SimulationClient:
                 )
             return {}
         if method == "POST" and path == "v2/sbe/orders":
-            self.order_number += 1
-            return {"id": f"SIM-ORDER-{self.order_number:04d}"}
-        raise DWPError(f"Simulation does not implement {method} {path}.")
+            with self._lock:
+                self.order_number += 1
+                return {"id": f"SIM-ORDER-{self.order_number:04d}"}
+        raise EUDMError(f"Simulation does not implement {method} {path}.")
 
 
-def browser_client_from_profile(profile: str, app_url: str, base: str, verbose: bool) -> BrowserClient:
+def browser_client_from_profile(
+    profile: str, app_url: str, base: str, verbose: bool, headless: bool = False
+) -> BrowserClient:
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
-        raise DWPError(
-            "Browser mode requires Playwright. Install it with: python3 -m pip install playwright"
+        raise EUDMError(
+            "Playwright could not be loaded after automatic setup. Re-run the command; "
+            "if it persists, set EUDM_LOGGING=true and share the new log file."
         ) from exc
     try:
         playwright = sync_playwright().start()
         context = playwright.chromium.launch_persistent_context(
             user_data_dir=str(Path(profile).expanduser()),
             channel="chrome",
-            headless=False,
+            headless=headless,
         )
         page = context.pages[0] if context.pages else context.new_page()
+        run_reporting.event("Opening Chrome for EUDM SSO")
         page.goto(app_url, wait_until="domcontentloaded", timeout=60_000)
-        print("Chrome opened for DWP authentication. Complete SSO in that window.")
-        input("After the DWP page is signed in, press Enter here to continue: ")
+        if headless:
+            print("Checking the saved Chrome SSO session in the background...")
+            page.wait_for_timeout(2_000)
+        else:
+            print("Chrome opened for EUDM authentication. Complete SSO in that window.")
+            input("After the EUDM page is signed in, press Enter here to continue: ")
     except Exception as exc:
-        raise DWPError(
+        run_reporting.event("Chrome/SSO setup failed: %s", type(exc).__name__)
+        raise EUDMError(
             "Could not start Chrome or complete browser authentication. "
             "Check that Google Chrome and Playwright are installed."
         ) from exc
@@ -433,10 +481,11 @@ def open_client(
     browser_profile: str | None = None,
     simulate: bool = False,
     verbose: bool = False,
+    headless: bool = False,
 ) -> Any:
     """Open one authenticated client that can be reused for many requests."""
     if simulate:
-        print("Simulation mode: no browser, authentication, network, or DWP data will be used.")
+        print("Simulation mode: no browser, authentication, network, or EUDM data will be used.")
         return SimulationClient(verbose)
     if browser_profile:
         return browser_client_from_profile(
@@ -444,13 +493,14 @@ def open_client(
             base.split("/rest", 1)[0] + "/app/",
             base,
             verbose,
+            headless,
         )
-    cookie = os.getenv("DWP_COOKIE", "").strip()
+    cookie = os.getenv("EUDM_COOKIE", "").strip()
     if cookie.lower().startswith("cookie:"):
         cookie = cookie.split(":", 1)[1].strip()
     if not cookie:
-        raise DWPError(
-            "Set DWP_COOKIE or use --browser-profile for an authenticated Chrome session"
+        raise EUDMError(
+            "Set EUDM_COOKIE or use --browser-profile for an authenticated Chrome session"
         )
     return Client(base, cookie, verbose)
 
@@ -461,6 +511,9 @@ class Client:
     cookie: str
     verbose: bool = False
 
+    def parallel_clients(self, count: int) -> list["Client"]:
+        return [Client(self.base, self.cookie, self.verbose) for _ in range(count)]
+
     def _curl_request(self, method: str, url: str, body: bytes | None, headers: dict[str, str]) -> tuple[int, str]:
         """Use the OS curl trust store when Python/OpenSSL rejects a chain."""
         config: list[str] = [f"url = {json.dumps(url)}", f"request = {json.dumps(method)}"]
@@ -468,7 +521,7 @@ class Client:
             config.append(f"header = {json.dumps(f'{name}: {value}')}")
         if body is not None:
             config.append(f"data-binary = {json.dumps(body.decode('utf-8'))}")
-        config.append('write-out = "\\n__DWP_HTTP_STATUS:%{http_code}"')
+        config.append('write-out = "\\n__EUDM_HTTP_STATUS:%{http_code}"')
         result = subprocess.run(
             ["curl", "--silent", "--show-error", "--location", "--config", "-"],
             input=("\n".join(config) + "\n").encode(),
@@ -478,18 +531,19 @@ class Client:
             check=False,
         )
         if result.returncode:
-            raise DWPError(
-                "The system curl transport could not reach DWP. "
+            raise EUDMError(
+                "The system curl transport could not reach EUDM. "
                 "Check the network connection or corporate certificate setup."
             )
         raw = result.stdout.decode("utf-8", errors="replace")
-        marker = "\n__DWP_HTTP_STATUS:"
+        marker = "\n__EUDM_HTTP_STATUS:"
         if marker not in raw:
-            raise DWPError("The system curl transport returned an invalid response.")
+            raise EUDMError("The system curl transport returned an invalid response.")
         content, status_text = raw.rsplit(marker, 1)
         return int(status_text.strip()), content
 
     def request(self, method: str, path: str, payload: Any | None = None) -> Any:
+        started = time.monotonic()
         url = self.base.rstrip("/") + "/" + path.lstrip("/")
         body = None if payload is None else json.dumps(payload).encode()
         headers = {
@@ -497,7 +551,7 @@ class Client:
             "Origin": self.base.split("/rest", 1)[0],
             "Referer": self.base.split("/rest", 1)[0] + "/",
             "X-Requested-By": "XMLHttpRequest",
-            "User-Agent": "dwp-device-request-first-pass/0.1",
+            "User-Agent": "auto-eudm/1.0",
         }
         if body is not None:
             headers["Content-Type"] = "application/json"
@@ -510,38 +564,54 @@ class Client:
                 status = response.status
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
+            run_reporting.network(
+                method, path, status=exc.code,
+                duration_ms=int((time.monotonic() - started) * 1000), transport="urllib",
+            )
             if exc.code in (401, 403) and "single sign on" in detail.lower():
-                raise DWPError(
-                    "DWP redirected to SSO. Refresh the browser login and provide a "
-                    "current DWP cookie, or use --browser-profile."
+                raise EUDMError(
+                    "EUDM redirected to SSO. Refresh the browser login and provide a "
+                    "current EUDM cookie, or use --browser-profile."
                 ) from exc
-            raise DWPError(http_error_message(exc.code, f"DWP request {method} {path}")) from exc
+            raise EUDMError(http_error_message(exc.code, f"EUDM request {method} {path}")) from exc
         except urllib.error.URLError as exc:
             reason = exc.reason
             cert_error = isinstance(reason, ssl.SSLCertVerificationError) or "CERTIFICATE_VERIFY_FAILED" in str(reason)
             if not cert_error:
-                raise DWPError(
-                    f"DWP request {method} {path} could not connect. "
+                run_reporting.network(
+                    method, path, duration_ms=int((time.monotonic() - started) * 1000),
+                    transport="urllib", error=type(reason).__name__,
+                )
+                raise EUDMError(
+                    f"EUDM request {method} {path} could not connect. "
                     "Check the network connection and try again."
                 ) from exc
             if self.verbose:
                 print("Python TLS validation failed; retrying with system curl trust store", file=sys.stderr)
+            run_reporting.event("TLS verification failed; retrying %s %s with system curl", method, path)
             status, raw = self._curl_request(method, url, body, headers)
+            transport = "curl"
+        else:
+            transport = "urllib"
+        run_reporting.network(
+            method, path, status=status,
+            duration_ms=int((time.monotonic() - started) * 1000), transport=transport,
+        )
         if self.verbose:
             print(f"{method} {path} -> {status}", file=sys.stderr)
         if status >= 400:
-            raise DWPError(http_error_message(status, f"DWP request {method} {path}"))
+            raise EUDMError(http_error_message(status, f"EUDM request {method} {path}"))
         if not raw:
             return None
         if is_sso_html(raw):
-            raise DWPError(
-                "DWP redirected to SSO. Refresh the login and provide a current "
+            raise EUDMError(
+                "EUDM redirected to SSO. Refresh the login and provide a current "
                 "authenticated Chrome session or cookie."
             )
         try:
             return json.loads(raw)
         except json.JSONDecodeError as exc:
-            raise DWPError(f"{method} {path} returned non-JSON data") from exc
+            raise EUDMError(f"{method} {path} returned non-JSON data") from exc
 
 
 def items(questionnaire: dict[str, Any]) -> list[dict[str, Any]]:
@@ -551,7 +621,7 @@ def items(questionnaire: dict[str, Any]) -> list[dict[str, Any]]:
 def field_by_label(all_items: list[dict[str, Any]], label: str, *, type_: str | None = None) -> dict[str, Any]:
     matches = [x for x in all_items if x.get("label") == label and (type_ is None or x.get("type") == type_)]
     if not matches:
-        raise DWPError(f"The current questionnaire is missing the expected field {label!r}.")
+        raise EUDMError(f"The current questionnaire is missing the expected field {label!r}.")
     return matches[0]
 
 
@@ -571,8 +641,8 @@ def answer_values(
     label = item.get("label") or "this field"
     try:
         result = client.request("POST", f"v2/sbe/services/{request_id}/questionnaire/answers", payload)
-    except DWPError as exc:
-        raise DWPError(f"Could not set {label!r}: {exc}") from exc
+    except EUDMError as exc:
+        raise EUDMError(f"Could not set {label!r}: {exc}") from exc
     if item.get("type") == "MultiSelectDataTable":
         verbose_detail(client, f"{label}: selected {len(values)} asset(s)")
     elif item.get("type") == "DataTable":
@@ -646,8 +716,8 @@ def choose_location_data_value(
         return matches[0]["dataValue"]
     target = " --> ".join(expected)
     if not matches:
-        raise DWPError(f"No returned location matched {target!r}.")
-    raise DWPError(
+        raise EUDMError(f"No returned location matched {target!r}.")
+    raise EUDMError(
         f"More than one location matched {target!r}; add --cabinet to identify one row."
     )
 
@@ -746,8 +816,8 @@ def lookup_and_answer(
                 f"v2/sbe/services/requests/{request_id}/questions/{search['id']}/lookup",
                 {"query": current},
             ) or {}
-        except DWPError as exc:
-            raise DWPError(f"Could not search {search_label!r}: {exc}") from exc
+        except EUDMError as exc:
+            raise EUDMError(f"Could not search {search_label!r}: {exc}") from exc
         rows = result.get("multiColumnOptions") or []
         try:
             value = choose_data_value(
@@ -794,6 +864,7 @@ def deploy_device_to_user(
     status: str,
     submit: bool = True,
     manual_review_enabled: bool = False,
+    on_request_created: Any | None = None,
 ) -> DeploymentResult:
     """Populate and optionally submit one user deployment request."""
     for label, value in (
@@ -803,18 +874,20 @@ def deploy_device_to_user(
         ("status", status),
     ):
         if not value or value != value.strip():
-            raise DWPError(f"The {label} cannot be empty or have surrounding whitespace.")
+            raise EUDMError(f"The {label} cannot be empty or have surrounding whitespace.")
     if any(character.isspace() for character in serial):
-        raise DWPError(f"Serial number {serial!r} cannot contain whitespace.")
+        raise EUDMError(f"Serial number {serial!r} cannot contain whitespace.")
 
     created = request_step(
         client,
-        "Could not create the DWP request",
+        "Could not create the EUDM request",
         "POST",
         "v2/sbe/services/requests",
         {"serviceId": "25301", "quantity": 1, "requestedForLoginIds": [request_for]},
     )
     request_id = str(created["requests"][0]["requestId"])
+    if on_request_created:
+        on_request_created(request_id)
     verbose_detail(client, f"Created request {request_id}.")
     try:
         return _complete_user_deployment(
@@ -833,7 +906,7 @@ def deploy_device_to_user(
             order_id=None,
             not_submitted_reason=str(exc),
         )
-    except DWPError as exc:
+    except EUDMError as exc:
         raise DeploymentExecutionError(request_id, str(exc)) from exc
 
 
@@ -932,83 +1005,85 @@ def validate_args(args: argparse.Namespace) -> bool:
     for name in ("request_for", "status"):
         value = getattr(args, name)
         if not value or not value.strip():
-            raise DWPError(f"--{name.replace('_', '-')} cannot be empty")
+            raise EUDMError(f"--{name.replace('_', '-')} cannot be empty")
         if value != value.strip():
-            raise DWPError(f"--{name.replace('_', '-')} cannot begin or end with whitespace")
+            raise EUDMError(f"--{name.replace('_', '-')} cannot begin or end with whitespace")
     if args.batch:
         if args.serial:
-            raise DWPError("Batch mode uses --serials, not --serial")
+            raise EUDMError("Batch mode uses --serials, not --serial")
         if not args.serials:
-            raise DWPError("--serials is required in batch mode")
+            raise EUDMError("--serials is required in batch mode")
         serials = [value.strip() for value in args.serials.split(",")]
         if not serials or any(not value for value in serials):
-            raise DWPError("--serials must be a comma-separated list without empty entries")
+            raise EUDMError("--serials must be a comma-separated list without empty entries")
         if any(any(character.isspace() for character in value) for value in serials):
-            raise DWPError("Serial numbers in --serials cannot contain whitespace")
+            raise EUDMError("Serial numbers in --serials cannot contain whitespace")
         if len({value.casefold() for value in serials}) != len(serials):
-            raise DWPError("--serials cannot contain duplicates")
+            raise EUDMError("--serials cannot contain duplicates")
         args.batch_serials = serials
     else:
         if args.serials:
-            raise DWPError("--serials requires --batch")
+            raise EUDMError("--serials requires --batch")
         if not args.serial or not args.serial.strip():
-            raise DWPError("--serial is required outside batch mode")
+            raise EUDMError("--serial is required outside batch mode")
         if args.serial != args.serial.strip() or any(character.isspace() for character in args.serial):
-            raise DWPError("--serial cannot contain leading, trailing, or embedded whitespace")
+            raise EUDMError("--serial cannot contain leading, trailing, or embedded whitespace")
 
     parsed_base = urllib.parse.urlparse(args.base)
     if parsed_base.scheme != "https" or not parsed_base.netloc or not parsed_base.path.rstrip("/").endswith("/rest"):
-        raise DWPError("--base must be an HTTPS DWP REST URL ending in /rest")
+        raise EUDMError("--base must be an HTTPS EUDM REST URL ending in /rest")
 
     user_deployment = args.target == "user"
     location_names = ("city", "building", "floor", "room", "cabinet", "dropped_by")
     if user_deployment:
         if args.batch:
-            raise DWPError("Batch mode supports --target location only")
+            raise EUDMError("Batch mode supports --target location only")
         if not args.deployed_to or not args.deployed_to.strip():
-            raise DWPError("--deployed-to is required when --target user")
+            raise EUDMError("--deployed-to is required when --target user")
         conflicting = [f"--{name.replace('_', '-')}" for name in location_names if getattr(args, name)]
         if conflicting:
-            raise DWPError(
+            raise EUDMError(
                 "User deployment cannot use location arguments: " + ", ".join(conflicting)
             )
     else:
         if args.status.startswith("Deployed - "):
-            raise DWPError(
+            raise EUDMError(
                 "A 'Deployed - ...' status is a user deployment; use --target user"
             )
         if args.deployed_to:
-            raise DWPError("Location deployment cannot use --deployed-to; use --dropped-by")
+            raise EUDMError("Location deployment cannot use --deployed-to; use --dropped-by")
         required = ("city", "building", "floor", "room")
         if not args.batch:
             required += ("dropped_by",)
         missing = [f"--{name.replace('_', '-')}" for name in required if not getattr(args, name)]
         if missing:
-            raise DWPError("Location deployment requires: " + ", ".join(missing))
+            raise EUDMError("Location deployment requires: " + ", ".join(missing))
         for name in required:
             if not getattr(args, name).strip():
-                raise DWPError(f"--{name.replace('_', '-')} cannot be empty")
+                raise EUDMError(f"--{name.replace('_', '-')} cannot be empty")
         if args.cabinet is not None and not args.cabinet.strip():
-            raise DWPError("--cabinet cannot be empty when supplied")
+            raise EUDMError("--cabinet cannot be empty when supplied")
         if args.batch and args.dropped_by:
-            raise DWPError("Batch location mode does not accept --dropped-by")
+            raise EUDMError("Batch location mode does not accept --dropped-by")
 
     if (
         not getattr(args, "simulate", False)
         and args.browser_profile
-        and os.getenv("DWP_COOKIE", "").strip()
+        and os.getenv("EUDM_COOKIE", "").strip()
     ):
-        raise DWPError("Choose either --browser-profile or DWP_COOKIE, not both")
+        raise EUDMError("Choose either --browser-profile or EUDM_COOKIE, not both")
     return user_deployment
 
 
 def main() -> int:
-    if not any(arg in {"--simulate", "--no-simulate"} for arg in sys.argv[1:]):
-        ensure_runtime(requirement_file="requirements-browser.txt", import_name="playwright")
     try:
         config = AppConfig.load()
     except ValueError as exc:
-        raise DWPError(f"Could not load shared configuration: {exc}") from exc
+        raise EUDMError(f"Could not load shared configuration: {exc}") from exc
+    if "--no-simulate" in sys.argv[1:] or (
+        "--simulate" not in sys.argv[1:] and not config.simulate
+    ):
+        ensure_runtime(requirement_file="requirements-browser.txt", import_name="playwright")
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1019,7 +1094,7 @@ def main() -> int:
 
 Safety:
   Arguments are checked before authentication or API calls. Without --submit,
-  DWP still receives a created and populated request, but no final order is sent.
+  EUDM still receives a created and populated request, but no final order is sent.
   --manual-review shows the populated values and asks before the final order.
   Use --simulate for a completely local rehearsal; it produces SIM-REQ IDs.
 """,
@@ -1028,31 +1103,31 @@ Safety:
     parser.add_argument(
         "--batch",
         action="store_true",
-        help="Use DWP BULK by Serial Number for one location; rejects all user fields.",
+        help="Use EUDM BULK by Serial Number for one location; rejects all user fields.",
     )
     parser.add_argument(
         "--serials",
         help="Comma-separated serials for --batch; duplicates, spaces, and empty entries are rejected.",
     )
-    parser.add_argument("--request-for", default=config.request_for, help="Remedy login ID (default: DWP_REQUEST_FOR).")
+    parser.add_argument("--request-for", default=config.request_for, help="Remedy login ID (default: EUDM_REQUEST_FOR).")
     parser.add_argument(
         "--target",
         required=True,
         choices=("user", "location"),
         help="Required deployment destination. This controls which mutually exclusive fields are valid.",
     )
-    parser.add_argument("--city", help="Exact city (location default: DWP_CITY).")
-    parser.add_argument("--building", help="Exact building (location default: DWP_BUILDING).")
-    parser.add_argument("--floor", help="Exact floor (location default: DWP_FLOOR).")
-    parser.add_argument("--room", help="Exact room (location default: DWP_ROOM).")
-    parser.add_argument("--cabinet", help="Optional exact cabinet (location default: DWP_CABINET).")
-    parser.add_argument("--status", help="Exact DWP data value; defaults by target from the shared env.")
+    parser.add_argument("--city", help="Exact city (location default: EUDM_CITY).")
+    parser.add_argument("--building", help="Exact building (location default: EUDM_BUILDING).")
+    parser.add_argument("--floor", help="Exact floor (location default: EUDM_FLOOR).")
+    parser.add_argument("--room", help="Exact room (location default: EUDM_ROOM).")
+    parser.add_argument("--cabinet", help="Optional exact cabinet (location default: EUDM_CABINET).")
+    parser.add_argument("--status", help="Exact EUDM data value; defaults by target from the shared env.")
     parser.add_argument("--deployed-to", help="Receiving login ID. Required for --target user; invalid for locations.")
     parser.add_argument("--dropped-by", help="Drop-off login ID. Required for normal locations; invalid for batch locations.")
     parser.add_argument(
         "--submit",
         action="store_true",
-        help="Send the final DWP order. Without it, the request is populated but not ordered.",
+        help="Send the final EUDM order. Without it, the request is populated but not ordered.",
     )
     parser.add_argument(
         "--manual-review",
@@ -1065,12 +1140,18 @@ Safety:
     parser.add_argument(
         "--browser-profile",
         default=config.browser_profile,
-        help="Dedicated installed-Chrome profile for SSO (default: DWP_BROWSER_PROFILE).",
+        help="Dedicated installed-Chrome profile for SSO (default: EUDM_BROWSER_PROFILE).",
+    )
+    parser.add_argument(
+        "--headless",
+        action=argparse.BooleanOptionalAction,
+        default=config.browser_headless,
+        help="Run Chrome without a visible window (default: EUDM_BROWSER_HEADLESS).",
     )
     parser.add_argument(
         "--cookie-mode",
         action="store_true",
-        help="Use DWP_COOKIE instead of the configured Chrome profile.",
+        help="Use EUDM_COOKIE instead of the configured Chrome profile.",
     )
     parser.add_argument(
         "--verbose",
@@ -1079,13 +1160,21 @@ Safety:
         help="Show questionnaire field updates, matching details, and request/status diagnostics; never prints cookies or response bodies.",
     )
     parser.add_argument(
+        "--logging",
+        action=argparse.BooleanOptionalAction,
+        default=config.logging,
+        help="Write safe API/authentication activity to logs/ (default: EUDM_LOGGING).",
+    )
+    parser.add_argument(
         "--simulate",
         action=argparse.BooleanOptionalAction,
         default=config.simulate,
-        help="Local in-memory rehearsal. Ignores authentication and makes no browser, network, or DWP changes.",
+        help="Local in-memory rehearsal. Ignores authentication and makes no browser, network, or EUDM changes.",
     )
-    parser.add_argument("--base", default=config.base, help="Override DWP REST base URL (default: DWP_BASE).")
+    parser.add_argument("--base", default=config.base, help="Override EUDM REST base URL (default: EUDM_BASE).")
     args = parser.parse_args()
+
+    run_reporting.configure_logging(enabled=args.logging, command="eudm-request")
 
     if args.cookie_mode:
         args.browser_profile = None
@@ -1102,15 +1191,16 @@ Safety:
 
     user_deployment = validate_args(args)
     if args.manual_review and not args.submit:
-        raise DWPError("--manual-review requires --submit; without --submit no final order is sent")
+        raise EUDMError("--manual-review requires --submit; without --submit no final order is sent")
 
     client = open_client(
         base=args.base,
         browser_profile=args.browser_profile,
         simulate=args.simulate,
         verbose=args.verbose,
+        headless=args.headless,
     )
-    created = request_step(client, "Could not create the DWP request", "POST", "v2/sbe/services/requests", {
+    created = request_step(client, "Could not create the EUDM request", "POST", "v2/sbe/services/requests", {
         "serviceId": "25301", "quantity": 1, "requestedForLoginIds": [args.request_for]
     })
     request_id = str(created["requests"][0]["requestId"])
@@ -1166,7 +1256,7 @@ Safety:
         location_table = field_by_label(all_items, "Please select location", type_="DataTable")
         locations = option_data(events, location_table["id"])
         if not locations:
-            raise DWPError("The city selection did not return any selectable locations")
+            raise EUDMError("The city selection did not return any selectable locations")
         location_value = choose_location_data_value(
             locations, args.building, args.floor, args.room, args.cabinet
         )
@@ -1237,6 +1327,33 @@ Safety:
     )
     order_id = order.get("id") if isinstance(order, dict) else None
     print(f"Submitted successfully{f' (order {order_id})' if order_id else ''}. Request {request_id}.")
+    presentation.summary(
+        "Request summary",
+        [
+            (
+                "success",
+                f"{', '.join(review_serials)} → {review_target} {review_destination} | "
+                f"{args.status} | request {request_id}" + (f" | order {order_id}" if order_id else ""),
+            )
+        ],
+    )
+    run_reporting.write_result_file(
+        "eudm-request",
+        [
+            " | ".join(
+                (
+                    "SUBMITTED",
+                    f"serials={','.join(review_serials)}",
+                    f"request_for={args.request_for}",
+                    f"status={args.status}",
+                    f"target={review_target}",
+                    f"destination={review_destination}",
+                    f"request={request_id}",
+                    f"order={order_id or '-'}",
+                )
+            )
+        ],
+    )
     return 0
 
 
@@ -1258,11 +1375,11 @@ if __name__ == "__main__":
             file=sys.stderr,
         )
         raise SystemExit(2)
-    except DWPError as exc:
+    except EUDMError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         raise SystemExit(2)
     except (KeyError, IndexError, TypeError):
-        print("Error: DWP returned an incomplete or unexpected response.", file=sys.stderr)
+        print("Error: EUDM returned an incomplete or unexpected response.", file=sys.stderr)
         raise SystemExit(2)
     except Exception:
         print("Error: An unexpected problem occurred. Re-run with --verbose and report the step shown before it.", file=sys.stderr)

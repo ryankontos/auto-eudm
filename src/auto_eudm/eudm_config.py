@@ -7,7 +7,9 @@ import os
 from pathlib import Path
 
 
-PROJECT_DIR = Path(__file__).resolve().parent
+# eudm_config.py lives under src/auto_eudm; shared .env belongs at
+# the repository root alongside README.md and the launchers.
+PROJECT_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_ENV_FILE = PROJECT_DIR / ".env"
 
 
@@ -19,7 +21,7 @@ def _unquote(value: str) -> str:
 
 def load_env_file(path: Path | None = None) -> Path:
     """Load KEY=VALUE entries without overwriting the real process environment."""
-    selected = path or Path(os.getenv("DWP_ENV_FILE", str(DEFAULT_ENV_FILE))).expanduser()
+    selected = path or Path(os.getenv("EUDM_ENV_FILE", str(DEFAULT_ENV_FILE))).expanduser()
     if not selected.exists():
         return selected
     for number, raw in enumerate(selected.read_text(encoding="utf-8").splitlines(), 1):
@@ -55,6 +57,7 @@ class AppConfig:
     env_file: Path
     base: str
     browser_profile: str | None
+    browser_headless: bool
     request_for: str | None
     city: str | None
     building: str | None
@@ -65,6 +68,8 @@ class AppConfig:
     default_location_status: str
     simulate: bool
     verbose: bool
+    logging: bool
+    concurrency: int
     manual_review: bool
 
     @classmethod
@@ -75,23 +80,30 @@ class AppConfig:
             value = os.getenv(name, "").strip()
             return value or None
 
+        raw_concurrency = os.getenv("EUDM_CONCURRENCY", "1").strip()
+        if not raw_concurrency.isdigit() or int(raw_concurrency) < 1 or int(raw_concurrency) > 8:
+            raise ValueError("EUDM_CONCURRENCY must be a whole number between 1 and 8")
+
         return cls(
             env_file=env_file,
-            base=os.getenv("DWP_BASE", "https://macquarie-dwp.onbmc.com/dwp/rest").strip(),
-            browser_profile=optional("DWP_BROWSER_PROFILE") or "~/.dwp-device-request-chrome",
-            request_for=optional("DWP_REQUEST_FOR"),
-            city=optional("DWP_CITY"),
-            building=optional("DWP_BUILDING"),
-            floor=optional("DWP_FLOOR"),
-            room=optional("DWP_ROOM"),
-            cabinet=optional("DWP_CABINET"),
+            base=os.getenv("EUDM_BASE", "https://macquarie-dwp.onbmc.com/dwp/rest").strip(),
+            browser_profile=optional("EUDM_BROWSER_PROFILE") or "~/.auto-eudm-chrome",
+            browser_headless=env_bool("EUDM_BROWSER_HEADLESS"),
+            request_for=optional("EUDM_REQUEST_FOR"),
+            city=optional("EUDM_CITY"),
+            building=optional("EUDM_BUILDING"),
+            floor=optional("EUDM_FLOOR"),
+            room=optional("EUDM_ROOM"),
+            cabinet=optional("EUDM_CABINET"),
             default_user_status=os.getenv(
-                "DWP_DEFAULT_USER_STATUS", "Deployed - Existing Stock"
+                "EUDM_DEFAULT_USER_STATUS", "Deployed - Existing Stock"
             ).strip(),
             default_location_status=os.getenv(
-                "DWP_DEFAULT_LOCATION_STATUS", "Used Stock"
+                "EUDM_DEFAULT_LOCATION_STATUS", "Used Stock"
             ).strip(),
-            simulate=env_bool("DWP_SIMULATE"),
-            verbose=env_bool("DWP_VERBOSE"),
-            manual_review=env_bool("DWP_MANUAL_REVIEW"),
+            simulate=env_bool("EUDM_SIMULATE"),
+            verbose=env_bool("EUDM_VERBOSE"),
+            logging=env_bool("EUDM_LOGGING"),
+            concurrency=int(raw_concurrency),
+            manual_review=env_bool("EUDM_MANUAL_REVIEW"),
         )

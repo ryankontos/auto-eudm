@@ -11,4 +11,4 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 1
 fi
 
-exec env PYTHONPATH="$ROOT_DIR/src${PYTHONPATH:+:$PYTHONPATH}" python3 -m dwp_device_request.inventory_sheet_cli "$@"
+exec env PYTHONPATH="$ROOT_DIR/src${PYTHONPATH:+:$PYTHONPATH}" python3 -m auto_eudm.eudm_wizard "$@"
