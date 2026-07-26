@@ -315,6 +315,12 @@ class SimulationClient:
                 "dropoff-user",
                 "Select person who dropped device/s off",
             ),
+            self._item(
+                "RadioButtons",
+                "return-confirmed",
+                "Does this look right?",
+                [("YES", "Yes"), ("NO", "No")],
+            ),
         ]
         return {"id": "SIM-QUESTIONNAIRE", "pages": [{"pageItems": page_items}]}
 
@@ -438,7 +444,12 @@ class SimulationClient:
 
 
 def browser_client_from_profile(
-    profile: str, app_url: str, base: str, verbose: bool, headless: bool = False
+    profile: str,
+    app_url: str,
+    base: str,
+    verbose: bool,
+    headless: bool = False,
+    interactive_auth: bool = True,
 ) -> BrowserClient:
     try:
         from playwright.sync_api import sync_playwright
@@ -460,6 +471,9 @@ def browser_client_from_profile(
         if headless:
             print("Checking the saved Chrome SSO session in the background...")
             page.wait_for_timeout(2_000)
+        elif not interactive_auth:
+            print("Chrome opened for EUDM authentication.")
+            page.wait_for_timeout(5_000)
         else:
             print("Chrome opened for EUDM authentication. Complete SSO in that window.")
             input("After the EUDM page is signed in, press Enter here to continue: ")
@@ -482,6 +496,7 @@ def open_client(
     simulate: bool = False,
     verbose: bool = False,
     headless: bool = False,
+    interactive_browser_auth: bool = True,
 ) -> Any:
     """Open one authenticated client that can be reused for many requests."""
     if simulate:
@@ -494,6 +509,7 @@ def open_client(
             base,
             verbose,
             headless,
+            interactive_browser_auth,
         )
     cookie = os.getenv("EUDM_COOKIE", "").strip()
     if cookie.lower().startswith("cookie:"):
@@ -833,6 +849,49 @@ def lookup_and_answer(
         return current
 
 
+def lookup_and_answer_exact(
+    client: Any,
+    request_id: str,
+    questionnaire_id: str,
+    all_items: list[dict[str, Any]],
+    search_label: str,
+    table_label: str,
+    query: str,
+    search_type: str = "TextField",
+) -> str:
+    """Resolve one exact person without using terminal prompts.
+
+    Interactive CLIs retain their retry/skip loop through ``lookup_and_answer``.
+    Local web requests use this strict variant so a failed or ambiguous match is
+    returned to the browser instead of blocking a server thread on ``input()``.
+    """
+    search = field_by_label(all_items, search_label, type_=search_type)
+    table = field_by_label(all_items, table_label, type_="DataTable")
+    try:
+        result = client.request(
+            "POST",
+            f"v2/sbe/services/requests/{request_id}/questions/{search['id']}/lookup",
+            {"query": query},
+        ) or {}
+    except EUDMError as exc:
+        raise EUDMError(f"Could not search {search_label!r}: {exc}") from exc
+    rows = result.get("multiColumnOptions") or []
+    value = choose_data_value(
+        [
+            {
+                "dataValue": row["dataValue"],
+                "displayValue": row.get("displayValue", []),
+            }
+            for row in rows
+        ],
+        query,
+        exact=True,
+        kind="user",
+    )
+    answer(client, request_id, questionnaire_id, table, value)
+    return query
+
+
 def answer_single_asset_with_retry(
     client: Any,
     request_id: str,
@@ -855,6 +914,44 @@ def answer_single_asset_with_retry(
         return current
 
 
+def answer_single_asset_exact(
+    client: Any,
+    request_id: str,
+    questionnaire_id: str,
+    serial_field: dict[str, Any],
+    device_table: dict[str, Any],
+    serial: str,
+) -> str:
+    """Resolve one exact asset without prompting for terminal input."""
+    events = answer(client, request_id, questionnaire_id, serial_field, serial)
+    devices = option_data(events, device_table["id"])
+    value = choose_data_value(devices, serial, exact=True, kind="serial number")
+    answer(client, request_id, questionnaire_id, device_table, value)
+    return serial
+
+
+def answer_batch_assets_exact(
+    client: Any,
+    request_id: str,
+    questionnaire_id: str,
+    all_items: list[dict[str, Any]],
+    inventory_events: dict[str, Any],
+    serial_list: dict[str, Any],
+    serials: list[str],
+) -> list[str]:
+    """Resolve every bulk serial exactly without interactive correction."""
+    serial_events = answer(
+        client, request_id, questionnaire_id, serial_list, ",".join(serials)
+    )
+    asset_table, asset_values = batch_asset_selection(
+        all_items, merge_events(inventory_events, serial_events), serials
+    )
+    answer_values(
+        client, request_id, questionnaire_id, asset_table, asset_values
+    )
+    return serials
+
+
 def deploy_device_to_user(
     client: Any,
     *,
@@ -865,6 +962,7 @@ def deploy_device_to_user(
     submit: bool = True,
     manual_review_enabled: bool = False,
     on_request_created: Any | None = None,
+    interactive_matches: bool = True,
 ) -> DeploymentResult:
     """Populate and optionally submit one user deployment request."""
     for label, value in (
@@ -899,6 +997,7 @@ def deploy_device_to_user(
             status=status,
             submit=submit,
             manual_review_enabled=manual_review_enabled,
+            interactive_matches=interactive_matches,
         )
     except MatchSkipped as exc:
         return DeploymentResult(
@@ -920,6 +1019,7 @@ def _complete_user_deployment(
     status: str,
     submit: bool,
     manual_review_enabled: bool,
+    interactive_matches: bool,
 ) -> DeploymentResult:
     questionnaire = request_step(
         client,
@@ -938,13 +1038,19 @@ def _complete_user_deployment(
         all_items, "Type Hostname or Serial Number", type_="TextField"
     )
     device_table = field_by_label(all_items, "----- Device List", type_="DataTable")
-    serial = answer_single_asset_with_retry(
-        client, request_id, questionnaire_id, serial_field, device_table, serial
-    )
+    if interactive_matches:
+        serial = answer_single_asset_with_retry(
+            client, request_id, questionnaire_id, serial_field, device_table, serial
+        )
+    else:
+        serial = answer_single_asset_exact(
+            client, request_id, questionnaire_id, serial_field, device_table, serial
+        )
 
     status_item = field_by_label(all_items, "Change Status to", type_="Dropdown")
     answer(client, request_id, questionnaire_id, status_item, status)
-    deployed_to = lookup_and_answer(
+    lookup = lookup_and_answer if interactive_matches else lookup_and_answer_exact
+    deployed_to = lookup(
         client,
         request_id,
         questionnaire_id,
@@ -998,6 +1104,217 @@ def _complete_user_deployment(
         resolved_serial=serial,
         resolved_username=deployed_to,
     )
+
+
+def deploy_device_to_location(
+    client: Any,
+    *,
+    serials: list[str],
+    request_for: str,
+    status: str,
+    city: str,
+    building: str,
+    floor: str,
+    room: str,
+    cabinet: str | None = None,
+    returning_user: str | None = None,
+    return_confirmed: bool = False,
+    bulk: bool = False,
+    submit: bool = True,
+    on_request_created: Any | None = None,
+) -> DeploymentResult:
+    """Populate and optionally submit one strict location deployment.
+
+    A bulk deployment is one EUDM request containing multiple serial numbers.
+    EUDM does not associate a returning user with that path; callers must create
+    individual location requests when a returning user is required.
+    """
+    cleaned_serials = [serial.strip() for serial in serials]
+    if not cleaned_serials or any(not serial for serial in cleaned_serials):
+        raise EUDMError("At least one serial number is required.")
+    if not bulk and len(cleaned_serials) != 1:
+        raise EUDMError("A non-bulk location request must contain exactly one serial number.")
+    if bulk and len(cleaned_serials) < 1:
+        raise EUDMError("A bulk location request must contain at least one serial number.")
+    if len({serial.casefold() for serial in cleaned_serials}) != len(cleaned_serials):
+        raise EUDMError("A location request cannot contain duplicate serial numbers.")
+    if any(any(character.isspace() for character in serial) for serial in cleaned_serials):
+        raise EUDMError("Serial numbers cannot contain whitespace.")
+    if bulk and returning_user:
+        raise EUDMError(
+            "Bulk location requests cannot include a returning user; use individual requests."
+        )
+    if returning_user and not return_confirmed:
+        raise EUDMError(
+            "Confirm that the returning user, device, and location details are correct."
+        )
+    for label, value in (
+        ("request-for login ID", request_for),
+        ("status", status),
+        ("city", city),
+        ("building", building),
+        ("floor", floor),
+        ("room", room),
+    ):
+        if not value or value != value.strip():
+            raise EUDMError(f"The {label} cannot be empty or have surrounding whitespace.")
+
+    created = request_step(
+        client,
+        "Could not create the EUDM request",
+        "POST",
+        "v2/sbe/services/requests",
+        {
+            "serviceId": "25301",
+            "quantity": 1,
+            "requestedForLoginIds": [request_for],
+        },
+    )
+    request_id = str(created["requests"][0]["requestId"])
+    if on_request_created:
+        on_request_created(request_id)
+    try:
+        questionnaire = request_step(
+            client,
+            "Could not load the current questionnaire",
+            "GET",
+            f"v2/sbe/services/requests/{request_id}/questionnaire?timezoneId=Australia/Sydney",
+        )["questionnaire"]
+        questionnaire_id = str(questionnaire["id"])
+        all_items = items(questionnaire)
+
+        inventory = field_by_label(
+            all_items, "Inventory Request Type", type_="RadioButtons"
+        )
+        if bulk:
+            inventory_events = answer(
+                client, request_id, questionnaire_id, inventory, "BULK"
+            )
+            serial_list = field_by_label(
+                all_items, "Please add serial number list", type_="TextArea"
+            )
+            selected_serials = answer_batch_assets_exact(
+                client,
+                request_id,
+                questionnaire_id,
+                all_items,
+                inventory_events,
+                serial_list,
+                cleaned_serials,
+            )
+        else:
+            answer(client, request_id, questionnaire_id, inventory, "ADD")
+            search_by = field_by_label(all_items, "Search by", type_="RadioButtons")
+            answer(client, request_id, questionnaire_id, search_by, "serial")
+            serial_field = field_by_label(
+                all_items, "Type Hostname or Serial Number", type_="TextField"
+            )
+            device_table = field_by_label(
+                all_items, "----- Device List", type_="DataTable"
+            )
+            selected_serials = [
+                answer_single_asset_exact(
+                    client,
+                    request_id,
+                    questionnaire_id,
+                    serial_field,
+                    device_table,
+                    cleaned_serials[0],
+                )
+            ]
+
+        status_item = field_by_label(
+            all_items, "Change Status to", type_="Dropdown"
+        )
+        answer(client, request_id, questionnaire_id, status_item, status)
+
+        city_item = field_by_label(
+            all_items,
+            "Building Location (City - Country code)",
+            type_="Dropdown",
+        )
+        city_events = answer(
+            client, request_id, questionnaire_id, city_item, city
+        )
+        location_table = field_by_label(
+            all_items, "Please select location", type_="DataTable"
+        )
+        location_rows = option_data(city_events, location_table["id"])
+        if not location_rows:
+            raise EUDMError("The city selection did not return any selectable locations.")
+        location_value = choose_location_data_value(
+            location_rows, building, floor, room, cabinet
+        )
+        answer(
+            client,
+            request_id,
+            questionnaire_id,
+            location_table,
+            location_value,
+        )
+
+        returned = field_by_label(
+            all_items, "Is this a return from a user", type_="RadioButtons"
+        )
+        if returning_user:
+            answer(client, request_id, questionnaire_id, returned, "YES")
+            add_dropoff = field_by_label(
+                all_items,
+                "Add Name of person who dropped off device",
+                type_="YesNo",
+            )
+            answer(client, request_id, questionnaire_id, add_dropoff, "true")
+            lookup_and_answer_exact(
+                client,
+                request_id,
+                questionnaire_id,
+                all_items,
+                "Search Name or User ID that dropped off devices",
+                "Select person who dropped device/s off",
+                returning_user,
+            )
+            confirmation = field_by_label(
+                all_items, "Does this look right?", type_="RadioButtons"
+            )
+            answer(
+                client,
+                request_id,
+                questionnaire_id,
+                confirmation,
+                "YES",
+            )
+        else:
+            answer(client, request_id, questionnaire_id, returned, "NO")
+
+        if not submit:
+            return DeploymentResult(
+                request_id=request_id,
+                order_id=None,
+                not_submitted_reason="final submission was not requested",
+                resolved_serial=",".join(selected_serials),
+                resolved_username=returning_user,
+            )
+        order = request_step(
+            client,
+            "Could not submit the order",
+            "POST",
+            "v2/sbe/orders",
+            {"requestIds": [request_id], "title": None},
+        )
+        order_id = (
+            str(order["id"])
+            if isinstance(order, dict) and order.get("id")
+            else None
+        )
+        return DeploymentResult(
+            request_id=request_id,
+            order_id=order_id,
+            submitted=True,
+            resolved_serial=",".join(selected_serials),
+            resolved_username=returning_user,
+        )
+    except EUDMError as exc:
+        raise DeploymentExecutionError(request_id, str(exc)) from exc
 
 
 def validate_args(args: argparse.Namespace) -> bool:

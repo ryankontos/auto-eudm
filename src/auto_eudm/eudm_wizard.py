@@ -16,7 +16,14 @@ from .bootstrap import ensure_runtime
 from . import eudm_request as eudm
 from . import run_reporting
 from . import presentation
-from .cli_common import add_runtime_arguments, console, open_client, start_run, validate_runtime_args
+from .cli_common import (
+    add_runtime_arguments,
+    console,
+    open_client,
+    request_for as resolve_request_for,
+    start_run,
+    validate_runtime_args,
+)
 from .eudm_config import AppConfig
 
 
@@ -118,11 +125,10 @@ Review:
         "Request mode",
         [("One device", "single"), ("Batch serial list to a location (no user)", "batch")],
     )
-    if config.request_for:
-        request_for = config.request_for
-        print(f"Request-for login ID: {request_for} (from shared configuration)")
-    else:
-        request_for = console.text("Request-for login ID")
+    # This deliberately uses the same resolver as the other CLIs: a value in
+    # EUDM_REQUEST_FOR is authoritative and is used silently.  Only a missing
+    # value results in an interactive request-for prompt.
+    request_for = resolve_request_for(args, config)
     if mode == "batch":
         raw_serials = prompt_text("Serial numbers, comma-separated").split(",")
         serials = [value.strip() for value in raw_serials]

@@ -84,16 +84,31 @@ def looks_like_serial(value: str | None) -> bool:
 
 
 def cell_is_red(cell: Any) -> bool:
-    colors = [getattr(cell.font, "color", None)]
-    if getattr(cell.fill, "fill_type", None):
-        colors.extend((getattr(cell.fill, "fgColor", None), getattr(cell.fill, "bgColor", None)))
-    for color in colors:
-        if color is None or getattr(color, "type", None) != "rgb":
-            continue
-        rgb = str(getattr(color, "rgb", "") or "").upper()
-        if rgb.endswith("FF0000"):
-            return True
-    return False
+    """Return whether a row cell uses red text as its spreadsheet marker.
+
+    The live Inventory Tracking workbook marks excluded rows with red font,
+    not a background fill. Excel may expose that font as ``FF0000``, an ARGB
+    value such as ``FFFF0000``/``FFC00000``, or indexed colour 10, so accept
+    the common encodings while deliberately ignoring fills.
+    """
+    color = getattr(getattr(cell, "font", None), "color", None)
+    if color is None:
+        return False
+    color_type = getattr(color, "type", None)
+    if color_type == "indexed":
+        return getattr(color, "indexed", None) == 10
+    if color_type != "rgb":
+        return False
+    raw = str(getattr(color, "rgb", "") or "").strip().lstrip("#").upper()
+    if len(raw) == 8:
+        raw = raw[2:]
+    if len(raw) != 6:
+        return False
+    try:
+        red, green, blue = (int(raw[index : index + 2], 16) for index in (0, 2, 4))
+    except ValueError:
+        return False
+    return red >= 180 and green <= 100 and blue <= 100
 
 
 def normalize_date(value: Any, epoch: datetime) -> date | None:
@@ -264,7 +279,7 @@ def build_actions(
             else:
                 ignored["no usable new serial in column J"] += 1
         if mode in ("returns", "both") and looks_like_serial(row.old_serial):
-            actions.append(Action("Old / pending return", row.row_number, row.username, row.old_serial, PENDING_RETURN))
+            actions.append(Action("Pending returns", row.row_number, row.username, row.old_serial, PENDING_RETURN))
         elif mode in ("returns", "both"):
             ignored["no usable old serial in column L"] += 1
 
@@ -318,7 +333,7 @@ def print_preview(
     print(f"  File: {path}")
     print(f"  Sheet: {sheet_name}")
     print(f"  Date: {selected_date.strftime('%A %-d %B %Y')}")
-    for group in ("New deployments", "Old / pending return"):
+    for group in ("New deployments", "Pending returns"):
         grouped = [action for action in actions if action.group == group]
         print(f"\n{group} ({len(grouped)})")
         if not grouped:
@@ -354,7 +369,7 @@ def execute(
 
 def print_results(outcomes: list[DeploymentOutcome]) -> None:
     print_grouped_results(
-        outcomes, ("New deployments", "Old / pending return"), command="eudm-inventory-import"
+        outcomes, ("New deployments", "Pending returns"), command="eudm-inventory-import"
     )
 
 

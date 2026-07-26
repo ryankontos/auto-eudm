@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>AutoEUDM Request Workspace</title>
+  <script>
+    try {
+      const savedTheme = localStorage.getItem("auto-eudm-theme");
+      if (savedTheme === "light" || savedTheme === "dark") {
+        document.documentElement.dataset.theme = savedTheme;
+      }
+    } catch (_) {}
+  </script>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header class="app-header">
+    <div>
+      <div class="product-name">AutoEUDM</div>
+      <div class="product-context">Request workspace</div>
+    </div>
+    <div class="header-actions">
+      <button id="themeToggle" class="button secondary compact theme-button" type="button">
+        <span id="themeIcon" aria-hidden="true">◐</span>
+        <span id="themeLabel">Appearance</span>
+      </button>
+      <button id="historyButton" class="button secondary compact" type="button">Request history</button>
+      <div id="connectionBadge" class="connection-badge" aria-live="polite">
+        <span class="status-dot"></span>
+        <span>Loading</span>
+      </div>
+      <button id="connectButton" class="button secondary compact" type="button">Connect to EUDM</button>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <aside class="tool-rail" aria-label="Request preparation tools">
+      <div class="rail-section">
+        <h2>Prepare</h2>
+        <button id="addUserButton" class="tool-button" type="button">
+          <span class="tool-icon">+</span>
+          <span><strong>User deployment</strong><small>One device to one user</small></span>
+        </button>
+        <button id="addLocationButton" class="tool-button" type="button">
+          <span class="tool-icon">+</span>
+          <span><strong>Location deployment</strong><small>Optional returning user</small></span>
+        </button>
+        <button id="addBulkButton" class="tool-button" type="button">
+          <span class="tool-icon">+</span>
+          <span><strong>Bulk location</strong><small>Many serials, one request</small></span>
+        </button>
+      </div>
+
+      <div class="rail-section">
+        <h2>Import</h2>
+        <button id="pastePairsButton" class="tool-button" type="button">
+          <span class="tool-icon paste-icon">≡</span>
+          <span><strong>Paste devices + users</strong><small>Deploy to users or record returns</small></span>
+        </button>
+        <button id="importSheetButton" class="tool-button" type="button">
+          <span class="tool-icon sheet-icon">▦</span>
+          <span><strong>Inventory spreadsheet</strong><small>Bookings 2026 format</small></span>
+        </button>
+      </div>
+
+      <div class="rail-section settings-summary">
+        <h2>Run settings</h2>
+        <div class="requester-summary">
+          <span>Requesting as</span>
+          <strong id="requestForValue">Waiting for EUDM</strong>
+          <small id="requestForSource">Resolved automatically after connection</small>
+        </div>
+        <label>
+          <span>Parallel requests</span>
+          <select id="concurrencyInput">
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+            <option value="5">5</option>
+            <option value="6">6</option>
+            <option value="7">7</option>
+            <option value="8">8</option>
+          </select>
+        </label>
+      </div>
+    </aside>
+
+    <section class="queue-panel" aria-labelledby="queueHeading">
+      <div class="queue-header">
+        <div>
+          <h1 id="queueHeading">Request queue</h1>
+          <p id="queueCounts">0 requests · 0 devices</p>
+        </div>
+        <div class="queue-actions">
+          <button id="clearQueueButton" class="button quiet compact" type="button">Clear</button>
+          <button id="reviewButton" class="button primary" type="button" disabled>Review &amp; submit</button>
+        </div>
+      </div>
+
+      <div id="connectionGate" class="connection-gate" role="alert" hidden>
+        <div class="connection-gate-icon" aria-hidden="true">!</div>
+        <div class="connection-gate-copy">
+          <strong id="connectionGateTitle">Connect to EUDM before submitting</strong>
+          <p id="connectionGateMessage">A real run needs an authenticated EUDM connection.</p>
+        </div>
+        <button id="connectionGateButton" class="button primary compact" type="button">Connect to EUDM</button>
+      </div>
+
+      <div id="queueEmpty" class="empty-state">
+        <h2>Build a request queue</h2>
+        <p>Add a request, paste serial/user pairs, or import the inventory workbook.</p>
+      </div>
+
+      <div id="queueTableWrap" class="queue-table-wrap" hidden>
+        <table class="queue-table">
+          <thead>
+            <tr>
+              <th class="index-column">#</th>
+              <th>Device</th>
+              <th>Deployment</th>
+              <th>Status</th>
+              <th>Destination</th>
+              <th class="state-column">Ready</th>
+              <th class="menu-column"></th>
+            </tr>
+          </thead>
+          <tbody id="queueBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <aside id="inspector" class="inspector" aria-labelledby="inspectorHeading">
+      <div id="inspectorEmpty" class="inspector-empty">
+        <h2>Request details</h2>
+        <p>Select a request to edit it.</p>
+      </div>
+      <div id="inspectorContent" hidden>
+        <div class="inspector-header">
+          <div>
+            <div class="eyebrow">Selected request</div>
+            <h2 id="inspectorHeading">Request details</h2>
+          </div>
+          <button id="duplicateButton" class="button quiet compact" type="button">Duplicate</button>
+        </div>
+
+        <fieldset class="segmented-field">
+          <legend>Deployment type</legend>
+          <div class="segmented">
+            <label><input type="radio" name="requestKind" value="user"><span>User</span></label>
+            <label><input type="radio" name="requestKind" value="location"><span>Location</span></label>
+            <label><input type="radio" name="requestKind" value="bulk_location"><span>Bulk</span></label>
+          </div>
+        </fieldset>
+
+        <div class="form-field">
+          <label for="serialInput"><span id="serialLabel">Serial number</span><em>Required</em></label>
+          <input id="serialInput" type="text" autocomplete="off" spellcheck="false" placeholder="e.g. 8P15FH4">
+          <textarea id="serialsInput" rows="5" spellcheck="false" placeholder="Paste serials separated by commas, spaces, or new lines" hidden></textarea>
+          <div class="field-actions">
+            <span id="serialHint" class="hint"></span>
+            <button id="searchSerialButton" class="text-button" type="button">Search EUDM</button>
+          </div>
+          <div id="serialResults" class="search-results" hidden></div>
+        </div>
+
+        <div class="form-field">
+          <label for="statusInput">Change status to <em>Required</em></label>
+          <select id="statusInput"></select>
+        </div>
+
+        <div id="userFields">
+          <div class="form-field">
+            <label for="userInput">Deployed to user <em>Required</em></label>
+            <div class="search-control">
+              <input id="userInput" type="text" autocomplete="off" spellcheck="false" placeholder="Login ID or name">
+              <button id="searchUserButton" class="button secondary compact" type="button">Search</button>
+            </div>
+            <div id="userResults" class="search-results" hidden></div>
+          </div>
+        </div>
+
+        <div id="locationFields" hidden>
+          <div class="form-field">
+            <label for="cityInput">City <em>Required</em></label>
+            <div class="search-control">
+              <select id="cityInput"></select>
+              <button id="loadLocationsButton" class="button secondary compact" type="button">Find locations</button>
+            </div>
+          </div>
+          <div class="form-field">
+            <label for="locationInput">Exact location <em>Required</em></label>
+            <select id="locationInput">
+              <option value="">Choose a city, then find locations</option>
+            </select>
+            <div id="locationDetail" class="selected-detail"></div>
+          </div>
+          <div id="returningUserFields" class="returning-user">
+            <label class="switch-row">
+              <input id="returningToggle" type="checkbox">
+              <span class="switch" aria-hidden="true"></span>
+              <span><strong>Return from a user</strong><small>Add the person who dropped off this device</small></span>
+            </label>
+            <div id="returningSearch" class="form-field nested" hidden>
+              <label for="returningUserInput">Returning user</label>
+              <div class="search-control">
+                <input id="returningUserInput" type="text" autocomplete="off" spellcheck="false" placeholder="Login ID or name">
+                <button id="searchReturningButton" class="button secondary compact" type="button">Search</button>
+              </div>
+              <div id="returningResults" class="search-results" hidden></div>
+            </div>
+            <div id="returnConfirmation" class="return-confirmation" hidden>
+              <div class="eyebrow">Return details</div>
+              <dl>
+                <div><dt>Device</dt><dd id="confirmSerial"></dd></div>
+                <div><dt>Returning user</dt><dd id="confirmUser"></dd></div>
+                <div><dt>Destination</dt><dd id="confirmLocation"></dd></div>
+              </dl>
+            </div>
+          </div>
+        </div>
+
+        <div id="validationPanel" class="validation-panel" hidden></div>
+        <button id="removeButton" class="button danger full" type="button">Remove request</button>
+      </div>
+    </aside>
+  </main>
+
+  <dialog id="pasteDialog" class="modal">
+    <form method="dialog" class="modal-card">
+      <div class="modal-header">
+        <div>
+          <div class="eyebrow">Quick import</div>
+          <h2>Paste devices and users</h2>
+        </div>
+        <button class="icon-button" value="cancel" aria-label="Close">×</button>
+      </div>
+      <p>Create several individual EUDM requests from the same simple list.</p>
+      <fieldset class="choice-cards pairs-mode-cards">
+        <legend>What does each username mean?</legend>
+        <label>
+          <input type="radio" name="pairsMode" value="user" checked>
+          <span><strong>Deploy to user</strong><small>The username receives the device</small></span>
+        </label>
+        <label>
+          <input type="radio" name="pairsMode" value="location">
+          <span><strong>Return to location</strong><small>The username returned the device</small></span>
+        </label>
+      </fieldset>
+      <div class="pairs-instructions">
+        <strong id="pairsFormat">Enter one device and receiving user per line</strong>
+        <span id="pairsHelp">Format: <code>SERIAL USERNAME</code>. Each line becomes one user deployment.</span>
+        <span id="pairsLocation" class="pairs-location" hidden></span>
+      </div>
+      <textarea id="pairsInput" rows="9" spellcheck="false" aria-describedby="pairsHelp pairsLocation" placeholder="8P15FH4 hjames3&#10;66BFFB4 cma21"></textarea>
+      <label class="inline-label">Status
+        <select id="pairsStatus"></select>
+      </label>
+      <div id="pairsError" class="inline-error" hidden></div>
+      <div class="modal-actions">
+        <button class="button secondary" value="cancel">Cancel</button>
+        <button id="addPairsButton" class="button primary" value="default" type="button">Add to queue</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="importDialog" class="modal wide-modal">
+    <form method="dialog" class="modal-card wide">
+      <div class="modal-header">
+        <div>
+          <div class="eyebrow">Spreadsheet import</div>
+          <h2>Inventory Tracking — Sydney</h2>
+        </div>
+        <button class="icon-button" value="cancel" aria-label="Close">×</button>
+      </div>
+      <ol class="wizard-steps" aria-label="Import progress">
+        <li id="importStep1" class="active"><span>1</span>File</li>
+        <li id="importStep2"><span>2</span>Selection</li>
+        <li id="importStep3"><span>3</span>Preview</li>
+      </ol>
+      <div id="importChoose">
+        <label class="file-drop" for="workbookInput">
+          <span class="file-symbol">▦</span>
+          <strong>Choose the inventory workbook</strong>
+          <small>.xlsx or .xlsm, up to 30 MB</small>
+          <input id="workbookInput" type="file" accept=".xlsx,.xlsm">
+        </label>
+      </div>
+      <div id="importConfigure" hidden>
+        <div class="import-file-row">
+          <span class="file-symbol small">▦</span>
+          <div><strong id="importFilename"></strong><small id="importFileSummary"></small></div>
+          <button id="changeFileButton" class="text-button" type="button">Change</button>
+        </div>
+        <div class="two-column-form">
+          <label>Sheet
+            <select id="sheetInput"></select>
+          </label>
+          <label>Deployment date
+            <select id="dateInput"></select>
+          </label>
+        </div>
+        <fieldset class="choice-cards">
+          <legend>What should be added?</legend>
+          <label><input type="radio" name="importMode" value="new" checked><span><strong>New devices</strong><small id="newImportCount">0 requests</small></span></label>
+          <label><input type="radio" name="importMode" value="returns"><span><strong>Returns</strong><small id="returnImportCount">0 requests</small></span></label>
+          <label><input type="radio" name="importMode" value="both"><span><strong>Both</strong><small id="bothImportCount">0 requests</small></span></label>
+        </fieldset>
+        <div class="notice"><strong>Rows with red text and unusable serial numbers are excluded.</strong> Column J creates deployments; column L creates Deployed - Pending Return requests. Usernames come only from column D.</div>
+      </div>
+      <div id="importPreview" hidden>
+        <div class="import-preview-heading">
+          <div>
+            <strong id="importPreviewTitle">Requests ready to add</strong>
+            <small id="importPreviewSubtitle"></small>
+          </div>
+          <span id="importPreviewCount" class="count-badge"></span>
+        </div>
+        <div id="importPreviewList" class="import-preview-list"></div>
+        <div id="importIgnored" class="import-ignored" hidden>
+          <strong>Ignored serial numbers</strong>
+          <ul id="importIgnoredList"></ul>
+        </div>
+        <div class="notice"><strong>Review this import before adding it.</strong> New devices default to Deployed - New Stock and can be changed to existing stock. Column L always uses Deployed - Pending Return.</div>
+      </div>
+      <div id="importError" class="inline-error" hidden></div>
+      <div class="modal-actions">
+        <button class="button secondary" value="cancel">Cancel</button>
+        <button id="backImportButton" class="button quiet" type="button" hidden>Back</button>
+        <button id="prepareImportButton" class="button primary" value="default" type="button" disabled>Review import</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="reviewDialog" class="modal wide-modal">
+    <form method="dialog" class="modal-card wide review-card">
+      <div class="modal-header">
+        <div>
+          <div class="eyebrow">Final review</div>
+          <h2>Submit request queue</h2>
+        </div>
+        <button class="icon-button" value="cancel" aria-label="Close">×</button>
+      </div>
+      <div id="reviewSummary" class="review-summary"></div>
+      <div id="reviewList" class="review-list"></div>
+      <div class="confirmation-note">
+        Each ready row creates a separate EUDM request, except bulk rows which create one request for all listed serials.
+      </div>
+      <div class="modal-actions">
+        <button class="button secondary" value="cancel">Back to queue</button>
+        <button id="submitQueueButton" class="button primary" value="default" type="button">Submit requests</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="progressDialog" class="modal progress-modal">
+    <div class="modal-card extra-wide">
+      <div class="modal-header">
+        <div>
+          <div class="eyebrow">Submission run</div>
+          <h2 id="progressHeading">Submitting requests</h2>
+        </div>
+        <button id="closeProgressButton" class="icon-button" type="button" aria-label="Close" hidden>×</button>
+      </div>
+      <div class="progress-overview">
+        <div class="progress-track"><span id="progressBar"></span></div>
+        <div id="progressCounts">Starting…</div>
+      </div>
+      <div id="progressList" class="progress-list"></div>
+      <div id="progressActions" class="modal-actions" hidden>
+        <a id="downloadResultsLink" class="button secondary" href="#">Download summary</a>
+        <button id="openAllRequestsButton" class="button secondary" type="button" hidden>Open all request pages</button>
+        <button id="doneButton" class="button primary" type="button">Done</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="historyDialog" class="modal wide-modal">
+    <form method="dialog" class="modal-card wide">
+      <div class="modal-header">
+        <div>
+          <div class="eyebrow">Completed runs</div>
+          <h2>Request history</h2>
+        </div>
+        <button class="icon-button" value="cancel" aria-label="Close">×</button>
+      </div>
+      <p class="history-intro">Recent submission runs from this AutoEUDM session. Request IDs and EUDM activity links stay available after the queue is cleared.</p>
+      <div id="historyList" class="history-list"></div>
+      <div class="modal-actions">
+        <button class="button secondary" value="cancel">Close</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toastRegion" class="toast-region" aria-live="polite"></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>

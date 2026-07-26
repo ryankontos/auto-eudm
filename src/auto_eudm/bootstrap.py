@@ -15,7 +15,6 @@ def _venv_python(venv: Path) -> Path:
 
 def _restart_in(python: Path) -> None:
     env = os.environ.copy()
-    env["EUDM_BOOTSTRAPPED"] = "1"
     # ``python -m package.module`` sets argv[0] to the module source path.
     # Preserve the module invocation so package-relative imports still work.
     main_spec = getattr(sys.modules.get("__main__"), "__spec__", None)
@@ -30,7 +29,7 @@ def ensure_runtime(*, requirement_file: str, import_name: str) -> None:
     """Create/use the repository .venv and install an optional dependency set."""
     if os.getenv("EUDM_SKIP_AUTO_INSTALL", "").casefold() in {"1", "true", "yes", "on"}:
         return
-    if os.getenv("EUDM_BOOTSTRAPPED") or any(arg in {"-h", "--help"} for arg in sys.argv[1:]):
+    if any(arg in {"-h", "--help"} for arg in sys.argv[1:]):
         return
     if importlib.util.find_spec(import_name) is not None:
         return

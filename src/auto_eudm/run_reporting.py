@@ -24,7 +24,7 @@ def configure_logging(*, enabled: bool, command: str) -> Path | None:
         return None
     folder = PROJECT_DIR / "logs"
     folder.mkdir(parents=True, exist_ok=True)
-    path = folder / f"{datetime.now():%Y%m%d-%H%M%S}-{command}.log"
+    path = folder / f"{datetime.now():%Y%m%d-%H%M%S-%f}-{command}.log"
     handler = logging.FileHandler(path, encoding="utf-8")
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     LOGGER.addHandler(handler)
@@ -59,7 +59,7 @@ def network(
 def write_result_file(command: str, lines: Iterable[str]) -> Path:
     folder = PROJECT_DIR / "results"
     folder.mkdir(parents=True, exist_ok=True)
-    path = folder / f"{datetime.now():%Y%m%d-%H%M%S}-{command}.txt"
+    path = folder / f"{datetime.now():%Y%m%d-%H%M%S-%f}-{command}.txt"
     content = [f"AutoEUDM results — {command}", f"Generated: {datetime.now():%Y-%m-%d %H:%M:%S}", ""]
     content.extend(lines)
     path.write_text("\n".join(content).rstrip() + "\n", encoding="utf-8")

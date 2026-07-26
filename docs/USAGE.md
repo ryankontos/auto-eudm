@@ -1,13 +1,41 @@
 # Operating guide
 
-This guide covers the command-line interfaces, their safety boundaries,
-and the Sydney workbook import rules. Run any command with `--help` to see the
+This guide covers the localhost web interface, command-line interfaces, their
+safety boundaries, and the Sydney workbook import rules. Run any command with `--help` to see the
 exact argument reference for the version you have checked out.
 
 The packaged Python code lives under `src/auto_eudm/`, the macOS
 launchers live in `launchers/`, and the sample workbook lives in `samples/`.
 
-## Automatic setup
+## Quick start on a new computer
+
+The simplest setup is to clone the public repository and run the platform
+launcher. It creates `.env` from the safe simulation template, creates `.venv`,
+installs dependencies, and opens the website.
+
+```bash
+git clone https://github.com/ryankontos/auto-eudm.git
+cd auto-eudm
+./launchers/run-auto-eudm-web.command
+```
+
+On Windows PowerShell:
+
+```powershell
+git clone https://github.com/ryankontos/auto-eudm.git
+cd auto-eudm
+.\launchers\run-auto-eudm-web.ps1
+```
+
+On Windows Command Prompt, run `launchers\run-auto-eudm-web.bat` instead. The
+same `.bat` file can be double-clicked. Python 3.10 or newer is required; live
+EUDM mode also uses an installed Google Chrome for SSO. Simulation mode is the
+safe default and does not need Chrome or EUDM access.
+
+The shared implementation is `start_auto_eudm.py`, so `python
+start_auto_eudm.py` is another cross-platform option.
+
+## Automatic setup for other commands
 
 Every launcher and Python entry point creates `.venv` on its first real run,
 installs the relevant requirements, and restarts with that interpreter.
@@ -21,6 +49,7 @@ Set `EUDM_SKIP_AUTO_INSTALL=1` to disable this behaviour, or set
 
 | Command | Best for | Result |
 | --- | --- | --- |
+| `eudm_web.py` | Preparing, editing, searching, importing, and submitting many mixed requests | A localhost request workspace with live progress and downloadable results. |
 | `eudm_request.py` | Repeatable, fully specified single or batch requests | Populates one EUDM request; batch mode applies several serials to one location. |
 | `eudm_wizard.py` | Choosing from live EUDM devices, statuses, locations, and people | A numbered wizard for one device or batch-to-location flow. |
 | `eudm_inventory_import.py` | Deploying devices from an Inventory Tracking - Sydney workbook | One user request per selected new or old serial, with grouped results. |
@@ -33,6 +62,7 @@ The repository includes double-clickable launchers:
 
 | File | Runs |
 | --- | --- |
+| `launchers/run-auto-eudm-web.command` | `eudm_web.py` and opens the localhost workspace |
 | `launchers/run-eudm-request.command` | `eudm_request.py` |
 | `launchers/run-eudm-wizard.command` | `eudm_wizard.py` |
 | `launchers/run-eudm-inventory-import.command` | `eudm_inventory_import.py` |
@@ -52,12 +82,109 @@ Finder or Terminal. Arguments are passed through unchanged:
 
 Opening `launchers/run-eudm-request.command` without arguments displays the direct
 script help and a copyable example because that script requires request values.
-The other three launchers start their interactive flows when opened without
+The other launchers start their interactive flows when opened without
 arguments. The serial/user launcher accepts pasted lines until a blank line.
+
+## Local web workspace
+
+Run:
+
+```bash
+./launchers/run-auto-eudm-web.command
+```
+
+The launcher starts a server bound to `127.0.0.1` and opens
+`http://127.0.0.1:8765`. It installs spreadsheet support automatically and,
+only for a real run, installs the browser support needed for EUDM SSO. Keep its
+Terminal window open. Stop it with Control-C.
+
+You can run the same launcher again at any time. If AutoEUDM is already running
+on that port, it opens the existing workspace in the browser and does not start
+a duplicate server. Pass `--no-open` when a browser tab should not be opened.
+
+The website follows the computer's light or dark appearance by default. The
+appearance button in the header switches to the opposite theme; press it again
+to return to the live system setting. A manual override is remembered by that
+browser.
+
+The web workspace supports a mixed queue of:
+
+- one serial deployed to one user;
+- one serial deployed to one exact location, optionally naming the returning
+  user;
+- one EUDM bulk request containing many serials for one exact location and no
+  user;
+- multiple bulk requests with different statuses or locations.
+
+The left rail adds individual requests, pasted `SERIAL USERNAME` pairs, or an
+Inventory Tracking workbook. For pasted pairs, choose **Deploy to user** when
+the username receives the device, or **Return to location** when the username
+identifies who returned it. Location-return pairs use the exact default location
+configured in `.env` and create one request per line. The centre queue is the
+complete execution plan.
+The right inspector edits the selected request and provides live EUDM device,
+user, city, and exact-location searches. The spreadsheet mode reproduces the
+CLI wizard as three steps: choose the workbook; choose its sheet, deployment
+date, and new devices, returns, or both; then preview every generated request
+and ignored-serial reason. New deployments and pending returns are presented in
+separate preview sections. Every preview row can be unchecked, and each section
+has quick All and None controls. New devices default to Deployed - New Stock and
+can be changed individually to Deployed - Existing Stock. Old devices in column
+L become Deployed - Pending Return requests for the column D user. `Bookings
+2026` is preselected when present; otherwise every dated sheet is available.
+
+When a location request is marked as a return, the inspector shows the device,
+returning user, and destination. The separate confirmation checkbox is not
+needed because the details remain visible in the editor and the request appears
+again in final review. Review & Submit remains disabled until every queue entry
+is valid and, during a real run, until EUDM is connected. A prominent connection
+notice explains what is needed while the queue remains editable. Spreadsheet
+date choices include local relative labels such as `[Today]`, `[Tomorrow]`, and
+`[Next Week]`.
+
+Review & Submit displays the whole queue before creating requests. Submission
+progress reports each row as queued, running, submitted, or failed and shows
+the EUDM request ID as soon as it is created. After a real run, each request ID
+has an **Open** link and the completed view provides **Open all request pages**
+to open them in separate tabs. Closing the completed run clears the prepared
+queue; the **Request history** menu keeps the run, request IDs, statuses, and
+activity links available for the rest of the server session. The final view
+keeps every request ID visible and downloads a plain-text summary. The same
+summary is written to the gitignored `results/` directory.
+
+The captured EUDM application uses `/dwp/app/activity/events/details` for its
+request detail route and `/dwp/api/v1.0/events/{request-id}` for the authenticated
+event self-link. The web workspace builds the detail link from the configured
+EUDM base URL. Simulation IDs intentionally have no page links.
+
+The web workspace always requires this queue-level review, so it is safe and
+clear whether or not `EUDM_MANUAL_REVIEW` is enabled. It does not use terminal
+`y/n` prompts inside web jobs.
+
+Useful commands:
+
+```bash
+python3 eudm_web.py --help
+```
+
+```bash
+EUDM_SIMULATE=true python3 eudm_web.py
+```
+
+```bash
+python3 eudm_web.py --port 8787
+```
+
+The web server accepts only localhost browser requests, does not expose
+authentication cookies to JavaScript, and has no external web-framework or
+Node dependency. Simulation is controlled only by `EUDM_SIMULATE` when the
+server starts. For a real connection, the requester is detected from the
+authenticated EUDM cart response and shown read-only; `EUDM_REQUEST_FOR` is the
+fallback when EUDM does not return the signed-in user ID.
 
 ## Shared `.env` configuration
 
-All four CLIs load the gitignored `.env` beside the scripts. The repository also
+All frontends load the gitignored `.env` beside the scripts. The repository also
 contains `.env.example`, which documents every supported setting. On a new clone,
 run `cp .env.example .env`, then edit the local file to match the work computer.
 This current checkout already has that generated local file. Set `EUDM_ENV_FILE`
@@ -79,6 +206,11 @@ Command-line options take precedence over shell variables, which take precedence
 over `.env`. Use `--no-simulate`, `--no-verbose`, or `--no-manual-review` when a
 boolean is enabled in `.env` but should be disabled for one run. `EUDM_COOKIE` is
 deliberately excluded from the file; keep it short-lived in the shell.
+
+Values that are present in the shared environment are not re-asked by an
+interactive CLI. In particular, `EUDM_REQUEST_FOR` is used silently; the
+request-for prompt appears only when it is not configured or supplied with
+`--request-for`.
 
 ## Safety and modes
 
@@ -251,10 +383,10 @@ which matches the same column layout for local rehearsals.
 | D | Username | Used as the deployed-to login ID. |
 | F | Email | Ignored. The importer never derives usernames from email. |
 | J | New serial | Required. It becomes a new user deployment. |
-| L | Old serial | If valid, it becomes a separate `Pending Return` request for that user. |
+| L | Old serial | If valid, it becomes a separate `Deployed - Pending Return` request for that user. |
 
-Rows are excluded before authentication when any cell in A:L has red font or
-fill, or no username is present in D. New and old serials are checked
+Rows are excluded before authentication when any cell in A:L has red font, or
+no username is present in D. New and old serials are checked
 independently, so a missing serial in one column does not discard a valid serial
 in the other. Short markers such as `1` to `5` are not serials. The preview
 reports ignored serial numbers.
@@ -265,7 +397,7 @@ prompt to switch selected new serials to `Deployed - Existing Stock`.
 
 The preview shows serial, user, status, and ignored serial-number counts.
 It asks once more before real authentication. Results are grouped as `New
-deployments` and `Old / pending return`; one failure does not hide the others.
+deployments` and `Pending returns`; one failure does not hide the others.
 
 True no-change preview:
 
