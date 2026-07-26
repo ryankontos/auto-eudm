@@ -22,6 +22,7 @@
       <div class="product-context">Request workspace</div>
     </div>
     <div class="header-actions">
+      <a id="eudmFormLink" class="button secondary compact" href="#" target="_blank" rel="noopener">Open EUDM form</a>
       <button id="themeToggle" class="button secondary compact theme-button" type="button">
         <span id="themeIcon" aria-hidden="true">◐</span>
         <span id="themeLabel">Appearance</span>
@@ -40,27 +41,27 @@
       <div class="rail-section">
         <h2>Prepare</h2>
         <button id="addUserButton" class="tool-button" type="button">
-          <span class="tool-icon">+</span>
-          <span><strong>User deployment</strong><small>One device to one user</small></span>
+          <span class="tool-icon add-icon" aria-hidden="true"></span>
+          <span><strong>Deploy to user</strong></span>
         </button>
         <button id="addLocationButton" class="tool-button" type="button">
-          <span class="tool-icon">+</span>
-          <span><strong>Location deployment</strong><small>Optional returning user</small></span>
+          <span class="tool-icon add-icon" aria-hidden="true"></span>
+          <span><strong>Add to location stock</strong></span>
         </button>
         <button id="addBulkButton" class="tool-button" type="button">
-          <span class="tool-icon">+</span>
-          <span><strong>Bulk location</strong><small>Many serials, one request</small></span>
+          <span class="tool-icon add-icon" aria-hidden="true"></span>
+          <span><strong>Bulk add to location stock</strong><small>Many devices</small></span>
         </button>
       </div>
 
       <div class="rail-section">
         <h2>Import</h2>
         <button id="pastePairsButton" class="tool-button" type="button">
-          <span class="tool-icon paste-icon">≡</span>
-          <span><strong>Paste devices + users</strong><small>Deploy to users or record returns</small></span>
+          <span class="tool-icon import-icon" aria-hidden="true">↓</span>
+          <span><strong>Quick import</strong><small>Paste a list</small></span>
         </button>
         <button id="importSheetButton" class="tool-button" type="button">
-          <span class="tool-icon sheet-icon">▦</span>
+          <span class="tool-icon import-icon" aria-hidden="true">↓</span>
           <span><strong>Inventory spreadsheet</strong><small>Bookings 2026 format</small></span>
         </button>
       </div>
@@ -70,7 +71,7 @@
         <div class="requester-summary">
           <span>Requesting as</span>
           <strong id="requestForValue">Waiting for EUDM</strong>
-          <small id="requestForSource">Resolved automatically after connection</small>
+          <small id="requestForSource" hidden>Resolved automatically after connection</small>
         </div>
         <label>
           <span>Parallel requests</span>
@@ -84,6 +85,12 @@
             <option value="7">7</option>
             <option value="8">8</option>
           </select>
+        </label>
+        <label class="draft-setting">
+          <span class="toggle-line">
+            <input id="prepareDraftsToggle" type="checkbox">
+            <strong>Prepare drafts</strong>
+          </span>
         </label>
       </div>
     </aside>
@@ -104,9 +111,14 @@
         <div class="connection-gate-icon" aria-hidden="true">!</div>
         <div class="connection-gate-copy">
           <strong id="connectionGateTitle">Connect to EUDM before submitting</strong>
-          <p id="connectionGateMessage">A real run needs an authenticated EUDM connection.</p>
+          <p id="connectionGateMessage">An authenticated EUDM connection is required before requests can be submitted.</p>
         </div>
         <button id="connectionGateButton" class="button primary compact" type="button">Connect to EUDM</button>
+      </div>
+
+      <div id="queueValidationNotice" class="queue-validation-notice" role="alert" hidden>
+        <div class="queue-validation-icon" aria-hidden="true">!</div>
+        <strong id="queueValidationMessage"></strong>
       </div>
 
       <div id="queueEmpty" class="empty-state">
@@ -139,19 +151,16 @@
       </div>
       <div id="inspectorContent" hidden>
         <div class="inspector-header">
-          <div>
-            <div class="eyebrow">Selected request</div>
-            <h2 id="inspectorHeading">Request details</h2>
-          </div>
+          <h2 id="inspectorHeading">Request details</h2>
           <button id="duplicateButton" class="button quiet compact" type="button">Duplicate</button>
         </div>
 
         <fieldset class="segmented-field">
           <legend>Deployment type</legend>
           <div class="segmented">
-            <label><input type="radio" name="requestKind" value="user"><span>User</span></label>
-            <label><input type="radio" name="requestKind" value="location"><span>Location</span></label>
-            <label><input type="radio" name="requestKind" value="bulk_location"><span>Bulk</span></label>
+            <label><input type="radio" name="requestKind" value="user"><span>Deploy to user</span></label>
+            <label><input type="radio" name="requestKind" value="location"><span>Add to location stock</span></label>
+            <label><input type="radio" name="requestKind" value="bulk_location"><span>Bulk add to location stock</span></label>
           </div>
         </fieldset>
 
@@ -187,13 +196,13 @@
             <label for="cityInput">City <em>Required</em></label>
             <div class="search-control">
               <select id="cityInput"></select>
-              <button id="loadLocationsButton" class="button secondary compact" type="button">Find locations</button>
+              <button id="loadLocationsButton" class="button secondary compact" type="button">Refresh</button>
             </div>
           </div>
           <div class="form-field">
-            <label for="locationInput">Exact location <em>Required</em></label>
+            <label for="locationInput">Location <em>Required</em></label>
             <select id="locationInput">
-              <option value="">Choose a city, then find locations</option>
+              <option value="">Choose a city to load locations</option>
             </select>
             <div id="locationDetail" class="selected-detail"></div>
           </div>
@@ -201,7 +210,7 @@
             <label class="switch-row">
               <input id="returningToggle" type="checkbox">
               <span class="switch" aria-hidden="true"></span>
-              <span><strong>Return from a user</strong><small>Add the person who dropped off this device</small></span>
+              <span><strong>Return from a user</strong></span>
             </label>
             <div id="returningSearch" class="form-field nested" hidden>
               <label for="returningUserInput">Returning user</label>
@@ -212,7 +221,7 @@
               <div id="returningResults" class="search-results" hidden></div>
             </div>
             <div id="returnConfirmation" class="return-confirmation" hidden>
-              <div class="eyebrow">Return details</div>
+              <strong class="return-details-title">Return details</strong>
               <dl>
                 <div><dt>Device</dt><dd id="confirmSerial"></dd></div>
                 <div><dt>Returning user</dt><dd id="confirmUser"></dd></div>
@@ -231,36 +240,54 @@
   <dialog id="pasteDialog" class="modal">
     <form method="dialog" class="modal-card">
       <div class="modal-header">
-        <div>
-          <div class="eyebrow">Quick import</div>
-          <h2>Paste devices and users</h2>
-        </div>
+        <h2>Quick import</h2>
         <button class="icon-button" value="cancel" aria-label="Close">×</button>
       </div>
-      <p>Create several individual EUDM requests from the same simple list.</p>
-      <fieldset class="choice-cards pairs-mode-cards">
-        <legend>What does each username mean?</legend>
-        <label>
-          <input type="radio" name="pairsMode" value="user" checked>
-          <span><strong>Deploy to user</strong><small>The username receives the device</small></span>
-        </label>
-        <label>
-          <input type="radio" name="pairsMode" value="location">
-          <span><strong>Return to location</strong><small>The username returned the device</small></span>
-        </label>
-      </fieldset>
-      <div class="pairs-instructions">
-        <strong id="pairsFormat">Enter one device and receiving user per line</strong>
-        <span id="pairsHelp">Format: <code>SERIAL USERNAME</code>. Each line becomes one user deployment.</span>
-        <span id="pairsLocation" class="pairs-location" hidden></span>
+      <div id="pairsEntry">
+        <p id="pairsHelp">One per line: <code>SERIAL</code> or <code>SERIAL USERNAME</code></p>
+        <textarea id="pairsInput" rows="9" spellcheck="false" aria-describedby="pairsHelp" placeholder="8P15FH4 hjames3&#10;66BFFB4&#10;DP7R126TW9A cma21"></textarea>
       </div>
-      <textarea id="pairsInput" rows="9" spellcheck="false" aria-describedby="pairsHelp pairsLocation" placeholder="8P15FH4 hjames3&#10;66BFFB4 cma21"></textarea>
-      <label class="inline-label">Status
-        <select id="pairsStatus"></select>
-      </label>
+      <div id="pairsReview" hidden>
+        <div class="quick-import-toolbar">
+          <strong>Devices</strong>
+          <label>Set all actions
+            <select id="pairsBulkKind">
+              <option value="">Choose an action</option>
+              <option value="user">Deploy lines with usernames to user</option>
+              <option value="location">Add every line to location stock</option>
+            </select>
+          </label>
+          <button id="pairsApplyBulkButton" class="button secondary compact" type="button">Apply</button>
+        </div>
+        <div id="pairsReviewList" class="quick-import-list"></div>
+        <div id="pairsAddFields" class="quick-import-add" hidden>
+          <input id="pairsAddSerial" type="text" autocomplete="off" spellcheck="false" placeholder="Serial number" aria-label="New serial number">
+          <input id="pairsAddUsername" type="text" autocomplete="off" spellcheck="false" placeholder="Username (optional)" aria-label="New username">
+          <button id="pairsConfirmAddButton" class="button secondary compact" type="button">Add</button>
+          <button id="pairsCancelAddButton" class="button quiet compact" type="button">Cancel add</button>
+        </div>
+        <button id="pairsShowAddButton" class="button quiet compact quick-import-add-button" type="button">+ Add device</button>
+        <div id="pairsLocationFields" class="pairs-location-fields" hidden>
+          <h3>Location</h3>
+          <span id="pairsLocation" class="visually-hidden" aria-live="polite"></span>
+        <div class="form-field">
+          <label for="pairsCityInput">City</label>
+          <div class="search-control">
+            <select id="pairsCityInput"></select>
+            <button id="pairsFindLocationsButton" class="button secondary compact" type="button">Refresh</button>
+          </div>
+        </div>
+        <div class="form-field">
+          <label for="pairsLocationInput">Location</label>
+          <select id="pairsLocationInput"></select>
+        </div>
+      </div>
+      </div>
       <div id="pairsError" class="inline-error" hidden></div>
       <div class="modal-actions">
         <button class="button secondary" value="cancel">Cancel</button>
+        <button id="pairsBackButton" class="button quiet" type="button" hidden>Back</button>
+        <button id="reviewPairsButton" class="button primary" value="default" type="button">Choose deployments</button>
         <button id="addPairsButton" class="button primary" value="default" type="button">Add to queue</button>
       </div>
     </form>
@@ -269,10 +296,7 @@
   <dialog id="importDialog" class="modal wide-modal">
     <form method="dialog" class="modal-card wide">
       <div class="modal-header">
-        <div>
-          <div class="eyebrow">Spreadsheet import</div>
-          <h2>Inventory Tracking — Sydney</h2>
-        </div>
+        <h2>Inventory Tracking — Sydney</h2>
         <button class="icon-button" value="cancel" aria-label="Close">×</button>
       </div>
       <ol class="wizard-steps" aria-label="Import progress">
@@ -282,7 +306,7 @@
       </ol>
       <div id="importChoose">
         <label class="file-drop" for="workbookInput">
-          <span class="file-symbol">▦</span>
+          <span class="file-symbol" aria-hidden="true">↓</span>
           <strong>Choose the inventory workbook</strong>
           <small>.xlsx or .xlsm, up to 30 MB</small>
           <input id="workbookInput" type="file" accept=".xlsx,.xlsm">
@@ -290,7 +314,7 @@
       </div>
       <div id="importConfigure" hidden>
         <div class="import-file-row">
-          <span class="file-symbol small">▦</span>
+          <span class="file-symbol small" aria-hidden="true">↓</span>
           <div><strong id="importFilename"></strong><small id="importFileSummary"></small></div>
           <button id="changeFileButton" class="text-button" type="button">Change</button>
         </div>
@@ -337,16 +361,13 @@
   <dialog id="reviewDialog" class="modal wide-modal">
     <form method="dialog" class="modal-card wide review-card">
       <div class="modal-header">
-        <div>
-          <div class="eyebrow">Final review</div>
-          <h2>Submit request queue</h2>
-        </div>
+        <h2>Submit request queue</h2>
         <button class="icon-button" value="cancel" aria-label="Close">×</button>
       </div>
       <div id="reviewSummary" class="review-summary"></div>
       <div id="reviewList" class="review-list"></div>
       <div class="confirmation-note">
-        Each ready row creates a separate EUDM request, except bulk rows which create one request for all listed serials.
+        Bulk rows create one EUDM request for all listed serials.
       </div>
       <div class="modal-actions">
         <button class="button secondary" value="cancel">Back to queue</button>
@@ -358,16 +379,14 @@
   <dialog id="progressDialog" class="modal progress-modal">
     <div class="modal-card extra-wide">
       <div class="modal-header">
-        <div>
-          <div class="eyebrow">Submission run</div>
-          <h2 id="progressHeading">Submitting requests</h2>
-        </div>
+        <h2 id="progressHeading">Submitting requests</h2>
         <button id="closeProgressButton" class="icon-button" type="button" aria-label="Close" hidden>×</button>
       </div>
       <div class="progress-overview">
         <div class="progress-track"><span id="progressBar"></span></div>
         <div id="progressCounts">Starting…</div>
       </div>
+      <div id="progressLegend" class="progress-legend" aria-live="polite"></div>
       <div id="progressList" class="progress-list"></div>
       <div id="progressActions" class="modal-actions" hidden>
         <a id="downloadResultsLink" class="button secondary" href="#">Download summary</a>
@@ -380,13 +399,10 @@
   <dialog id="historyDialog" class="modal wide-modal">
     <form method="dialog" class="modal-card wide">
       <div class="modal-header">
-        <div>
-          <div class="eyebrow">Completed runs</div>
-          <h2>Request history</h2>
-        </div>
+        <h2>Request history</h2>
         <button class="icon-button" value="cancel" aria-label="Close">×</button>
       </div>
-      <p class="history-intro">Recent submission runs from this AutoEUDM session. Request IDs and EUDM activity links stay available after the queue is cleared.</p>
+      <p class="history-intro">Requests from this session.</p>
       <div id="historyList" class="history-list"></div>
       <div class="modal-actions">
         <button class="button secondary" value="cancel">Close</button>

@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>EUDM request details</title>
+  <script>
+    try {
+      const savedTheme = localStorage.getItem("auto-eudm-theme");
+      if (savedTheme === "light" || savedTheme === "dark") {
+        document.documentElement.dataset.theme = savedTheme;
+      }
+    } catch (_) {}
+  </script>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body class="details-page">
+  <main class="details-shell">
+    <div class="details-topline">
+      <a href="/">← AutoEUDM</a>
+      <a id="activityLink" class="button secondary compact" href="#" target="_blank" rel="noopener">Open EUDM activity</a>
+    </div>
+    <section class="details-card">
+      <h1 id="detailsHeading">Loading request…</h1>
+      <p id="detailsStatus" class="details-lead">Retrieving current details from EUDM.</p>
+      <div id="detailsError" class="inline-error" hidden></div>
+      <dl id="detailsGrid" class="details-grid" hidden></dl>
+      <details id="rawDetails" class="raw-details" hidden>
+        <summary>Full EUDM response</summary>
+        <pre id="rawDetailsText"></pre>
+      </details>
+    </section>
+  </main>
+  <script src="/request-details.js" defer></script>
+</body>
+</html>

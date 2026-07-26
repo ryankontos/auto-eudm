@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import base64
 import json
 import os
 from pathlib import Path
@@ -26,6 +27,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from .bootstrap import ensure_runtime
@@ -40,6 +42,22 @@ DEFAULT_BROWSER_PROFILE = "~/.auto-eudm-chrome"
 
 class EUDMError(RuntimeError):
     pass
+
+
+class SSOExpiredError(EUDMError):
+    """EUDM responded with its SSO page instead of the requested API data."""
+
+
+def is_sso_expired_error(exc: BaseException) -> bool:
+    """Preserve SSO-expiry detection through the contextual error wrappers."""
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        if isinstance(current, SSOExpiredError):
+            return True
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return False
 
 
 class MatchError(EUDMError):
@@ -162,7 +180,13 @@ class BrowserClient:
 
     def request(self, method: str, path: str, payload: Any | None = None) -> Any:
         started = time.monotonic()
-        url = self.base.rstrip("/") + "/" + path.lstrip("/")
+        if path.startswith("/"):
+            parsed = urllib.parse.urlsplit(self.base)
+            url = urllib.parse.urlunsplit(
+                (parsed.scheme, parsed.netloc, path, "", "")
+            )
+        else:
+            url = self.base.rstrip("/") + "/" + path.lstrip("/")
         body = None if payload is None else json.dumps(payload)
         headers = {
             "Accept": "application/json, text/plain, */*",
@@ -195,17 +219,15 @@ class BrowserClient:
             print(f"{method} {path} -> {response.status}", file=sys.stderr)
         if response.status >= 400:
             if response.status in (401, 403) and is_sso_html(raw):
-                raise EUDMError(
-                    "The Chrome session is not authenticated. Complete SSO in the EUDM window, "
-                    "then press Enter to continue."
+                raise SSOExpiredError(
+                    "EUDM redirected to SSO. Reconnect and complete sign-in in Chrome."
                 )
             raise EUDMError(http_error_message(response.status, f"EUDM request {method} {path}"))
         if not raw:
             return None
         if is_sso_html(raw):
-            raise EUDMError(
-                "EUDM redirected to SSO. Refresh the login and provide a current "
-                "authenticated Chrome session or cookie."
+            raise SSOExpiredError(
+                "EUDM redirected to SSO. Reconnect and complete sign-in in Chrome."
             )
         try:
             return json.loads(raw)
@@ -440,6 +462,33 @@ class SimulationClient:
             with self._lock:
                 self.order_number += 1
                 return {"id": f"SIM-ORDER-{self.order_number:04d}"}
+        if method == "GET" and path.startswith("/dwp/api/v1.0/events/"):
+            token = path.rsplit("/", 1)[-1]
+            padded = token + "=" * (-len(token) % 4)
+            try:
+                decoded = base64.b64decode(padded).decode()
+                event_request_id = decoded.removeprefix("REQ:")
+            except (ValueError, UnicodeDecodeError):
+                event_request_id = token
+            return {
+                "state": "active",
+                "title": "End User Device Management",
+                "subtitle": "In Progress",
+                "updateTime": datetime.now().isoformat(timespec="seconds"),
+                "type": "ORDER",
+                "orderId": "SIM-ORDER",
+                "requests": [
+                    {
+                        "displayId": event_request_id,
+                        "requestId": event_request_id,
+                        "status": "IN_PROGRESS",
+                        "requestedFor": {
+                            "loginId": "simulated.user",
+                            "displayName": "Simulated User",
+                        },
+                    }
+                ],
+            }
         raise EUDMError(f"Simulation does not implement {method} {path}.")
 
 
@@ -560,7 +609,13 @@ class Client:
 
     def request(self, method: str, path: str, payload: Any | None = None) -> Any:
         started = time.monotonic()
-        url = self.base.rstrip("/") + "/" + path.lstrip("/")
+        if path.startswith("/"):
+            parsed = urllib.parse.urlsplit(self.base)
+            url = urllib.parse.urlunsplit(
+                (parsed.scheme, parsed.netloc, path, "", "")
+            )
+        else:
+            url = self.base.rstrip("/") + "/" + path.lstrip("/")
         body = None if payload is None else json.dumps(payload).encode()
         headers = {
             "Accept": "application/json, text/plain, */*",
@@ -585,9 +640,8 @@ class Client:
                 duration_ms=int((time.monotonic() - started) * 1000), transport="urllib",
             )
             if exc.code in (401, 403) and "single sign on" in detail.lower():
-                raise EUDMError(
-                    "EUDM redirected to SSO. Refresh the browser login and provide a "
-                    "current EUDM cookie, or use --browser-profile."
+                raise SSOExpiredError(
+                    "EUDM redirected to SSO. Reconnect and complete sign-in in Chrome."
                 ) from exc
             raise EUDMError(http_error_message(exc.code, f"EUDM request {method} {path}")) from exc
         except urllib.error.URLError as exc:
@@ -616,13 +670,16 @@ class Client:
         if self.verbose:
             print(f"{method} {path} -> {status}", file=sys.stderr)
         if status >= 400:
+            if status in (401, 403) and is_sso_html(raw):
+                raise SSOExpiredError(
+                    "EUDM redirected to SSO. Reconnect and complete sign-in in Chrome."
+                )
             raise EUDMError(http_error_message(status, f"EUDM request {method} {path}"))
         if not raw:
             return None
         if is_sso_html(raw):
-            raise EUDMError(
-                "EUDM redirected to SSO. Refresh the login and provide a current "
-                "authenticated Chrome session or cookie."
+            raise SSOExpiredError(
+                "EUDM redirected to SSO. Reconnect and complete sign-in in Chrome."
             )
         try:
             return json.loads(raw)
@@ -1007,6 +1064,29 @@ def deploy_device_to_user(
         )
     except EUDMError as exc:
         raise DeploymentExecutionError(request_id, str(exc)) from exc
+
+
+def submit_prepared_request(client: Any, request_id: str) -> DeploymentResult:
+    """Submit a previously populated EUDM draft without repeating its lookups."""
+    if not request_id or request_id != request_id.strip():
+        raise EUDMError("The prepared request ID is invalid.")
+    order = request_step(
+        client,
+        "Could not submit the prepared request",
+        "POST",
+        "v2/sbe/orders",
+        {"requestIds": [request_id], "title": None},
+    )
+    order_id = (
+        str(order["id"])
+        if isinstance(order, dict) and order.get("id")
+        else None
+    )
+    return DeploymentResult(
+        request_id=request_id,
+        order_id=order_id,
+        submitted=True,
+    )
 
 
 def _complete_user_deployment(

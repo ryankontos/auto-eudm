@@ -98,6 +98,11 @@ The launcher starts a server bound to `127.0.0.1` and opens
 only for a real run, installs the browser support needed for EUDM SSO. Keep its
 Terminal window open. Stop it with Control-C.
 
+When a visible Chrome window is needed for SSO, AutoEUDM closes that temporary
+window after it verifies the signed-in EUDM session. If EUDM later redirects an
+API request to SSO, the workspace marks the session as expired, preserves the
+queue, and presents a reconnect action.
+
 You can run the same launcher again at any time. If AutoEUDM is already running
 on that port, it opens the existing workspace in the browser and does not start
 a duplicate server. Pass `--no-open` when a browser tab should not be opened.
@@ -109,21 +114,31 @@ browser.
 
 The web workspace supports a mixed queue of:
 
-- one serial deployed to one user;
-- one serial deployed to one exact location, optionally naming the returning
-  user;
-- one EUDM bulk request containing many serials for one exact location and no
-  user;
+- one **Deploy to user** request;
+- one **Add to location stock** request, with a returner when supplied;
+- one **Bulk add to location stock** request containing many serials for one exact
+  location and no user;
 - multiple bulk requests with different statuses or locations.
 
-The left rail adds individual requests, pasted `SERIAL USERNAME` pairs, or an
-Inventory Tracking workbook. For pasted pairs, choose **Deploy to user** when
-the username receives the device, or **Return to location** when the username
-identifies who returned it. Location-return pairs use the exact default location
-configured in `.env` and create one request per line. The centre queue is the
-complete execution plan.
+The left rail adds individual requests, Quick import lines, or an Inventory
+Tracking workbook. Quick import accepts `SERIAL` or `SERIAL USERNAME` on every
+line, then presents each device for a choice of **Deploy to user** or **Add to
+location stock**. A supplied username becomes the receiving user for a user
+deployment, or the returning user for location stock. Lines without a username
+can only be added to location stock. Use the bulk action control to apply the
+same choice to every eligible line. Devices can also be added or removed from
+the review step before they reach the queue. The dialog starts with the most recently
+used location when available (otherwise the configured default), and
+automatically loads other locations for that city. The centre queue is
+the complete execution plan.
+
+This automatic location behaviour is shared by Quick import, individual
+**Add to location stock** requests, bulk location requests, and imported
+location rows: selecting or opening a location-based request immediately loads
+the locations for its selected city. The **Refresh** button is only for
+updating the list if EUDM's locations have changed.
 The right inspector edits the selected request and provides live EUDM device,
-user, city, and exact-location searches. The spreadsheet mode reproduces the
+user, city, and location searches. The spreadsheet mode reproduces the
 CLI wizard as three steps: choose the workbook; choose its sheet, deployment
 date, and new devices, returns, or both; then preview every generated request
 and ignored-serial reason. New deployments and pending returns are presented in
@@ -144,18 +159,26 @@ date choices include local relative labels such as `[Today]`, `[Tomorrow]`, and
 
 Review & Submit displays the whole queue before creating requests. Submission
 progress reports each row as queued, running, submitted, or failed and shows
-the EUDM request ID as soon as it is created. After a real run, each request ID
-has an **Open** link and the completed view provides **Open all request pages**
-to open them in separate tabs. Closing the completed run clears the prepared
+the EUDM request ID as soon as it is created. Each request ID has an **Open**
+link to an authenticated AutoEUDM details page, and the completed view provides
+**Open all request pages** to open them in separate tabs. Closing the completed run clears the prepared
 queue; the **Request history** menu keeps the run, request IDs, statuses, and
-activity links available for the rest of the server session. The final view
+detail links available for the rest of the server session. The final view
 keeps every request ID visible and downloads a plain-text summary. The same
 summary is written to the gitignored `results/` directory.
 
-The captured EUDM application uses `/dwp/app/activity/events/details` for its
-request detail route and `/dwp/api/v1.0/events/{request-id}` for the authenticated
-event self-link. The web workspace builds the detail link from the configured
-EUDM base URL. Simulation IDs intentionally have no page links.
+The captured EUDM application uses `/dwp/app/#activity/events/details` for its
+request detail route. It passes the authenticated
+`/dwp/api/v1.0/events/{event-token}` self-link through router/browser state, so
+adding a request ID to the route URL does not work. AutoEUDM instead opens a
+local detail page backed by that event API and links to the native Activity
+gallery as a fallback.
+
+Enable **Prepare drafts early**, or set `EUDM_PREPARE_DRAFTS=true`, to populate
+each error-free row after editing pauses. Submission reuses an exact matching
+prepared draft and sends only its final order call. Editing a row makes its
+existing draft stale and prepares a replacement; abandoned drafts may remain
+in EUDM.
 
 The web workspace always requires this queue-level review, so it is safe and
 clear whether or not `EUDM_MANUAL_REVIEW` is enabled. It does not use terminal
@@ -200,6 +223,7 @@ to use a configuration file elsewhere.
 | `EUDM_DEFAULT_USER_STATUS` | Default direct/new pasted-pair user status. |
 | `EUDM_DEFAULT_LOCATION_STATUS` | Default direct location status. |
 | `EUDM_SIMULATE`, `EUDM_VERBOSE`, `EUDM_LOGGING`, `EUDM_MANUAL_REVIEW` | Shared default CLI modes. |
+| `EUDM_PREPARE_DRAFTS` | Start the web workspace with background draft preparation enabled. |
 | `EUDM_CONCURRENCY` | Parallel user deployments, from 1 to 8; use 2-3 initially. |
 
 Command-line options take precedence over shell variables, which take precedence

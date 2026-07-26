@@ -83,6 +83,11 @@ def looks_like_serial(value: str | None) -> bool:
     )
 
 
+def looks_like_username(value: str | None) -> bool:
+    """Accept a login ID from column D, never a display name or email address."""
+    return bool(value and re.fullmatch(r"[A-Za-z][A-Za-z0-9._-]*", value))
+
+
 def cell_is_red(cell: Any) -> bool:
     """Return whether a row cell uses red text as its spreadsheet marker.
 
@@ -272,6 +277,12 @@ def build_actions(
                 and not looks_like_serial(row.old_serial)
             ):
                 ignored["no username in column D"] += 1
+            continue
+        if not looks_like_username(row.username):
+            if mode in ("new", "both") and looks_like_serial(row.new_serial):
+                ignored["new serial has an invalid username in column D"] += 1
+            if mode in ("returns", "both") and looks_like_serial(row.old_serial):
+                ignored["return serial has an invalid username in column D"] += 1
             continue
         if mode in ("new", "both"):
             if looks_like_serial(row.new_serial):

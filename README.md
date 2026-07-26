@@ -101,20 +101,24 @@ The web workspace is designed for preparing many requests quickly:
 
 - follow the computer's light or dark appearance automatically, with a remembered
   header toggle for a temporary override;
-- add and duplicate individual user or location deployments;
-- add multiple EUDM bulk-location requests, each with its own serial list;
-- paste `SERIAL USERNAME` lines as either user deployments or individual
-  location returns, where the username identifies who returned the device;
+- add and duplicate **Deploy to user** or **Add to location stock** requests;
+- add multiple **Bulk add to location stock** requests, each with its own serial list;
+- use Quick import with `SERIAL` or `SERIAL USERNAME` lines, then choose
+  **Deploy to user** or **Add to location stock** per device (or set one action
+  for every eligible line at once), adding or removing devices before queueing;
+- preselect the most recently used location in every location workflow,
+  and automatically load the other locations for that city;
 - run the Inventory Tracking import wizard: choose file, sheet, date, and new,
   return, or both; preview exclusions; mark individual rows as do not deploy;
   then change individual new devices between new and existing stock;
-- search EUDM for devices, people, cities, and exact locations;
-- attach an optional returning user to an individual location deployment;
+- search EUDM for devices, people, cities, and locations;
+- record who returned a device on **Add to location stock** requests when needed;
 - review the device, returning user, and destination details required by EUDM;
 - edit every imported status or destination before submission;
 - submit independent requests concurrently with live status and request IDs;
 - review completed submission runs from the Request history menu after the queue is cleared;
-- open each completed request in EUDM, or open all completed request pages in new tabs;
+- open current EUDM-backed details for each completed request, or open all request pages in new tabs;
+- optionally populate valid drafts while editing so final submission can skip repeated lookups;
 - download a final text summary containing successful and failed assignments.
 
 The queue enforces the EUDM branches before any network work: user statuses
@@ -124,12 +128,13 @@ across the queue, and EUDM bulk-location requests cannot carry a returning user.
 After a real connection, status and city options refresh from the current EUDM
 questionnaire so changed form options are not silently assumed.
 
-After real submissions, the progress view links each request ID to EUDM's
-activity-detail route and provides an **Open all request pages** button. The
-underlying EUDM pattern found in the request capture is
-`/dwp/app/activity/events/details` with an authenticated event self-link at
-`/dwp/api/v1.0/events/{request-id}`. Simulation runs do not create EUDM pages,
-so their fake `SIM-REQ-*` IDs are shown without open-page links.
+After submissions, the progress view links each request ID to an AutoEUDM
+details page and provides an **Open all request pages** button. That page reads
+the authenticated EUDM event self-link captured from the recent-activity API,
+then provides a fallback link to EUDM's native Activity gallery. The native
+`/dwp/app/#activity/events/details` route cannot be deep-linked by adding the
+request ID to its URL: EUDM passes the event self-link in router and browser
+storage state.
 
 Set `EUDM_SIMULATE=true` to run the complete web interface locally without
 Chrome, SSO, EUDM, or real requests. Simulation runs still produce request and
@@ -143,6 +148,18 @@ ID, and the requester is shown read-only in the web workspace. Until the real
 connection is ready, the workspace displays a blocking connection notice and
 keeps Review & Submit disabled. Spreadsheet dates also show a local relative
 label such as `[Today]`, `[Tomorrow]`, or `[Next Week]`.
+
+The header’s **Open EUDM form** link opens the native End User Device
+Management catalogue item as a fallback. **Prepare drafts early** is optional
+and defaults from `EUDM_PREPARE_DRAFTS`. When enabled, each complete row is
+populated after editing pauses. A matching draft is claimed at submission, so
+only the final order call remains. Editing a prepared row creates a replacement
+draft; EUDM may retain the older unsubmitted draft.
+
+If EUDM returns its SSO page after a connection has been established, AutoEUDM
+marks the session as expired, keeps the queue intact, and prompts for a
+reconnect. When a visible Chrome SSO session succeeds, its temporary window is
+closed automatically after AutoEUDM has confirmed the session.
 
 ## Shared configuration
 
@@ -252,7 +269,7 @@ The profile path is separate from your normal Chrome profile so the automation d
 
 ## Interactive frontend
 
-The interactive wrapper emulates the supported form flow with numbered live options for mode, device, status, city, exact location, and users. It always asks before the final order commit:
+The interactive wrapper emulates the supported form flow with numbered live options for mode, device, status, city, location, and users. It always asks before the final order commit:
 
 ```bash
 python3 eudm_wizard.py

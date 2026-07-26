@@ -8,9 +8,24 @@ const state = {
   currentJob: null,
   pollTimer: null,
   liveOptionsLoaded: false,
+  pasteLocation: null,
+  pasteLocationResults: [],
+  pasteEntries: [],
+  locationCache: new Map(),
+  locationLoading: new Set(),
+  recordedLocationJobs: new Set(),
+  draftPreparationEnabled: false,
+  draftStatuses: new Map(),
+  draftDebounceTimer: null,
+  draftPollTimer: null,
+  lastDraftQueueSignature: null,
+  draftInputSignatures: new Map(),
+  draftDirtyIds: new Set(),
 };
 
 const THEME_STORAGE_KEY = "auto-eudm-theme";
+const RECENT_LOCATIONS_STORAGE_KEY = "auto-eudm-recent-locations";
+const MAX_RECENT_LOCATIONS = 8;
 const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
 
 const $ = (selector) => document.querySelector(selector);
@@ -27,11 +42,16 @@ const elements = {
   queueBody: $("#queueBody"),
   queueCounts: $("#queueCounts"),
   connectionGate: $("#connectionGate"),
+  queueValidationNotice: $("#queueValidationNotice"),
+  queueValidationMessage: $("#queueValidationMessage"),
   connectionGateTitle: $("#connectionGateTitle"),
   connectionGateMessage: $("#connectionGateMessage"),
   connectionGateButton: $("#connectionGateButton"),
   historyButton: $("#historyButton"),
   historyList: $("#historyList"),
+  eudmFormLink: $("#eudmFormLink"),
+  prepareDraftsToggle: $("#prepareDraftsToggle"),
+  draftPreparationSummary: $("#draftPreparationSummary"),
   reviewButton: $("#reviewButton"),
   clearQueueButton: $("#clearQueueButton"),
   inspectorEmpty: $("#inspectorEmpty"),
@@ -139,6 +159,7 @@ async function api(path, options = {}) {
   });
   const payload = await response.json().catch(() => ({ error: "The local server returned an unreadable response." }));
   if (!response.ok) {
+    if (payload.connection) updateConnection(payload.connection);
     const error = new Error(payload.error || "The request could not be completed.");
     error.payload = payload;
     throw error;
@@ -146,8 +167,48 @@ async function api(path, options = {}) {
   return payload;
 }
 
-function defaultLocation() {
-  return { ...state.config.default_location };
+function emptyLocation() {
+  return { city: "", building: "", floor: "", room: "", cabinet: "" };
+}
+
+function recentLocations() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(RECENT_LOCATIONS_STORAGE_KEY) || "[]");
+    return Array.isArray(saved)
+      ? saved.filter(hasCompleteLocation).slice(0, MAX_RECENT_LOCATIONS)
+      : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function preferredLocation() {
+  const configured = state.config?.default_location;
+  return structuredClone(
+    recentLocations()[0]
+      || (hasCompleteLocation(configured) ? configured : emptyLocation()),
+  );
+}
+
+function rememberLocation(location) {
+  if (!hasCompleteLocation(location)) return;
+  const key = locationDisplay(location).toLowerCase();
+  const locations = [structuredClone(location), ...recentLocations().filter((item) => locationDisplay(item).toLowerCase() !== key)]
+    .slice(0, MAX_RECENT_LOCATIONS);
+  try {
+    localStorage.setItem(RECENT_LOCATIONS_STORAGE_KEY, JSON.stringify(locations));
+  } catch (_) {}
+}
+
+function hasCompleteLocation(location) {
+  return [location?.city, location?.building, location?.floor, location?.room]
+    .every((value) => String(value || "").trim());
+}
+
+function locationDisplay(location) {
+  return [location?.city, location?.building, location?.floor, location?.room, location?.cabinet]
+    .filter(Boolean)
+    .join(" → ");
 }
 
 function resolveStatus(options, candidate, fallback = "") {
@@ -179,8 +240,8 @@ function makeRequest(kind) {
     user: "",
     returning: false,
     returning_user: "",
-    location: user ? null : defaultLocation(),
-    group: kind === "bulk_location" ? "Bulk location" : user ? "User deployments" : "Location deployments",
+    location: user ? null : preferredLocation(),
+    group: kind === "bulk_location" ? "Bulk add to location stock" : user ? "Deploy to user" : "Add to location stock",
     source: "",
   };
   normalizeRequestStatus(request);
@@ -198,7 +259,7 @@ function locationStatusValues() {
 function validateRequest(request) {
   const errors = [];
   if (!["user", "location", "bulk_location"].includes(request.kind)) {
-    return ["Choose a deployment type."];
+    return ["Choose Deploy to user, Add to location stock, or Bulk add to location stock."];
   }
   if (!request.serials.length) errors.push("Enter at least one serial number.");
   if (request.kind !== "bulk_location" && request.serials.length !== 1) {
@@ -206,8 +267,8 @@ function validateRequest(request) {
   }
   const seen = new Set();
   for (const serial of request.serials) {
-    if (!/^[A-Za-z0-9._-]+$/.test(serial)) {
-      errors.push(`Serial ${serial} contains unsupported characters.`);
+    if (!/^[A-Za-z0-9._-]{6,}$/.test(serial)) {
+      errors.push(`Serial ${serial} must have at least six letters, numbers, dots, underscores, or hyphens.`);
       break;
     }
     const key = serial.toLowerCase();
@@ -218,25 +279,132 @@ function validateRequest(request) {
     seen.add(key);
   }
   if (request.kind === "user") {
-    if (!userStatusValues().has(request.status)) errors.push("Choose a user deployment status.");
+    if (!userStatusValues().has(request.status)) errors.push("Choose a status for Deploy to user.");
     if (!request.user.trim()) errors.push("Choose the user receiving the device.");
-    if (request.returning || request.returning_user) errors.push("A user deployment cannot include a returning user.");
-    if (request.location) errors.push("A user deployment cannot include a location.");
+    if (request.user && !/^[A-Za-z][A-Za-z0-9._-]*$/.test(request.user.trim())) {
+      errors.push("The receiving username is not in a valid login ID format.");
+    }
+    if (request.returning || request.returning_user) errors.push("Deploy to user cannot include a returning user.");
+    if (request.location) errors.push("Deploy to user cannot include a location.");
   } else {
-    if (!locationStatusValues().has(request.status)) errors.push("Choose a location deployment status.");
-    if (request.user) errors.push("A location deployment cannot include a deployed-to user.");
+    if (!locationStatusValues().has(request.status)) errors.push("Choose a status for Add to location stock.");
+    if (request.user) errors.push("Add to location stock cannot include a deployed-to user.");
     const location = request.location || {};
     if (![location.city, location.building, location.floor, location.room].every((value) => String(value || "").trim())) {
-      errors.push("Choose both the city and the exact location.");
+      errors.push("Choose both the city and the location.");
     }
     if (request.returning && !request.returning_user.trim()) {
       errors.push("Choose the returning user or turn off the return option.");
     }
+    if (request.returning_user && !/^[A-Za-z][A-Za-z0-9._-]*$/.test(request.returning_user.trim())) {
+      errors.push("The returning username is not in a valid login ID format.");
+    }
     if (request.kind === "bulk_location" && request.returning) {
-      errors.push("Bulk location requests cannot include a returning user.");
+      errors.push("Bulk add to location stock cannot include a returning user.");
     }
   }
   return errors;
+}
+
+function scheduleDraftPreparation() {
+  clearTimeout(state.draftDebounceTimer);
+  if (!state.draftPreparationEnabled) return;
+  if (!["connected", "simulation"].includes(state.connection?.state)) return;
+  const signature = JSON.stringify(state.queue);
+  if (signature === state.lastDraftQueueSignature) return;
+  state.lastDraftQueueSignature = signature;
+  state.draftDebounceTimer = setTimeout(prepareReadyDrafts, 1200);
+}
+
+function synchronizeDraftInputs() {
+  const currentIds = new Set();
+  for (const request of state.queue) {
+    currentIds.add(request.id);
+    const signature = JSON.stringify(request);
+    if (state.draftInputSignatures.get(request.id) !== signature) {
+      state.draftInputSignatures.set(request.id, signature);
+      state.draftDirtyIds.add(request.id);
+      state.draftStatuses.delete(request.id);
+    }
+  }
+  for (const id of state.draftInputSignatures.keys()) {
+    if (!currentIds.has(id)) {
+      state.draftInputSignatures.delete(id);
+      state.draftDirtyIds.delete(id);
+      state.draftStatuses.delete(id);
+    }
+  }
+}
+
+async function prepareReadyDrafts() {
+  if (!state.draftPreparationEnabled) return;
+  if (!["connected", "simulation"].includes(state.connection?.state)) return;
+  const validations = queueValidation();
+  const ready = state.queue.filter(
+    (request) => !(validations.get(request.id) || []).length,
+  );
+  await Promise.all(ready.map(async (request) => {
+    try {
+      const draft = await api("/api/drafts/prepare", {
+        method: "POST",
+        body: JSON.stringify({ request }),
+      });
+      state.draftStatuses.set(request.id, draft);
+      state.draftDirtyIds.delete(request.id);
+    } catch (error) {
+      if (error.payload?.code === "sso_expired") return;
+      state.draftStatuses.set(request.id, {
+        client_id: request.id,
+        state: "failed",
+        message: error.message,
+      });
+      state.draftDirtyIds.delete(request.id);
+    }
+  }));
+  renderQueue();
+  pollDraftStatuses();
+}
+
+async function pollDraftStatuses() {
+  clearTimeout(state.draftPollTimer);
+  if (!state.draftPreparationEnabled) return;
+  try {
+    const payload = await api("/api/drafts");
+    state.draftStatuses = new Map(
+      (payload.drafts || [])
+        .filter((draft) => !state.draftDirtyIds.has(draft.client_id))
+        .map((draft) => [draft.client_id, draft]),
+    );
+    renderQueue();
+    if ((payload.drafts || []).some((draft) => draft.state === "preparing")) {
+      state.draftPollTimer = setTimeout(pollDraftStatuses, 900);
+    }
+  } catch (_) {}
+}
+
+function draftStateFor(request) {
+  return state.draftPreparationEnabled
+    ? state.draftStatuses.get(request.id)
+    : null;
+}
+
+function renderDraftSummary() {
+  const summary = elements.draftPreparationSummary;
+  if (!summary) return;
+  if (!state.draftPreparationEnabled) {
+    summary.hidden = true;
+    return;
+  }
+  const queueIds = new Set(state.queue.map((request) => request.id));
+  const statuses = [...state.draftStatuses.values()].filter(
+    (draft) => queueIds.has(draft.client_id),
+  );
+  const prepared = statuses.filter((draft) => draft.state === "prepared").length;
+  const preparing = statuses.filter((draft) => draft.state === "preparing").length;
+  summary.hidden = false;
+  summary.textContent = prepared || preparing
+    ? `${prepared} ready · ${preparing} preparing`
+    : "Valid requests will be prepared after you pause editing.";
 }
 
 function queueValidation() {
@@ -265,7 +433,7 @@ function statusLabel(request) {
 }
 
 function kindLabel(kind) {
-  return ({ user: "User", location: "Location", bulk_location: "Bulk location" })[kind] || "Unknown";
+  return ({ user: "Deploy to user", location: "Add to location stock", bulk_location: "Bulk add to location stock" })[kind] || "Unknown";
 }
 
 function destinationLabel(request) {
@@ -276,33 +444,64 @@ function destinationLabel(request) {
 }
 
 function renderQueue() {
+  synchronizeDraftInputs();
   const validations = queueValidation();
   const requestCount = state.queue.length;
   const deviceCount = state.queue.reduce((sum, request) => sum + request.serials.length, 0);
   const invalidCount = [...validations.values()].filter((errors) => errors.length).length;
-  elements.queueCounts.textContent = `${requestCount} request${requestCount === 1 ? "" : "s"} · ${deviceCount} device${deviceCount === 1 ? "" : "s"}${invalidCount ? ` · ${invalidCount} needs attention` : ""}`;
+  elements.queueCounts.textContent = `${requestCount} request${requestCount === 1 ? "" : "s"} · ${deviceCount} device${deviceCount === 1 ? "" : "s"}`;
+  elements.queueValidationNotice.hidden = invalidCount === 0;
+  elements.queueValidationMessage.textContent = invalidCount
+    ? `${invalidCount} request${invalidCount === 1 ? " needs" : "s need"} attention`
+    : "";
   elements.queueEmpty.hidden = requestCount > 0;
   elements.queueTableWrap.hidden = requestCount === 0;
   const runtimeReady = state.connection?.state === "simulation"
     || state.connection?.state === "connected";
   const requesterReady = Boolean(state.connection?.request_for || state.config?.request_for);
+  const waitingForDrafts = state.draftPreparationEnabled
+    && state.queue.some((request) => {
+      if ((validations.get(request.id) || []).length) return false;
+      const draft = state.draftStatuses.get(request.id);
+      return state.draftDirtyIds.has(request.id)
+        || !draft
+        || draft.state === "preparing";
+    });
   elements.reviewButton.disabled = requestCount === 0
     || invalidCount > 0
     || !runtimeReady
-    || !requesterReady;
+    || !requesterReady
+    || waitingForDrafts;
+  elements.reviewButton.title = invalidCount
+    ? "Fix every request error before reviewing or submitting."
+    : !runtimeReady || !requesterReady
+      ? "Connect to EUDM before submitting."
+      : waitingForDrafts
+        ? "Wait for background draft preparation to finish."
+      : "Review every request before submitting.";
 
   elements.queueBody.innerHTML = state.queue.map((request, index) => {
     const errors = validations.get(request.id) || [];
     const serialDisplay = request.serials.length ? request.serials.join(", ") : "No serial";
     const selected = request.id === state.selectedId;
+    const secondary = request.source
+      || (request.group && request.group !== kindLabel(request.kind) ? request.group : "");
     return `
       <tr data-id="${escapeHtml(request.id)}" class="${selected ? "selected" : ""} ${errors.length ? "invalid" : ""}" tabindex="0">
         <td class="index-column">${index + 1}</td>
-        <td><span class="cell-primary">${escapeHtml(serialDisplay)}</span><span class="cell-secondary">${request.serials.length} device${request.serials.length === 1 ? "" : "s"}</span></td>
-        <td><span class="cell-primary">${escapeHtml(kindLabel(request.kind))}</span><span class="cell-secondary">${escapeHtml(request.group)}</span></td>
+        <td><span class="cell-primary">${escapeHtml(serialDisplay)}</span>${request.kind === "bulk_location" ? `<span class="cell-secondary">${request.serials.length} devices</span>` : ""}</td>
+        <td><span class="cell-primary">${escapeHtml(kindLabel(request.kind))}</span>${secondary ? `<span class="cell-secondary">${escapeHtml(secondary)}</span>` : ""}</td>
         <td title="${escapeHtml(statusLabel(request))}">${escapeHtml(statusLabel(request))}</td>
         <td title="${escapeHtml(destinationLabel(request))}"><span class="cell-primary">${escapeHtml(destinationLabel(request))}</span>${request.returning_user ? `<span class="cell-secondary">Returned by ${escapeHtml(request.returning_user)}</span>` : ""}</td>
-        <td class="state-column" title="${escapeHtml(errors.join(" "))}">${errors.length ? '<span class="invalid-mark">!</span>' : '<span class="ready-mark">✓</span>'}</td>
+        <td class="state-column" title="${escapeHtml(errors.join(" "))}">${(() => {
+          const draft = draftStateFor(request);
+          if (errors.length) return '<span class="invalid-mark">!</span>';
+          if (!draft) return '<span class="ready-mark">✓</span>';
+          if (draft.state === "preparing") return '<span class="draft-ready"><span class="ready-mark"><i class="activity-spinner"></i></span><small class="draft-state preparing">Preparing</small></span>';
+          if (draft.state === "prepared") return '<span class="draft-ready"><span class="ready-mark">✓</span><small class="draft-state prepared">Draft ready</small></span>';
+          if (draft.state === "failed") return '<span class="draft-ready"><span class="ready-mark">✓</span><small class="draft-state failed" title="' + escapeHtml(draft.message) + '">Prepare later</small></span>';
+          return '<span class="ready-mark">✓</span>';
+        })()}</td>
         <td><button class="row-menu" data-remove="${escapeHtml(request.id)}" aria-label="Remove request" title="Remove request"><span class="trash-icon" aria-hidden="true"></span></button></td>
       </tr>`;
   }).join("");
@@ -325,6 +524,8 @@ function renderQueue() {
     button.addEventListener("click", () => removeRequest(button.dataset.remove));
   });
   refreshSelectedValidation();
+  renderDraftSummary();
+  scheduleDraftPreparation();
 }
 
 function refreshSelectedValidation() {
@@ -380,13 +581,12 @@ function renderInspector() {
   elements.userInput.value = request.user || "";
 
   if (!user) {
-    fillSelect(elements.cityInput, state.config.cities.map((city) => ({ label: city, value: city })), request.location?.city || "", "Choose a city");
+    fillSelect(elements.cityInput, locationCities(request.location), request.location?.city || "", "Choose a city");
     const location = request.location || {};
-    const hasExact = [location.building, location.floor, location.room].every(Boolean);
-    elements.locationInput.innerHTML = hasExact
-      ? `<option value="current">${escapeHtml([location.building, location.floor, location.room, location.cabinet].filter(Boolean).join(" → "))}</option>`
-      : '<option value="">Choose a city, then find locations</option>';
-    elements.locationDetail.textContent = hasExact ? `City: ${location.city}` : "";
+    const results = locationResults(location.city);
+    const hasExact = hasCompleteLocation(location);
+    populateLocationPicker(elements.locationInput, location, results, "Choose a city to load locations");
+    elements.locationDetail.textContent = hasExact ? "" : "Choose a location.";
     elements.returningUserFields.hidden = bulk;
     elements.returningToggle.checked = Boolean(request.returning);
     elements.returningSearch.hidden = !request.returning;
@@ -395,6 +595,7 @@ function renderInspector() {
     $("#confirmSerial").textContent = request.serials[0] || "Not selected";
     $("#confirmUser").textContent = request.returning_user || "Not selected";
     $("#confirmLocation").textContent = destinationLabel(request);
+    ensureLocationsLoaded(location.city);
   }
 
   refreshSelectedValidation();
@@ -444,7 +645,7 @@ function changeKind(kind) {
   if (!request || request.kind === kind) return;
   const wasUser = request.kind === "user";
   request.kind = kind;
-  request.group = kind === "user" ? "User deployments" : kind === "location" ? "Location deployments" : "Bulk location";
+  request.group = kind === "user" ? "Deploy to user" : kind === "location" ? "Add to location stock" : "Bulk add to location stock";
   if (kind === "user") {
     request.location = null;
     request.returning = false;
@@ -457,7 +658,7 @@ function changeKind(kind) {
     request.serials = request.serials.slice(0, 1);
   } else {
     request.user = "";
-    request.location = wasUser || !request.location ? defaultLocation() : request.location;
+    request.location = wasUser || !request.location ? preferredLocation() : request.location;
     request.status = resolveStatus(
       state.config.location_statuses,
       request.status,
@@ -494,6 +695,42 @@ function renderSearchResults(container, results, onSelect, primaryIndex = 0) {
     });
   }
   container.hidden = false;
+}
+
+function locationResults(city) {
+  return state.locationCache.get(city) || [];
+}
+
+function populateLocationPicker(input, location, results, emptyText) {
+  const exact = hasCompleteLocation(location);
+  const selectedIndex = results.findIndex((result) => {
+    const [building = "", floor = "", room = "", cabinet = ""] = result.columns || [];
+    return building === location?.building
+      && floor === location?.floor
+      && room === location?.room
+      && cabinet === (location?.cabinet || "");
+  });
+  if (results.length) {
+    input.innerHTML = [
+      '<option value="">Choose a location</option>',
+      ...results.map((result, index) => `<option value="${index}" ${index === selectedIndex ? "selected" : ""}>${escapeHtml(result.columns.filter(Boolean).join(" → "))}</option>`),
+    ].join("");
+    input.dataset.results = JSON.stringify(results);
+  } else if (exact) {
+    input.innerHTML = `<option value="current">${escapeHtml(locationDisplay(location))}</option>`;
+    input.dataset.results = "";
+  } else {
+    input.innerHTML = `<option value="">${escapeHtml(emptyText)}</option>`;
+    input.dataset.results = "";
+  }
+}
+
+function locationCities(location) {
+  return [...new Set([
+    ...(state.config.cities || []),
+    ...recentLocations().map((item) => item.city),
+    location?.city,
+  ].filter(Boolean))].map((city) => ({ label: city, value: city }));
 }
 
 function bestLogin(result, query) {
@@ -558,11 +795,21 @@ async function searchUsers(returning = false) {
   }
 }
 
-async function loadLocations() {
+async function loadLocations({ city: requestedCity, force = false, quiet = false } = {}) {
   const request = selectedRequest();
   if (!request || request.kind === "user") return;
-  const city = elements.cityInput.value;
-  if (!city) return toast("Choose a city first.", "error");
+  const city = requestedCity || elements.cityInput.value;
+  if (!city) {
+    if (!quiet) toast("Choose a city first.", "error");
+    return;
+  }
+  if (!force && locationResults(city).length) {
+    populateLocationPicker(elements.locationInput, request.location || emptyLocation(), locationResults(city), "Choose a city to load locations");
+    elements.locationDetail.textContent = hasCompleteLocation(request.location) ? "" : "Choose a location.";
+    return;
+  }
+  if (state.locationLoading.has(city)) return;
+  state.locationLoading.add(city);
   $("#loadLocationsButton").disabled = true;
   elements.locationInput.innerHTML = '<option>Loading locations…</option>';
   try {
@@ -570,47 +817,59 @@ async function loadLocations() {
       method: "POST",
       body: JSON.stringify({ city }),
     });
-    elements.locationInput.innerHTML = [
-      '<option value="">Choose an exact location</option>',
-      ...payload.results.map((result, index) => `<option value="${index}">${escapeHtml(result.columns.filter(Boolean).join(" → "))}</option>`),
-    ].join("");
-    elements.locationInput.dataset.results = JSON.stringify(payload.results);
-    request.location = { city, building: "", floor: "", room: "", cabinet: "" };
+    state.locationCache.set(city, payload.results);
+    populateLocationPicker(elements.locationInput, request.location || emptyLocation(), payload.results, "Choose a city to load locations");
     renderQueue();
-    elements.locationDetail.textContent = `${payload.results.length} location${payload.results.length === 1 ? "" : "s"} found`;
+    elements.locationDetail.textContent = hasCompleteLocation(request.location) ? "" : "Choose a location.";
   } catch (error) {
     elements.locationInput.innerHTML = '<option value="">Could not load locations</option>';
-    toast(error.message, "error");
+    if (!quiet) toast(error.message, "error");
   } finally {
+    state.locationLoading.delete(city);
     $("#loadLocationsButton").disabled = false;
   }
 }
 
+function ensureLocationsLoaded(city) {
+  if (!city || locationResults(city).length || state.locationLoading.has(city)) return;
+  if (!["connected", "simulation"].includes(state.connection?.state)) return;
+  loadLocations({ city, quiet: true });
+}
+
 function updateConnection(status) {
+  const previousConnectionState = state.connection?.state;
   state.connection = status;
   elements.connectionBadge.className = `connection-badge ${status.state}`;
   const label = status.state === "simulation" ? "Simulation ready"
     : status.state === "connected" ? "EUDM connected"
     : status.state === "connecting" ? "Connecting"
+    : status.state === "expired" ? "Reconnect to EUDM"
     : status.state === "error" ? "Connection failed"
     : "Not connected";
   elements.connectionBadge.querySelector("span:last-child").textContent = label;
   elements.connectionBadge.title = status.message || "";
   elements.connectButton.hidden = ["simulation", "connected"].includes(status.state);
   elements.connectButton.disabled = status.state === "connecting";
-  elements.connectButton.textContent = status.state === "error" ? "Try again" : status.state === "connecting" ? "Connecting…" : "Connect to EUDM";
+  elements.connectButton.textContent = status.state === "expired"
+    ? "Reconnect to EUDM"
+    : status.state === "error" ? "Try again"
+      : status.state === "connecting" ? "Connecting…" : "Connect to EUDM";
   const needsConnection = !state.config.simulation && !["connected", "simulation"].includes(status.state);
   elements.connectionGate.hidden = !needsConnection;
   elements.connectionGateTitle.textContent = status.state === "connecting"
     ? "Connecting to EUDM…"
+    : status.state === "expired"
+      ? "Your EUDM session has expired"
     : status.state === "error"
       ? "EUDM connection needed before submitting"
       : "Connect to EUDM before submitting";
   elements.connectionGateMessage.textContent = status.state === "error"
     ? status.message || "The authenticated EUDM session could not be established."
+    : status.state === "expired"
+      ? "Reconnect to EUDM. Complete SSO in Chrome if it opens, then return here to continue."
     : status.state === "connecting"
       ? "Complete authentication if prompted. The queue will unlock when EUDM is ready."
-      : "A real run needs an authenticated EUDM connection. Your prepared queue is saved here.";
+      : "An authenticated EUDM connection is required. Your prepared queue is saved here.";
   elements.connectionGateButton.hidden = status.state === "connecting";
   elements.connectionGateButton.disabled = status.state === "connecting";
   const requester = status.request_for || state.config.request_for || "";
@@ -624,6 +883,12 @@ function updateConnection(status) {
         : "Resolved automatically after connection";
   if (status.state === "connected" && !state.liveOptionsLoaded) {
     refreshFormOptions();
+  }
+  if (
+    ["connected", "simulation"].includes(status.state)
+    && !["connected", "simulation"].includes(previousConnectionState)
+  ) {
+    state.lastDraftQueueSignature = null;
   }
   renderQueue();
 }
@@ -670,82 +935,242 @@ async function connect() {
 function openPasteDialog() {
   $("#pairsInput").value = "";
   $("#pairsError").hidden = true;
-  const defaultMode = $('input[name="pairsMode"][value="user"]');
-  if (defaultMode) defaultMode.checked = true;
-  updatePasteMode();
+  state.pasteLocation = preferredLocation();
+  state.pasteLocationResults = [];
+  state.pasteEntries = [];
+  $("#pairsAddFields").hidden = true;
+  $("#pairsShowAddButton").hidden = false;
+  $("#pairsAddSerial").value = "";
+  $("#pairsAddUsername").value = "";
+  $("#pairsEntry").hidden = false;
+  $("#pairsReview").hidden = true;
+  $("#pairsBackButton").hidden = true;
+  $("#reviewPairsButton").hidden = false;
+  $("#addPairsButton").hidden = true;
   $("#pasteDialog").showModal();
   setTimeout(() => $("#pairsInput").focus(), 0);
 }
 
-function updatePasteMode() {
-  const locationMode = $('input[name="pairsMode"]:checked')?.value === "location";
-  const options = locationMode ? state.config.location_statuses : state.config.user_statuses;
-  const defaultStatus = locationMode
-    ? state.config.default_location_status
-    : state.config.default_user_status;
-  fillSelect(
-    $("#pairsStatus"),
-    options,
-    resolveStatus(options, defaultStatus, defaultStatus),
-  );
-  $("#pairsFormat").textContent = locationMode
-    ? "Enter one device and returning user per line"
-    : "Enter one device and receiving user per line";
-  $("#pairsHelp").innerHTML = locationMode
-    ? 'Format: <code>SERIAL USERNAME</code>. Each line deploys a device to the configured location and records who returned it.'
-    : 'Format: <code>SERIAL USERNAME</code>. Each line becomes one user deployment.';
-  $("#addPairsButton").textContent = locationMode
-    ? "Add location returns"
-    : "Add user deployments";
-
+function renderPasteLocationFields() {
+  const location = state.pasteLocation || preferredLocation();
+  fillSelect($("#pairsCityInput"), locationCities(location), location.city, "Choose a city");
+  state.pasteLocationResults = locationResults(location.city).map((result) => ({ ...result, city: location.city }));
+  populateLocationPicker($("#pairsLocationInput"), location, state.pasteLocationResults, "Choose a city to load locations");
   const locationNotice = $("#pairsLocation");
-  locationNotice.hidden = !locationMode;
-  if (!locationMode) return;
-  const location = defaultLocation();
-  const complete = [location.city, location.building, location.floor, location.room]
-    .every((value) => String(value || "").trim());
+  const complete = hasCompleteLocation(location);
   locationNotice.classList.toggle("incomplete", !complete);
   locationNotice.textContent = complete
-    ? `Destination: ${[location.city, location.building, location.floor, location.room, location.cabinet].filter(Boolean).join(" → ")}`
-    : "No complete default location is configured. Set the city, building, floor and room in .env before adding these requests.";
+    ? locationDisplay(location)
+    : location.city
+      ? "Loading locations for the selected city…"
+      : "Choose a city to load locations.";
+  ensurePasteLocationsLoaded(location.city);
 }
 
-function addPairs() {
-  const locationMode = $('input[name="pairsMode"]:checked')?.value === "location";
+async function findPasteLocations({ force = false, quiet = false } = {}) {
+  const city = $("#pairsCityInput").value;
+  if (!city) {
+    if (!quiet) toast("Choose a city first.", "error");
+    return;
+  }
+  if (!force && locationResults(city).length) {
+    state.pasteLocationResults = locationResults(city).map((result) => ({ ...result, city }));
+    renderPasteLocationFields();
+    return;
+  }
+  if (state.locationLoading.has(city)) return;
+  state.locationLoading.add(city);
+  const button = $("#pairsFindLocationsButton");
+  button.disabled = true;
+  $("#pairsLocationInput").innerHTML = '<option>Loading locations…</option>';
+  try {
+    const payload = await api("/api/search/locations", {
+      method: "POST",
+      body: JSON.stringify({ city }),
+    });
+    state.locationCache.set(city, payload.results);
+    state.pasteLocationResults = payload.results.map((result) => ({ ...result, city }));
+    if (state.pasteLocation?.city !== city) {
+      state.pasteLocation = { city, building: "", floor: "", room: "", cabinet: "" };
+    }
+    renderPasteLocationFields();
+    if (!hasCompleteLocation(state.pasteLocation)) {
+      $("#pairsLocation").textContent = `${payload.results.length} location${payload.results.length === 1 ? "" : "s"} ready to choose.`;
+    }
+  } catch (error) {
+    state.pasteLocationResults = [];
+    $("#pairsLocationInput").innerHTML = '<option value="">Could not load locations</option>';
+    if (!quiet) toast(error.message, "error");
+  } finally {
+    state.locationLoading.delete(city);
+    button.disabled = false;
+  }
+}
+
+function ensurePasteLocationsLoaded(city) {
+  if (!city || locationResults(city).length || state.locationLoading.has(city)) return;
+  if (!["connected", "simulation"].includes(state.connection?.state)) return;
+  findPasteLocations({ quiet: true });
+}
+
+function parseQuickImportLines() {
   const lines = $("#pairsInput").value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  const parsed = [];
+  const entries = [];
   const errors = [];
+  const seenSerials = new Set();
   lines.forEach((line, index) => {
     const parts = line.split(/\s+/);
-    if (parts.length !== 2) errors.push(`Line ${index + 1} needs exactly one serial and one username.`);
-    else parsed.push({ serial: parts[0], username: parts[1] });
-  });
-  if (!parsed.length && !errors.length) errors.push("Paste at least one serial and username.");
-  if (locationMode) {
-    const location = defaultLocation();
-    if (![location.city, location.building, location.floor, location.room]
-      .every((value) => String(value || "").trim())) {
-      errors.push("Configure a complete default location in .env before adding location returns.");
+    if (parts.length < 1 || parts.length > 2) {
+      errors.push(`Line ${index + 1} needs a serial, with an optional username.`);
+      return;
     }
-  }
+    const [serial, username = ""] = parts;
+    if (!/^[A-Za-z0-9._-]{6,}$/.test(serial)) {
+      errors.push(`Line ${index + 1} has an invalid serial number.`);
+      return;
+    }
+    if (username && !/^[A-Za-z][A-Za-z0-9._-]*$/.test(username)) {
+      errors.push(`Line ${index + 1} has an invalid username.`);
+      return;
+    }
+    const serialKey = serial.toLowerCase();
+    if (seenSerials.has(serialKey)) {
+      errors.push(`Line ${index + 1} repeats serial ${serial}.`);
+      return;
+    }
+    seenSerials.add(serialKey);
+    entries.push({ serial, username, kind: username ? "user" : "location" });
+  });
+  if (!entries.length && !errors.length) errors.push("Paste at least one serial number.");
+  return { entries, errors };
+}
+
+function renderQuickImportReview() {
+  const list = $("#pairsReviewList");
+  list.innerHTML = state.pasteEntries.map((entry, index) => {
+    const selector = entry.username
+      ? `<select data-pairs-kind="${index}" aria-label="Action for ${escapeHtml(entry.serial)}">
+          <option value="user" ${entry.kind === "user" ? "selected" : ""}>Deploy to user</option>
+          <option value="location" ${entry.kind === "location" ? "selected" : ""}>Add to location stock</option>
+        </select>`
+      : '<span class="quick-import-fixed">Add to location stock</span>';
+    const username = entry.kind === "user"
+      ? `To ${escapeHtml(entry.username)}`
+      : entry.username
+        ? `Returned by ${escapeHtml(entry.username)}`
+        : "No returning user";
+    return `<div class="quick-import-row">
+      <div><strong>${escapeHtml(entry.serial)}</strong><small>${username}</small></div>
+      <div class="quick-import-row-actions">
+        ${selector}
+        <button class="row-menu" type="button" data-pairs-remove="${index}" aria-label="Remove ${escapeHtml(entry.serial)}" title="Remove device"><span class="trash-icon" aria-hidden="true"></span></button>
+      </div>
+    </div>`;
+  }).join("");
+  $$('[data-pairs-kind]').forEach((select) => select.addEventListener("change", () => {
+    state.pasteEntries[Number(select.dataset.pairsKind)].kind = select.value;
+    renderQuickImportReview();
+  }));
+  $$("[data-pairs-remove]").forEach((button) => button.addEventListener("click", () => {
+    state.pasteEntries.splice(Number(button.dataset.pairsRemove), 1);
+    renderQuickImportReview();
+  }));
+  const locationNeeded = state.pasteEntries.some((entry) => entry.kind === "location");
+  $("#pairsLocationFields").hidden = !locationNeeded;
+  $("#addPairsButton").disabled = state.pasteEntries.length === 0;
+  if (locationNeeded) renderPasteLocationFields();
+}
+
+function reviewPairs() {
+  const { entries, errors } = parseQuickImportLines();
   if (errors.length) {
     $("#pairsError").textContent = errors.slice(0, 4).join(" ");
     $("#pairsError").hidden = false;
     return;
   }
-  const status = $("#pairsStatus").value;
-  const requests = parsed.map(({ serial, username }) => {
+  state.pasteEntries = entries;
+  $("#pairsError").hidden = true;
+  $("#pairsEntry").hidden = true;
+  $("#pairsReview").hidden = false;
+  $("#pairsBackButton").hidden = false;
+  $("#reviewPairsButton").hidden = true;
+  $("#addPairsButton").hidden = false;
+  renderQuickImportReview();
+}
+
+function applyQuickImportKind() {
+  const kind = $("#pairsBulkKind").value;
+  if (!kind) return;
+  state.pasteEntries.forEach((entry) => {
+    if (kind === "location" || entry.username) entry.kind = kind;
+  });
+  renderQuickImportReview();
+}
+
+function showQuickImportAdd() {
+  $("#pairsAddFields").hidden = false;
+  $("#pairsShowAddButton").hidden = true;
+  $("#pairsError").hidden = true;
+  $("#pairsAddSerial").focus();
+}
+
+function cancelQuickImportAdd() {
+  $("#pairsAddFields").hidden = true;
+  $("#pairsShowAddButton").hidden = false;
+  $("#pairsAddSerial").value = "";
+  $("#pairsAddUsername").value = "";
+  $("#pairsError").hidden = true;
+}
+
+function addQuickImportEntry() {
+  const serial = $("#pairsAddSerial").value.trim();
+  const username = $("#pairsAddUsername").value.trim();
+  const errors = [];
+  if (!/^[A-Za-z0-9._-]{6,}$/.test(serial)) errors.push("Enter a valid serial number.");
+  if (username && !/^[A-Za-z][A-Za-z0-9._-]*$/.test(username)) errors.push("Enter a valid username.");
+  if (state.pasteEntries.some((entry) => entry.serial.toLowerCase() === serial.toLowerCase())) {
+    errors.push(`${serial} is already in this import.`);
+  }
+  if (errors.length) {
+    $("#pairsError").textContent = errors.join(" ");
+    $("#pairsError").hidden = false;
+    return;
+  }
+  state.pasteEntries.push({ serial, username, kind: username ? "user" : "location" });
+  cancelQuickImportAdd();
+  renderQuickImportReview();
+}
+
+function addPairs() {
+  const errors = [];
+  if (!state.pasteEntries.length) errors.push("Choose deployments before adding them to the queue.");
+  if (state.pasteEntries.some((entry) => entry.kind === "location")) {
+    const location = state.pasteLocation || preferredLocation();
+    if (!hasCompleteLocation(location)) {
+      errors.push("Choose a complete city and location before adding these requests.");
+    }
+  }
+  if (errors.length) {
+    $("#pairsError").textContent = errors.join(" ");
+    $("#pairsError").hidden = false;
+    return;
+  }
+  const requests = state.pasteEntries.map(({ serial, username, kind }) => {
+    const locationMode = kind === "location";
     const request = makeRequest(locationMode ? "location" : "user");
     request.serials = [serial];
-    request.status = status;
-    request.source = "Pasted device and user pairs";
+    request.status = locationMode
+      ? resolveStatus(state.config.location_statuses, state.config.default_location_status)
+      : resolveStatus(state.config.user_statuses, state.config.default_user_status);
+    request.source = "Quick import";
     if (locationMode) {
-      request.returning = true;
+      request.location = structuredClone(state.pasteLocation || preferredLocation());
+      request.returning = Boolean(username);
       request.returning_user = username;
-      request.group = "Pasted location returns";
+      request.group = "Quick import · Add to location stock";
     } else {
       request.user = username;
-      request.group = "Pasted user deployments";
+      request.group = "Quick import · Deploy to user";
     }
     return request;
   });
@@ -1035,14 +1460,15 @@ function openReview() {
   const devices = state.queue.reduce((sum, request) => sum + request.serials.length, 0);
   $("#reviewSummary").innerHTML = `
     <div class="summary-metric"><strong>${state.queue.length}</strong><span>EUDM requests</span></div>
-    <div class="summary-metric"><strong>${devices}</strong><span>Devices</span></div>
-    <div class="summary-metric"><strong>${invalid.length}</strong><span>Need attention</span></div>`;
+    <div class="summary-metric"><strong>${devices}</strong><span>Devices</span></div>`;
   $("#reviewList").innerHTML = state.queue.map((request) => {
     const errors = validations.get(request.id) || [];
+    const secondary = request.source
+      || (request.group && request.group !== kindLabel(request.kind) ? request.group : "");
     return `<div class="review-row">
       <span class="${errors.length ? "invalid-mark" : "ready-mark"}">${errors.length ? "!" : "✓"}</span>
       <div><strong>${escapeHtml(request.serials.join(", ") || "No serial")}</strong><small>${escapeHtml(kindLabel(request.kind))}${request.kind === "bulk_location" ? ` · ${request.serials.length} devices` : ""}</small></div>
-      <div><strong>${escapeHtml(statusLabel(request))}</strong><small>${escapeHtml(request.group)}</small></div>
+      <div><strong>${escapeHtml(statusLabel(request))}</strong>${secondary ? `<small>${escapeHtml(secondary)}</small>` : ""}</div>
       <div><strong>${escapeHtml(destinationLabel(request))}</strong><small>${errors.length ? escapeHtml(errors[0]) : request.returning_user ? `Returned by ${escapeHtml(request.returning_user)}` : "Ready"}</small></div>
     </div>`;
   }).join("");
@@ -1057,26 +1483,59 @@ function progressStateSymbol(entry) {
   return "·";
 }
 
+function progressStateLabel(entry) {
+  if (entry.state === "succeeded") return "Deployed";
+  if (entry.state === "failed") return "Failed";
+  if (entry.state === "running") return "Deploying";
+  return "Pending";
+}
+
+function progressStep(entry) {
+  const total = entry.step_count || 3;
+  if (entry.state === "succeeded") return { current: total, total, percent: 100 };
+  if (entry.state === "failed") return { current: entry.step || 0, total, percent: 100 };
+  return { current: entry.step || (entry.state === "running" ? 1 : 0), total, percent: entry.progress_percent ?? 0 };
+}
+
+function recordSuccessfulLocations(job) {
+  if (job.simulation || job.state !== "finished" || state.recordedLocationJobs.has(job.job_id)) return;
+  job.entries
+    .filter((entry) => entry.state === "succeeded" && entry.location)
+    .forEach((entry) => rememberLocation(entry.location));
+  state.recordedLocationJobs.add(job.job_id);
+}
+
 function renderProgress(job) {
   state.currentJob = job;
+  recordSuccessfulLocations(job);
   const done = job.counts.succeeded + job.counts.failed;
   const percentage = job.counts.total ? (done / job.counts.total) * 100 : 0;
   $("#progressBar").style.width = `${percentage}%`;
   $("#progressCounts").textContent = `${done} of ${job.counts.total} complete · ${job.counts.devices} devices`;
-  $("#progressList").innerHTML = job.entries.map((entry) => `
+  $("#progressLegend").innerHTML = [
+    ["pending", "Pending", job.counts.queued],
+    ["deploying", "Deploying", job.counts.running],
+    ["deployed", "Deployed", job.counts.succeeded],
+    ["failed", "Failed", job.counts.failed],
+  ].map(([stateName, label, count]) => `<span class="progress-legend-item ${stateName}"><i></i>${label} <strong>${count}</strong></span>`).join("");
+  $("#progressList").innerHTML = job.entries.map((entry) => {
+    const step = progressStep(entry);
+    return `
     <div class="progress-row ${entry.state}">
-      <span class="progress-state">${progressStateSymbol(entry)}</span>
+      <span class="progress-state" aria-label="${progressStateLabel(entry)}">${entry.state === "running" ? '<i class="activity-spinner"></i>' : progressStateSymbol(entry)}</span>
       <div class="progress-device"><strong>${escapeHtml(entry.serials.join(", "))}</strong><small>${escapeHtml(kindLabel(entry.kind))} · ${escapeHtml(entry.status)}</small></div>
-      <div class="progress-message"><strong>${escapeHtml(entry.message)}</strong><small>${escapeHtml(entry.destination)}${entry.returning_user ? ` · returned by ${escapeHtml(entry.returning_user)}` : ""}</small></div>
+      <div class="progress-message"><div class="progress-message-title"><span class="progress-status ${entry.state}">${progressStateLabel(entry)}</span><strong>${escapeHtml(entry.message)}</strong></div><small>${escapeHtml(entry.destination)}${entry.returning_user ? ` · returned by ${escapeHtml(entry.returning_user)}` : ""}</small></div>
+      <div class="progress-step">${entry.state === "queued" ? "Waiting" : `Step ${step.current} of ${step.total}`}<small>${step.percent}%</small></div>
       <div class="request-id">${entry.request_id
         ? entry.request_page_url
           ? `<a href="${escapeHtml(entry.request_page_url)}" target="_blank" rel="noopener">Open ${escapeHtml(entry.request_id)}</a>`
           : `Request ${escapeHtml(entry.request_id)}`
         : entry.state === "queued" ? "Queued" : "Preparing"}</div>
-    </div>`).join("");
+    </div>`;
+  }).join("");
   const finished = job.state === "finished";
   $("#progressHeading").textContent = finished
-    ? `${job.counts.succeeded} submitted, ${job.counts.failed} failed`
+    ? `${job.counts.succeeded} deployed, ${job.counts.failed} failed`
     : "Submitting requests";
   $("#progressActions").hidden = !finished;
   $("#closeProgressButton").hidden = !finished;
@@ -1092,7 +1551,7 @@ function openAllRequestPages() {
     .map((entry) => entry.request_page_url)
     .filter(Boolean);
   if (!pages.length) {
-    toast("Request pages are available after a real EUDM submission.", "error");
+    toast("Request pages are available after a completed EUDM submission.", "error");
     return;
   }
   pages.forEach((url) => window.open(url, "_blank", "noopener"));
@@ -1113,7 +1572,7 @@ function renderHistory(runs) {
     const succeeded = run.counts?.succeeded || 0;
     const failed = run.counts?.failed || 0;
     const stateLabel = run.state === "finished"
-      ? `${succeeded} submitted · ${failed} failed`
+      ? `${succeeded} deployed · ${failed} failed`
       : run.state;
     const entries = (run.entries || []).map((entry) => {
       const requestLink = entry.request_page_url
@@ -1127,7 +1586,7 @@ function renderHistory(runs) {
     }).join("");
     return `<section class="history-run">
       <div class="history-run-header">
-        <div><strong>${escapeHtml(formatHistoryDate(run.created_at))}</strong><small>${run.simulation ? "Simulation" : "Real EUDM"} · ${escapeHtml(run.request_for || "Unknown requester")} · ${run.counts?.devices || 0} devices</small></div>
+        <div><strong>${escapeHtml(formatHistoryDate(run.created_at))}</strong><small>${run.simulation ? "Debug simulation · " : ""}${escapeHtml(run.request_for || "Unknown requester")} · ${run.counts?.devices || 0} devices</small></div>
         <span class="history-run-state ${failed ? "failed" : ""}">${escapeHtml(stateLabel)}</span>
       </div>
       <div class="history-entries">${entries}</div>
@@ -1151,6 +1610,10 @@ async function openHistory() {
 function clearQueueAfterFlow() {
   state.queue = [];
   state.selectedId = null;
+  state.draftStatuses.clear();
+  state.draftInputSignatures.clear();
+  state.draftDirtyIds.clear();
+  state.lastDraftQueueSignature = null;
   renderAll();
 }
 
@@ -1161,6 +1624,7 @@ async function pollJob(jobId) {
     if (job.state !== "finished") {
       state.pollTimer = setTimeout(() => pollJob(jobId), 650);
     } else {
+      refreshConnection();
       const type = job.counts.failed ? "error" : "success";
       toast(`${job.counts.succeeded} request${job.counts.succeeded === 1 ? "" : "s"} submitted; ${job.counts.failed} failed.`, type);
     }
@@ -1197,15 +1661,94 @@ async function submitQueue() {
 
 function bindEvents() {
   $("#themeToggle").addEventListener("click", toggleTheme);
+  elements.prepareDraftsToggle.addEventListener("change", () => {
+    state.draftPreparationEnabled = elements.prepareDraftsToggle.checked;
+    state.lastDraftQueueSignature = null;
+    clearTimeout(state.draftDebounceTimer);
+    clearTimeout(state.draftPollTimer);
+    if (state.draftPreparationEnabled) {
+      toast("Draft preparation enabled.");
+      scheduleDraftPreparation();
+      pollDraftStatuses();
+    }
+    renderQueue();
+  });
   $("#addUserButton").addEventListener("click", () => addRequest("user"));
   $("#addLocationButton").addEventListener("click", () => addRequest("location"));
   $("#addBulkButton").addEventListener("click", () => addRequest("bulk_location"));
   $("#pastePairsButton").addEventListener("click", openPasteDialog);
+  $("#reviewPairsButton").addEventListener("click", reviewPairs);
   $("#addPairsButton").addEventListener("click", addPairs);
-  $$('input[name="pairsMode"]').forEach((radio) => radio.addEventListener("change", () => {
+  $("#pairsBackButton").addEventListener("click", () => {
+    $("#pairsInput").value = state.pasteEntries
+      .map((entry) => [entry.serial, entry.username].filter(Boolean).join(" "))
+      .join("\n");
+    $("#pairsEntry").hidden = false;
+    $("#pairsReview").hidden = true;
+    $("#pairsBackButton").hidden = true;
+    $("#reviewPairsButton").hidden = false;
+    $("#addPairsButton").hidden = true;
     $("#pairsError").hidden = true;
-    updatePasteMode();
-  }));
+    setTimeout(() => $("#pairsInput").focus(), 0);
+  });
+  $("#pairsApplyBulkButton").addEventListener("click", applyQuickImportKind);
+  $("#pairsShowAddButton").addEventListener("click", showQuickImportAdd);
+  $("#pairsCancelAddButton").addEventListener("click", cancelQuickImportAdd);
+  $("#pairsConfirmAddButton").addEventListener("click", addQuickImportEntry);
+  $("#pairsAddUsername").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      addQuickImportEntry();
+    }
+  });
+  $("#pairsAddSerial").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      $("#pairsAddUsername").focus();
+    }
+  });
+  $("#pairsAddSerial").addEventListener("input", () => { $("#pairsError").hidden = true; });
+  $("#pairsAddUsername").addEventListener("input", () => { $("#pairsError").hidden = true; });
+  $("#pairsFindLocationsButton").addEventListener("click", findPasteLocations);
+  $("#pairsCityInput").addEventListener("change", () => {
+    state.pasteLocation = {
+      city: $("#pairsCityInput").value,
+      building: "",
+      floor: "",
+      room: "",
+      cabinet: "",
+    };
+    state.pasteLocationResults = [];
+    renderPasteLocationFields();
+    findPasteLocations({ quiet: true });
+  });
+  $("#pairsLocationInput").addEventListener("change", () => {
+    const value = $("#pairsLocationInput").value;
+    if (value === "current") return;
+    if (!value) {
+      state.pasteLocation = {
+        city: $("#pairsCityInput").value,
+        building: "",
+        floor: "",
+        room: "",
+        cabinet: "",
+      };
+      renderPasteLocationFields();
+      return;
+    }
+    const result = state.pasteLocationResults[Number(value)];
+    if (!result) return;
+    const [building = "", floor = "", room = "", cabinet = ""] = result.columns;
+    state.pasteLocation = {
+      city: $("#pairsCityInput").value,
+      building,
+      floor,
+      room,
+      cabinet,
+    };
+    renderPasteLocationFields();
+  });
+  $("#pairsInput").addEventListener("input", () => { $("#pairsError").hidden = true; });
   $("#importSheetButton").addEventListener("click", () => {
     resetImportDialog();
     $("#importDialog").showModal();
@@ -1225,6 +1768,10 @@ function bindEvents() {
     if (!state.queue.length || confirm(`Remove all ${state.queue.length} prepared requests?`)) {
       state.queue = [];
       state.selectedId = null;
+      state.draftStatuses.clear();
+      state.draftInputSignatures.clear();
+      state.draftDirtyIds.clear();
+      state.lastDraftQueueSignature = null;
       renderAll();
     }
   });
@@ -1268,9 +1815,10 @@ function bindEvents() {
     const request = selectedRequest();
     if (!request) return;
     request.location = { city: elements.cityInput.value, building: "", floor: "", room: "", cabinet: "" };
-    elements.locationInput.innerHTML = '<option value="">Find an exact location</option>';
+    elements.locationInput.innerHTML = '<option value="">Loading locations…</option>';
     elements.locationDetail.textContent = "";
     renderQueue();
+    loadLocations({ quiet: true });
   });
   elements.locationInput.addEventListener("change", () => {
     const request = selectedRequest();
@@ -1280,7 +1828,7 @@ function bindEvents() {
     if (!result) return;
     const [building = "", floor = "", room = "", cabinet = ""] = result.columns;
     request.location = { city: elements.cityInput.value, building, floor, room, cabinet };
-    elements.locationDetail.textContent = [building, floor, room, cabinet].filter(Boolean).join(" → ");
+    elements.locationDetail.textContent = "";
     renderQueue();
   });
   elements.returningToggle.addEventListener("change", () => {
@@ -1329,6 +1877,9 @@ async function init() {
     state.config = await api("/api/config");
     elements.requestForValue.textContent = state.config.request_for || "Waiting for EUDM";
     elements.concurrency.value = String(state.config.concurrency);
+    elements.eudmFormLink.href = state.config.eudm_form_url;
+    state.draftPreparationEnabled = Boolean(state.config.prepare_drafts);
+    elements.prepareDraftsToggle.checked = state.draftPreparationEnabled;
     bindEvents();
     await refreshConnection();
     renderAll();

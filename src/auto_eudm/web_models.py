@@ -195,7 +195,7 @@ class RequestSpec:
     ) -> list[str]:
         errors: list[str] = []
         if self.kind not in {"user", "location", "bulk_location"}:
-            return ["Choose user, location, or bulk location deployment."]
+            return ["Choose Deploy to user, Add to location stock, or Bulk add to location stock."]
         if not self.serials:
             errors.append("Enter at least one serial number.")
         if self.kind != "bulk_location" and len(self.serials) != 1:
@@ -215,25 +215,30 @@ class RequestSpec:
                     f"Serial {serial!r} can contain only letters, numbers, dot, dash, and underscore."
                 )
                 break
+            if len(serial) < 6:
+                errors.append(f"Serial {serial!r} must contain at least six characters.")
+                break
 
         if self.kind == "user":
             allowed = user_statuses or {value for _, value in USER_STATUSES}
             if self.status not in allowed:
-                errors.append("Choose a valid user deployment status.")
+                errors.append("Choose a valid status for Deploy to user.")
             if not self.user:
                 errors.append("Choose the user receiving the device.")
+            elif not re.fullmatch(r"[A-Za-z][A-Za-z0-9._-]*", self.user):
+                errors.append("The receiving user must be a login ID, not a display name or email address.")
             if self.returning_requested:
-                errors.append("A user deployment cannot have a returning user.")
+                errors.append("Deploy to user cannot have a returning user.")
             if self.location:
-                errors.append("A user deployment cannot include a location.")
+                errors.append("Deploy to user cannot include a location.")
         else:
             allowed = location_statuses or {
                 value for _, value in LOCATION_STATUSES
             }
             if self.status not in allowed:
-                errors.append("Choose a valid location deployment status.")
+                errors.append("Choose a valid status for Add to location stock.")
             if self.user:
-                errors.append("A location deployment cannot include a deployed-to user.")
+                errors.append("Add to location stock cannot include a deployed-to user.")
             if not self.location:
                 errors.append("Choose a location.")
             elif not all(
@@ -244,12 +249,14 @@ class RequestSpec:
                     self.location.room,
                 )
             ):
-                errors.append("Choose both the city and the exact location.")
+                errors.append("Choose both the city and the location.")
             if self.returning_requested and not self.returning_user:
                 errors.append("Choose the returning user or turn off the return option.")
+            elif self.returning_user and not re.fullmatch(r"[A-Za-z][A-Za-z0-9._-]*", self.returning_user):
+                errors.append("The returning user must be a login ID, not a display name or email address.")
             if self.kind == "bulk_location" and self.returning_requested:
                 errors.append(
-                    "EUDM bulk location requests cannot include a returning user."
+                    "Bulk add to location stock cannot include a returning user."
                 )
         return errors
 
