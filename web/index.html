@@ -331,6 +331,15 @@
           <small>.xlsx or .xlsm, up to 30 MB</small>
           <input id="workbookInput" type="file" accept=".xlsx,.xlsm">
         </label>
+        <div id="importBusy" class="import-busy" role="status" aria-live="polite" hidden>
+          <span class="import-spinner" aria-hidden="true"></span>
+          <div>
+            <strong id="importBusyTitle">Reading workbook…</strong>
+            <small id="importBusyDetail">This can take a moment for a large inventory sheet.</small>
+          </div>
+          <div class="import-progress" aria-hidden="true"><span id="importBusyBar"></span></div>
+          <span id="importBusyPercent" class="import-progress-percent">0%</span>
+        </div>
       </div>
       <div id="importConfigure" hidden>
         <div class="import-file-row">
@@ -352,7 +361,7 @@
           <label><input type="radio" name="importMode" value="returns"><span><strong>Returns</strong><small id="returnImportCount">0 requests</small></span></label>
           <label><input type="radio" name="importMode" value="both"><span><strong>Both</strong><small id="bothImportCount">0 requests</small></span></label>
         </fieldset>
-        <div class="notice"><strong>Rows with red text, column G set to false, and unusable serial numbers are excluded.</strong> Column J creates deployments; column L creates Deployed - Pending Return requests. Usernames come only from column D.</div>
+        <div class="notice">Rows marked red, disabled in column G, or without a usable serial are skipped.</div>
       </div>
       <div id="importPreview" hidden>
         <div class="import-preview-heading">
@@ -367,7 +376,6 @@
           <strong>Ignored serial numbers</strong>
           <ul id="importIgnoredList"></ul>
         </div>
-        <div class="notice"><strong>Review this import before adding it.</strong> New devices default to Deployed - New Stock and can be changed to existing stock. Column L always uses Deployed - Pending Return.</div>
       </div>
       <div id="importError" class="inline-error" hidden></div>
       <div class="modal-actions">

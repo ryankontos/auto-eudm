@@ -5,6 +5,8 @@ const state = {
   connection: null,
   workbook: null,
   importPreview: null,
+  importUploadToken: 0,
+  importExpandedGroups: new Set(),
   currentJob: null,
   pollTimer: null,
   liveOptionsLoaded: false,
@@ -20,6 +22,7 @@ const state = {
 const THEME_STORAGE_KEY = "auto-eudm-theme";
 const RECENT_LOCATIONS_STORAGE_KEY = "auto-eudm-recent-locations";
 const MAX_RECENT_LOCATIONS = 8;
+const IMPORT_PREVIEW_ROW_LIMIT = 80;
 const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
 
 const $ = (selector) => document.querySelector(selector);
@@ -1262,8 +1265,10 @@ function addPairs() {
 }
 
 function resetImportDialog() {
+  state.importUploadToken += 1;
   state.workbook = null;
   state.importPreview = null;
+  state.importExpandedGroups.clear();
   $("#workbookInput").value = "";
   $("#importChoose").hidden = false;
   $("#importConfigure").hidden = true;
@@ -1272,6 +1277,7 @@ function resetImportDialog() {
   $("#prepareImportButton").disabled = true;
   $("#prepareImportButton").textContent = "Review import";
   $("#importError").hidden = true;
+  setImportBusy(false);
   const defaultMode = $('input[name="importMode"][value="new"]');
   if (defaultMode) defaultMode.checked = true;
   setImportStep(1);
@@ -1342,36 +1348,106 @@ function updateImportCounts() {
   $("#prepareImportButton").disabled = !selected || selectedCount === 0;
 }
 
-function fileToBase64(file) {
+function setImportBusy(visible, { percent = 0, title = "", detail = "" } = {}) {
+  const busy = $("#importBusy");
+  busy.hidden = !visible;
+  $("#importChoose").classList.toggle("is-busy", visible);
+  if (!visible) return;
+  const safePercent = Math.max(0, Math.min(100, Math.round(percent)));
+  $("#importBusyTitle").textContent = title;
+  $("#importBusyDetail").textContent = detail;
+  $("#importBusyBar").style.width = `${safePercent}%`;
+  $("#importBusyPercent").textContent = `${safePercent}%`;
+}
+
+function fileToBase64(file, onProgress = () => {}) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result).split(",", 2)[1]);
     reader.onerror = () => reject(new Error("The workbook could not be read."));
+    reader.onprogress = (event) => {
+      if (event.lengthComputable) onProgress(event.loaded / event.total);
+    };
     reader.readAsDataURL(file);
   });
 }
 
+function pause(milliseconds) {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+async function waitForWorkbookImport(jobId, token) {
+  while (token === state.importUploadToken) {
+    const status = await api(`/api/imports/${encodeURIComponent(jobId)}`);
+    const total = Number(status.total_rows) || 0;
+    const completed = Number(status.processed_rows) || 0;
+    const scanProgress = total ? completed / total : .03;
+    const detail = total
+      ? `${status.sheet || "Workbook"} · ${completed.toLocaleString()} of ${total.toLocaleString()} rows`
+      : "Opening workbook…";
+    setImportBusy(true, {
+      percent: 28 + scanProgress * 70,
+      title: status.message || "Reading workbook…",
+      detail,
+    });
+    if (status.state === "ready") return status.workbook;
+    if (status.state === "failed") throw new Error(status.error || "The workbook could not be imported.");
+    await pause(250);
+  }
+  return null;
+}
+
+function showImportedWorkbook(workbook) {
+  state.workbook = workbook;
+  $("#importChoose").hidden = true;
+  $("#importConfigure").hidden = false;
+  $("#importPreview").hidden = true;
+  setImportStep(2);
+  $("#importFilename").textContent = workbook.filename;
+  $("#importFileSummary").textContent = `${workbook.sheets.length} dated sheet${workbook.sheets.length === 1 ? "" : "s"}`;
+  $("#sheetInput").innerHTML = workbook.sheets.map((sheet) => `<option value="${escapeHtml(sheet.name)}" ${sheet.name === workbook.default_sheet ? "selected" : ""}>${escapeHtml(sheet.name)}</option>`).join("");
+  updateImportDates();
+}
+
 async function uploadWorkbook(file) {
+  const token = state.importUploadToken + 1;
+  state.importUploadToken = token;
   $("#importError").hidden = true;
   $("#prepareImportButton").disabled = true;
+  setImportBusy(true, {
+    percent: 0,
+    title: "Reading workbook…",
+    detail: `${file.name} · ${Math.ceil(file.size / 1024 / 1024)} MB`,
+  });
   try {
-    const data = await fileToBase64(file);
-    const workbook = await api("/api/import", {
+    const data = await fileToBase64(file, (progress) => {
+      if (token === state.importUploadToken) {
+        setImportBusy(true, {
+          percent: progress * 22,
+          title: "Reading workbook…",
+          detail: `${file.name} · preparing upload`,
+        });
+      }
+    });
+    if (token !== state.importUploadToken) return;
+    setImportBusy(true, {
+      percent: 25,
+      title: "Sending workbook…",
+      detail: "Starting the import",
+    });
+    const job = await api("/api/import", {
       method: "POST",
       body: JSON.stringify({ filename: file.name, data }),
     });
-    state.workbook = workbook;
-    $("#importChoose").hidden = true;
-    $("#importConfigure").hidden = false;
-    $("#importPreview").hidden = true;
-    setImportStep(2);
-    $("#importFilename").textContent = workbook.filename;
-    $("#importFileSummary").textContent = `${workbook.sheets.length} dated sheet${workbook.sheets.length === 1 ? "" : "s"}`;
-    $("#sheetInput").innerHTML = workbook.sheets.map((sheet) => `<option value="${escapeHtml(sheet.name)}" ${sheet.name === workbook.default_sheet ? "selected" : ""}>${escapeHtml(sheet.name)}</option>`).join("");
-    updateImportDates();
+    const workbook = await waitForWorkbookImport(job.job_id, token);
+    if (workbook && token === state.importUploadToken) showImportedWorkbook(workbook);
   } catch (error) {
-    $("#importError").textContent = error.message;
-    $("#importError").hidden = false;
+    if (token === state.importUploadToken) {
+      $("#importError").textContent = error.message;
+      $("#importError").hidden = false;
+    }
+  } finally {
+    if (token === state.importUploadToken) setImportBusy(false);
   }
 }
 
@@ -1401,7 +1477,9 @@ function renderImportPreview() {
     const requests = payload.requests.filter((request) => request.group === group.key);
     if (!requests.length) return "";
     const selectedCount = requests.filter((request) => request.included !== false).length;
-    const rows = requests.map((request, index) => {
+    const expanded = state.importExpandedGroups.has(group.key);
+    const visibleRequests = expanded ? requests : requests.slice(0, IMPORT_PREVIEW_ROW_LIMIT);
+    const rows = visibleRequests.map((request, index) => {
       const isNew = request.group === "New deployments";
       const isIncluded = request.included !== false;
       const statusControl = isNew
@@ -1429,6 +1507,7 @@ function renderImportPreview() {
         </div>
       </div>
       ${rows}
+      ${visibleRequests.length < requests.length ? `<button class="import-show-more" type="button" data-import-expand="${escapeHtml(group.key)}">Show ${requests.length - visibleRequests.length} more</button>` : ""}
     </section>`;
   }).join("");
   $("#importPreviewList").querySelectorAll("[data-import-status]").forEach((select) => {
@@ -1457,6 +1536,12 @@ function renderImportPreview() {
       const selected = payload.requests.filter((request) => request.included !== false).length;
       $("#prepareImportButton").disabled = selected === 0;
       $("#prepareImportButton").textContent = `Add ${selected} to queue`;
+    });
+  });
+  $("#importPreviewList").querySelectorAll("[data-import-expand]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.importExpandedGroups.add(button.dataset.importExpand);
+      renderImportPreview();
     });
   });
 
@@ -1516,6 +1601,7 @@ async function prepareImport() {
       normalizeRequestStatus(request);
     });
     state.importPreview = payload;
+    state.importExpandedGroups.clear();
     $("#importConfigure").hidden = true;
     $("#importPreview").hidden = false;
     $("#backImportButton").hidden = false;
@@ -1807,6 +1893,10 @@ function bindEvents() {
   $("#importSheetButton").addEventListener("click", () => {
     resetImportDialog();
     $("#importDialog").showModal();
+  });
+  $("#importDialog").addEventListener("close", () => {
+    state.importUploadToken += 1;
+    setImportBusy(false);
   });
   $("#workbookInput").addEventListener("change", (event) => {
     if (event.target.files[0]) uploadWorkbook(event.target.files[0]);

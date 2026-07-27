@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import date
 from io import BytesIO
 import re
-from typing import Any
+from typing import Any, Callable
 import uuid
 
 from . import eudm_inventory_import as inventory
@@ -346,7 +346,13 @@ class WorkbookImport:
     sheets: dict[str, list[inventory.SheetRow]]
 
     @classmethod
-    def from_upload(cls, filename: str, encoded: str) -> "WorkbookImport":
+    def from_upload(
+        cls,
+        filename: str,
+        encoded: str,
+        *,
+        on_progress: Callable[[str, int, int], None] | None = None,
+    ) -> "WorkbookImport":
         if not filename.lower().endswith((".xlsx", ".xlsm")):
             raise eudm.EUDMError("Choose an .xlsx or .xlsm workbook.")
         try:
@@ -360,7 +366,10 @@ class WorkbookImport:
         try:
             from openpyxl import load_workbook
             workbook = load_workbook(
-                BytesIO(payload), data_only=True, read_only=False
+                # The importer reads values and red font markers only. Streaming
+                # cells avoids loading a large tracking workbook's full style
+                # and formula graph into memory.
+                BytesIO(payload), data_only=True, read_only=True
             )
         except Exception as exc:
             raise eudm.EUDMError(
@@ -368,11 +377,32 @@ class WorkbookImport:
             ) from exc
         sheets: dict[str, list[inventory.SheetRow]] = {}
         try:
-            for sheet in workbook.worksheets:
+            # Bookings 2026 is the established source. Avoid scanning every
+            # archival/notes tab in a large tracking workbook when it exists;
+            # otherwise keep every sheet available for the user to choose.
+            source_sheets = (
+                [workbook["Bookings 2026"]]
+                if "Bookings 2026" in workbook.sheetnames
+                else list(workbook.worksheets)
+            )
+            total_rows = 0
+            for sheet in source_sheets:
+                if sheet.max_row is None:
+                    # Some generated workbooks omit the sheet dimension. Ask
+                    # openpyxl to establish it once so progress is meaningful.
+                    sheet.calculate_dimension(force=True)
+                total_rows += max(0, int(sheet.max_row or 1) - 1)
+            processed_rows = 0
+            for sheet in source_sheets:
                 rows: list[inventory.SheetRow] = []
                 for values in sheet.iter_rows(
                     min_row=2, min_col=1, max_col=12
                 ):
+                    processed_rows += 1
+                    if on_progress and (
+                        processed_rows == total_rows or processed_rows % 150 == 0
+                    ):
+                        on_progress(sheet.title, processed_rows, total_rows)
                     deployment_date = inventory.normalize_date(
                         values[0].value, workbook.epoch
                     )
@@ -393,6 +423,12 @@ class WorkbookImport:
                     )
                 if rows:
                     sheets[sheet.title] = rows
+            if on_progress:
+                on_progress(
+                    source_sheets[-1].title if source_sheets else "Workbook",
+                    processed_rows,
+                    total_rows,
+                )
         finally:
             workbook.close()
         if not sheets:

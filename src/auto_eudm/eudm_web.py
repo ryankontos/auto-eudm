@@ -750,12 +750,77 @@ class JobStore:
         return "\n".join(lines)
 
 
+@dataclass
+class ImportJob:
+    """A background workbook read with small, browser-friendly status data."""
+
+    job_id: str
+    filename: str
+    state: str = "queued"
+    message: str = "Waiting to read the workbook…"
+    sheet: str | None = None
+    processed_rows: int = 0
+    total_rows: int = 0
+    workbook: dict[str, Any] | None = None
+    error: str | None = None
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def update(
+        self,
+        *,
+        state: str | None = None,
+        message: str | None = None,
+        sheet: str | None = None,
+        processed_rows: int | None = None,
+        total_rows: int | None = None,
+    ) -> None:
+        with self._lock:
+            if state is not None:
+                self.state = state
+            if message is not None:
+                self.message = message
+            if sheet is not None:
+                self.sheet = sheet
+            if processed_rows is not None:
+                self.processed_rows = processed_rows
+            if total_rows is not None:
+                self.total_rows = total_rows
+
+    def fail(self, error: str) -> None:
+        with self._lock:
+            self.state = "failed"
+            self.message = "The workbook could not be imported."
+            self.error = error
+
+    def finish(self, workbook: dict[str, Any]) -> None:
+        with self._lock:
+            self.state = "ready"
+            self.message = "Workbook ready."
+            self.workbook = workbook
+            self.processed_rows = self.total_rows or self.processed_rows
+
+    def to_json(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "job_id": self.job_id,
+                "filename": self.filename,
+                "state": self.state,
+                "message": self.message,
+                "sheet": self.sheet,
+                "processed_rows": self.processed_rows,
+                "total_rows": self.total_rows,
+                "workbook": self.workbook,
+                "error": self.error,
+            }
+
+
 class Application:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
         self.clients = ClientManager(config)
         self.jobs = JobStore(self.clients)
         self.imports: dict[str, WorkbookImport] = {}
+        self.import_jobs: dict[str, ImportJob] = {}
         self.import_lock = threading.Lock()
         self.allowed_user_statuses = {value for _, value in USER_STATUSES}
         self.allowed_location_statuses = {
@@ -796,6 +861,60 @@ class Application:
             if len(self.imports) > 10:
                 first = next(iter(self.imports))
                 self.imports.pop(first, None)
+
+    def start_import(self, filename: str, encoded: str) -> ImportJob:
+        job = ImportJob(job_id=uuid.uuid4().hex, filename=filename)
+        with self.import_lock:
+            self.import_jobs[job.job_id] = job
+            if len(self.import_jobs) > 12:
+                finished = next(
+                    (
+                        job_id
+                        for job_id, existing in self.import_jobs.items()
+                        if existing.state in {"ready", "failed"}
+                    ),
+                    next(iter(self.import_jobs)),
+                )
+                if finished != job.job_id:
+                    self.import_jobs.pop(finished, None)
+        threading.Thread(
+            target=self._read_import,
+            args=(job, encoded),
+            daemon=True,
+        ).start()
+        return job
+
+    def _read_import(self, job: ImportJob, encoded: str) -> None:
+        job.update(state="reading", message="Opening the workbook…")
+
+        def progress(sheet: str, completed: int, total: int) -> None:
+            job.update(
+                state="reading",
+                message="Reading deployment rows…",
+                sheet=sheet,
+                processed_rows=completed,
+                total_rows=total,
+            )
+
+        try:
+            workbook = WorkbookImport.from_upload(
+                job.filename, encoded, on_progress=progress
+            )
+            self.add_import(workbook)
+            job.finish(workbook.summary())
+        except eudm.EUDMError as exc:
+            job.fail(str(exc))
+        except Exception:
+            job.fail("The workbook could not be read. Choose an unencrypted .xlsx or .xlsm file.")
+
+    def import_status(self, job_id: str) -> dict[str, Any]:
+        with self.import_lock:
+            job = self.import_jobs.get(job_id)
+        if not job:
+            raise eudm.EUDMError(
+                "That workbook import expired. Choose the file again."
+            )
+        return job.to_json()
 
     def form_options(self) -> dict[str, Any]:
         options = self.clients.search().options()
@@ -914,6 +1033,13 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
         if path == "/api/history":
             self._json({"runs": self.app.jobs.history()})
             return
+        if path.startswith("/api/imports/"):
+            job_id = path.removeprefix("/api/imports/").strip()
+            if not job_id or "/" in job_id:
+                self._error("Unknown workbook import.", 404)
+                return
+            self._json(self.app.import_status(job_id))
+            return
         if path.startswith("/api/jobs/"):
             parts = path.strip("/").split("/")
             if len(parts) == 4 and parts[3] == "results.txt":
@@ -998,12 +1124,11 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
             )
             return
         if path == "/api/import":
-            workbook = WorkbookImport.from_upload(
+            job = self.app.start_import(
                 str(payload.get("filename", "")),
                 str(payload.get("data", "")),
             )
-            self.app.add_import(workbook)
-            self._json(workbook.summary(), 201)
+            self._json(job.to_json(), 202)
             return
         if path == "/api/import/prepare":
             workbook = self.app.get_import(str(payload.get("import_id", "")))
