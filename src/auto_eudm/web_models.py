@@ -153,6 +153,7 @@ class RequestSpec:
     returning_requested: bool
     returning_user: str | None
     return_confirmed: bool
+    returning_user_info: dict[str, Any] | None
     location: Location | None
     group: str
     source: str | None = None
@@ -182,6 +183,14 @@ class RequestSpec:
             # confirmation checkbox while the core API still receives the
             # explicit confirmation flag it requires.
             return_confirmed=True,
+            returning_user_info=(
+                {
+                    "login": clean(raw.get("returning_user_info", {}).get("login")),
+                    "columns": [clean(value) for value in raw.get("returning_user_info", {}).get("columns", []) if clean(value)],
+                }
+                if isinstance(raw.get("returning_user_info"), dict)
+                else None
+            ),
             location=location,
             group=clean(raw.get("group")) or "Requests",
             source=clean(raw.get("source")) or None,
@@ -254,6 +263,8 @@ class RequestSpec:
                 errors.append("Choose the returning user or turn off the return option.")
             elif self.returning_user and not re.fullmatch(r"[A-Za-z][A-Za-z0-9._-]*", self.returning_user):
                 errors.append("The returning user must be a login ID, not a display name or email address.")
+            if self.returning_user and not self.returning_user_info:
+                errors.append("Search and verify the returning user's details before submitting; an email will be sent to them.")
             if self.kind == "bulk_location" and self.returning_requested:
                 errors.append(
                     "Bulk add to location stock cannot include a returning user."
@@ -278,6 +289,7 @@ class RequestSpec:
             "returning": self.returning_requested,
             "returning_user": self.returning_user or "",
             "return_confirmed": self.return_confirmed,
+            "returning_user_info": self.returning_user_info or None,
             "location": self.location.to_json() if self.location else None,
             "group": self.group,
             "source": self.source or "",
@@ -424,6 +436,7 @@ class WorkbookImport:
         sheet_name: str,
         selected_date: str,
         mode: str,
+        default_location: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if sheet_name not in self.sheets:
             raise eudm.EUDMError("Choose one of the workbook's available sheets.")
@@ -442,16 +455,18 @@ class WorkbookImport:
             )
         requests = []
         for action in actions:
+            is_return = action.group == "Pending returns"
             requests.append(RequestSpec(
                 client_id=uuid.uuid4().hex,
-                kind="user",
+                kind="location" if is_return else "user",
                 serials=(action.serial,),
-                status=action.status,
-                user=action.username,
-                returning_requested=False,
-                returning_user=None,
+                status=("Used Stock" if is_return else action.status),
+                user=None if is_return else action.username,
+                returning_requested=is_return and bool(action.username),
+                returning_user=action.username if is_return else None,
                 return_confirmed=True,
-                location=None,
+                returning_user_info=None,
+                location=Location.from_json(default_location) if is_return and default_location else None,
                 group=action.group,
                 source=f"{self.filename} · {sheet_name}",
             ).to_json())

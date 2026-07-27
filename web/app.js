@@ -289,6 +289,9 @@ function validateRequest(request) {
     if (request.returning_user && !/^[A-Za-z][A-Za-z0-9._-]*$/.test(request.returning_user.trim())) {
       errors.push("The returning username is not in a valid login ID format.");
     }
+    if (request.returning_user && !request.returning_user_info) {
+      errors.push("Search and verify the returning user's details before submitting; an email will be sent to them.");
+    }
     if (request.kind === "bulk_location" && request.returning) {
       errors.push("Bulk add to location stock cannot include a returning user.");
     }
@@ -332,11 +335,27 @@ function destinationLabel(request) {
   return parts.length ? parts.join(" → ") : "No location selected";
 }
 
+function renderReturningUserInfo(request) {
+  const panel = $("#returnUserInfo");
+  if (!panel || !request?.returning) return;
+  const info = request.returning_user_info;
+  const values = info?.columns || [];
+  if (!request.returning_user || !info || !values.length) {
+    panel.className = "return-user-info unknown";
+    panel.innerHTML = "<strong>Returning user details unknown</strong><span>Search and select the user before submitting.</span>";
+    return;
+  }
+  const unknown = values.some((value) => !String(value).trim() || /unknown|not available|not found/i.test(value));
+  panel.className = `return-user-info ${unknown ? "unknown" : ""}`;
+  panel.innerHTML = `<strong>Selected user</strong><span>${escapeHtml(info.login || request.returning_user)}</span><small>${escapeHtml(values.join(" · "))}</small>${unknown ? "<em>Some details are unknown. Verify the user before submitting.</em>" : ""}`;
+}
+
 function renderQueue() {
   const validations = queueValidation();
   const requestCount = state.queue.length;
   const deviceCount = state.queue.reduce((sum, request) => sum + request.serials.length, 0);
   const invalidCount = [...validations.values()].filter((errors) => errors.length).length;
+  const submittedCount = state.queue.filter((request) => request.result_state === "succeeded").length;
   elements.queueCounts.textContent = `${requestCount} request${requestCount === 1 ? "" : "s"} · ${deviceCount} device${deviceCount === 1 ? "" : "s"}`;
   elements.queueValidationNotice.hidden = invalidCount === 0;
   elements.queueValidationMessage.textContent = invalidCount
@@ -349,9 +368,12 @@ function renderQueue() {
   const requesterReady = Boolean(state.connection?.request_for || state.config?.request_for);
   elements.reviewButton.disabled = requestCount === 0
     || invalidCount > 0
+    || submittedCount > 0
     || !runtimeReady
     || !requesterReady;
-  elements.reviewButton.title = invalidCount
+  elements.reviewButton.title = submittedCount
+    ? "Clear completed requests before submitting another run."
+    : invalidCount
     ? "Fix every request error before reviewing or submitting."
     : !runtimeReady || !requesterReady
       ? "Connect to EUDM before submitting."
@@ -363,14 +385,19 @@ function renderQueue() {
     const selected = request.id === state.selectedId;
     const secondary = request.source
       || (request.group && request.group !== kindLabel(request.kind) ? request.group : "");
+    const requestId = request.request_id
+      ? `<span class="cell-request-id">Request ID: ${escapeHtml(request.request_id)}</span>`
+      : "";
+    const resultState = request.result_state === "succeeded" ? "Submitted"
+      : request.result_state === "failed" ? "Failed" : "";
     return `
       <tr data-id="${escapeHtml(request.id)}" class="${selected ? "selected" : ""} ${errors.length ? "invalid" : ""}" tabindex="0">
         <td class="index-column">${index + 1}</td>
-        <td><span class="cell-primary">${escapeHtml(serialDisplay)}</span>${request.kind === "bulk_location" ? `<span class="cell-secondary">${request.serials.length} devices</span>` : ""}</td>
+        <td><span class="cell-primary">${escapeHtml(serialDisplay)}</span>${request.kind === "bulk_location" ? `<span class="cell-secondary">${request.serials.length} devices</span>` : ""}${requestId}</td>
         <td><span class="cell-primary">${escapeHtml(kindLabel(request.kind))}</span>${secondary ? `<span class="cell-secondary">${escapeHtml(secondary)}</span>` : ""}</td>
         <td title="${escapeHtml(statusLabel(request))}">${escapeHtml(statusLabel(request))}</td>
         <td title="${escapeHtml(destinationLabel(request))}"><span class="cell-primary">${escapeHtml(destinationLabel(request))}</span>${request.returning_user ? `<span class="cell-secondary">Returned by ${escapeHtml(request.returning_user)}</span>` : ""}</td>
-        <td class="state-column" title="${escapeHtml(errors.join(" "))}">${errors.length ? '<span class="invalid-mark">!</span>' : '<span class="ready-mark">✓</span>'}</td>
+        <td class="state-column" title="${escapeHtml(errors.join(" "))}">${errors.length ? '<span class="invalid-mark">!</span>' : request.request_id ? `<span class="ready-mark">✓</span><span class="cell-secondary">${resultState}</span>` : '<span class="ready-mark">✓</span>'}</td>
         <td><button class="row-menu" data-remove="${escapeHtml(request.id)}" aria-label="Remove request" title="Remove request"><span class="trash-icon" aria-hidden="true"></span></button></td>
       </tr>`;
   }).join("");
@@ -402,6 +429,7 @@ function refreshSelectedValidation() {
     $("#confirmSerial").textContent = request.serials[0] || "Not selected";
     $("#confirmUser").textContent = request.returning_user || "Not selected";
     $("#confirmLocation").textContent = destinationLabel(request);
+    renderReturningUserInfo(request);
   }
   const errors = queueValidation().get(request.id) || [];
   elements.validationPanel.hidden = !errors.length;
@@ -517,6 +545,7 @@ function changeKind(kind) {
     request.location = null;
     request.returning = false;
     request.returning_user = "";
+    request.returning_user_info = null;
     request.status = resolveStatus(
       state.config.user_statuses,
       request.status,
@@ -535,6 +564,7 @@ function changeKind(kind) {
     if (kind === "bulk_location") {
       request.returning = false;
       request.returning_user = "";
+      request.returning_user_info = null;
     }
   }
   renderAll();
@@ -673,6 +703,10 @@ async function searchUsers(returning = false) {
       const login = bestLogin(result, query);
       if (returning) {
         request.returning_user = login;
+        request.returning_user_info = {
+          login,
+          columns: (Array.isArray(result.columns) ? result.columns : [result.value]).map(String).filter(Boolean),
+        };
       }
       else request.user = login;
       renderAll();
@@ -917,6 +951,8 @@ function parseQuickImportLines() {
     entries.push({
       serial,
       username,
+      returningUserInfo: null,
+      returningUserChecked: false,
       kind: username ? "user" : "location",
       locationStatus: resolveStatus(
         state.config.location_statuses,
@@ -949,8 +985,11 @@ function renderQuickImportReview() {
           </select>
         </label>`
       : "";
+    const returnInfo = entry.kind === "location" && entry.username
+      ? `<div class="quick-import-return ${entry.returningUserInfo ? "" : "unknown"}"><strong>Returning user</strong><span>${escapeHtml(entry.returningUserInfo?.login || entry.username)}</span><small>${entry.returningUserInfo?.columns?.length ? escapeHtml(entry.returningUserInfo.columns.join(" · ")) : "Details unknown — search and verify before submitting. An email will be sent to this user."}</small></div>`
+      : "";
     return `<div class="quick-import-row">
-      <div><strong>${escapeHtml(entry.serial)}</strong><small>${username}</small></div>
+      <div><strong>${escapeHtml(entry.serial)}</strong><small>${username}</small>${returnInfo}</div>
       <div class="quick-import-row-actions">
         ${locationStatus}
         ${selector}
@@ -997,6 +1036,38 @@ function reviewPairs() {
   $("#reviewPairsButton").hidden = true;
   $("#addPairsButton").hidden = false;
   renderQuickImportReview();
+  resolveQuickImportReturningUsers();
+}
+
+async function resolveQuickImportReturningUsers() {
+  const entries = state.pasteEntries.filter((entry) => entry.kind === "location" && entry.username && !entry.returningUserChecked);
+  if (!entries.length || !["connected", "simulation"].includes(state.connection?.state)) return;
+  await Promise.all(entries.map(async (entry) => {
+    entry.returningUserChecked = true;
+    try {
+      const payload = await api("/api/search/users", { method: "POST", body: JSON.stringify({ query: entry.username, returning: true }) });
+      const result = (payload.results || []).find((item) => bestLogin(item, entry.username).toLowerCase() === entry.username.toLowerCase());
+      entry.returningUserInfo = result ? { login: bestLogin(result, entry.username), columns: (result.columns || [result.value]).map(String).filter(Boolean) } : null;
+    } catch (_) {
+      entry.returningUserInfo = null;
+    }
+  }));
+  renderQuickImportReview();
+}
+
+async function resolveQueueReturningUsers(requests) {
+  const entries = requests.filter((request) => request.kind === "location" && request.returning_user);
+  if (!entries.length || !["connected", "simulation"].includes(state.connection?.state)) return;
+  await Promise.all(entries.map(async (request) => {
+    try {
+      const payload = await api("/api/search/users", { method: "POST", body: JSON.stringify({ query: request.returning_user, returning: true }) });
+      const result = (payload.results || []).find((item) => bestLogin(item, request.returning_user).toLowerCase() === request.returning_user.toLowerCase());
+      request.returning_user_info = result ? { login: bestLogin(result, request.returning_user), columns: (result.columns || [result.value]).map(String).filter(Boolean) } : null;
+    } catch (_) {
+      request.returning_user_info = null;
+    }
+  }));
+  renderAll();
 }
 
 function applyQuickImportKind() {
@@ -1048,6 +1119,8 @@ function addQuickImportEntry() {
   state.pasteEntries.push({
     serial,
     username,
+    returningUserInfo: null,
+    returningUserChecked: false,
     kind: username ? "user" : "location",
     locationStatus: resolveStatus(
       state.config.location_statuses,
@@ -1072,7 +1145,7 @@ function addPairs() {
     $("#pairsError").hidden = false;
     return;
   }
-  const requests = state.pasteEntries.map(({ serial, username, kind, locationStatus }) => {
+  const requests = state.pasteEntries.map(({ serial, username, kind, locationStatus, returningUserInfo }) => {
     const locationMode = kind === "location";
     const request = makeRequest(locationMode ? "location" : "user");
     request.serials = [serial];
@@ -1088,6 +1161,7 @@ function addPairs() {
       request.location = structuredClone(state.pasteLocation || preferredLocation());
       request.returning = Boolean(username);
       request.returning_user = username;
+      request.returning_user_info = returningUserInfo || null;
       request.group = "Quick import · Add to location stock";
     } else {
       request.user = username;
@@ -1099,6 +1173,7 @@ function addPairs() {
   state.selectedId = requests[0].id;
   $("#pasteDialog").close();
   renderAll();
+  resolveQueueReturningUsers(requests);
   toast(`${requests.length} request${requests.length === 1 ? "" : "s"} added.`, "success");
 }
 
@@ -1250,14 +1325,18 @@ function renderImportPreview() {
             <option value="Deployed - New Stock" ${request.status === "Deployed - New Stock" ? "selected" : ""}>Deployed - New Stock</option>
             <option value="Deployed - Existing Stock" ${request.status === "Deployed - Existing Stock" ? "selected" : ""}>Deployed - Existing Stock</option>
           </select>`
-        : `<span class="fixed-status">Deployed - Pending Return</span>`;
+        : `<span class="fixed-status">Used Stock</span>`;
+      const returnUser = request.returning_user || request.user || "";
+      const returnInfo = !isNew
+        ? `<small class="import-return-info ${returnUser ? "" : "unknown"}">${returnUser ? `Returning user: ${escapeHtml(returnUser)} · Email will be sent — verify details.` : "Returning user unknown — select one before submitting."}</small>`
+        : "";
       return `<div class="import-preview-row ${isIncluded ? "" : "excluded"}">
         <label class="include-control" title="${isIncluded ? "Included" : "Do not deploy"}">
           <input type="checkbox" data-import-include="${escapeHtml(request.id)}" ${isIncluded ? "checked" : ""}>
           <span>${index + 1}</span>
         </label>
         <div><strong>${escapeHtml(request.serials[0])}</strong><small>${isNew ? "New serial" : "Old serial"}</small></div>
-        <div><strong>${escapeHtml(request.user)}</strong><small>Receiving user</small></div>
+        <div><strong>${escapeHtml(isNew ? (request.user || "No user") : (returnUser || "No user"))}</strong><small>${isNew ? "Receiving user" : "Returning user"}</small>${returnInfo}</div>
         <div>${statusControl}<small>${isIncluded ? "" : "Do not deploy"}</small></div>
       </div>`;
     }).join("");
@@ -1303,6 +1382,26 @@ function renderImportPreview() {
 
   $("#importIgnored").hidden = !payload.ignored.length;
   $("#importIgnoredList").innerHTML = payload.ignored.map((item) => `<li>${item.count} × ${escapeHtml(item.reason)}</li>`).join("");
+  resolveImportPreviewReturningUsers(payload);
+}
+
+async function resolveImportPreviewReturningUsers(payload) {
+  if (payload.returningUsersLoading || !["connected", "simulation"].includes(state.connection?.state)) return;
+  const requests = payload.requests.filter((request) => request.group === "Pending returns" && request.returning_user && !request.returning_user_info && !request.returning_user_checked);
+  if (!requests.length) return;
+  payload.returningUsersLoading = true;
+  await Promise.all(requests.map(async (request) => {
+    request.returning_user_checked = true;
+    try {
+      const resultPayload = await api("/api/search/users", { method: "POST", body: JSON.stringify({ query: request.returning_user, returning: true }) });
+      const result = (resultPayload.results || []).find((item) => bestLogin(item, request.returning_user).toLowerCase() === request.returning_user.toLowerCase());
+      request.returning_user_info = result ? { login: bestLogin(result, request.returning_user), columns: (result.columns || [result.value]).map(String).filter(Boolean) } : null;
+    } catch (_) {
+      request.returning_user_info = null;
+    }
+  }));
+  payload.returningUsersLoading = false;
+  renderImportPreview();
 }
 
 function backToImportSelection() {
@@ -1324,6 +1423,7 @@ async function prepareImport() {
       .map((request) => {
         const cleanRequest = { ...request };
         delete cleanRequest.included;
+        delete cleanRequest.returning_user_checked;
         return cleanRequest;
       });
     if (!requests.length) {
@@ -1336,6 +1436,7 @@ async function prepareImport() {
     const ignored = state.importPreview.ignored.reduce((sum, item) => sum + item.count, 0);
     $("#importDialog").close();
     renderAll();
+    resolveQueueReturningUsers(requests);
     toast(`${requests.length} request${requests.length === 1 ? "" : "s"} added${ignored ? `; ${ignored} serial entries excluded` : ""}.`, "success");
     return;
   }
@@ -1428,6 +1529,16 @@ function recordSuccessfulLocations(job) {
 
 function renderProgress(job) {
   state.currentJob = job;
+  const entriesById = new Map((job.entries || []).map((entry) => [entry.id, entry]));
+  state.queue.forEach((request) => {
+    const entry = entriesById.get(request.id);
+    if (!entry) return;
+    request.request_id = entry.request_id || request.request_id || "";
+    request.order_id = entry.order_id || request.order_id || "";
+    request.result_state = entry.state;
+    request.result_message = entry.message || "";
+  });
+  renderQueue();
   recordSuccessfulLocations(job);
   const done = job.counts.succeeded + job.counts.failed;
   const percentage = job.counts.total ? (done / job.counts.total) * 100 : 0;
@@ -1448,7 +1559,7 @@ function renderProgress(job) {
       <div class="progress-message"><div class="progress-message-title"><span class="progress-status ${entry.state}">${progressStateLabel(entry)}</span><strong>${escapeHtml(entry.message)}</strong></div><small>${escapeHtml(entry.destination)}${entry.returning_user ? ` · returned by ${escapeHtml(entry.returning_user)}` : ""}</small></div>
       <div class="progress-step">${entry.state === "queued" ? "Waiting" : `Step ${step.current} of ${step.total}`}<small>${step.percent}%</small></div>
       <div class="request-id">${entry.request_id
-        ? `Request ${escapeHtml(entry.request_id)}`
+        ? `<span class="progress-request-id">Request ID: <strong>${escapeHtml(entry.request_id)}</strong></span>`
         : entry.state === "queued" ? "Queued" : "Preparing"}</div>
     </div>`;
   }).join("");
@@ -1479,7 +1590,7 @@ function renderHistory(runs) {
       ? `${succeeded} deployed · ${failed} failed`
       : run.state;
     const entries = (run.entries || []).map((entry) => {
-      const requestLink = `<span>${escapeHtml(entry.request_id ? `Request ${entry.request_id}` : "No request ID")}</span>`;
+      const requestLink = `<strong class="history-request-id">${escapeHtml(entry.request_id ? `Request ID: ${entry.request_id}` : "No request ID")}</strong>`;
       return `<div class="history-entry ${entry.state === "failed" ? "failed" : ""}">
         <div><strong>${escapeHtml(entry.serials.join(", ") || "No serial")}</strong><small>${escapeHtml(kindLabel(entry.kind))} · ${escapeHtml(entry.status)}</small></div>
         <div><strong>${escapeHtml(entry.destination || "No destination")}</strong><small>${escapeHtml(entry.message || "")}</small></div>
@@ -1507,12 +1618,6 @@ async function openHistory() {
   } finally {
     elements.historyButton.disabled = false;
   }
-}
-
-function clearQueueAfterFlow() {
-  state.queue = [];
-  state.selectedId = null;
-  renderAll();
 }
 
 async function pollJob(jobId) {
@@ -1717,7 +1822,10 @@ function bindEvents() {
     const request = selectedRequest();
     if (!request) return;
     request.returning = elements.returningToggle.checked;
-    if (!request.returning) request.returning_user = "";
+    if (!request.returning) {
+      request.returning_user = "";
+      request.returning_user_info = null;
+    }
     elements.returningSearch.hidden = !elements.returningToggle.checked;
     elements.returnConfirmation.hidden = !elements.returningToggle.checked;
     renderQueue();
@@ -1726,6 +1834,8 @@ function bindEvents() {
     const request = selectedRequest();
     if (!request) return;
     request.returning_user = elements.returningUserInput.value.trim();
+    request.returning_user_info = null;
+    renderReturningUserInfo(request);
     renderQueue();
   });
   elements.serialInput.addEventListener("keydown", (event) => { if (event.key === "Enter") searchAssets(); });
@@ -1734,7 +1844,7 @@ function bindEvents() {
   $("#doneButton").addEventListener("click", () => $("#progressDialog").close());
   $("#closeProgressButton").addEventListener("click", () => $("#progressDialog").close());
   $("#progressDialog").addEventListener("close", () => {
-    if (state.currentJob?.state === "finished") clearQueueAfterFlow();
+    if (state.currentJob?.state === "finished") renderAll();
   });
   document.addEventListener("keydown", (event) => {
     if ((event.metaKey || event.ctrlKey) && event.key === "Enter" && !elements.reviewButton.disabled) {
