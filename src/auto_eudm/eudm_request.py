@@ -713,12 +713,41 @@ def answer(client: Any, request_id: str, questionnaire_id: str, item: dict[str, 
     return answer_values(client, request_id, questionnaire_id, item, [value])
 
 
-def option_data(events: dict[str, Any], question_id: str) -> list[dict[str, Any]]:
+def option_data(
+    events: dict[str, Any],
+    question_id: str,
+    *,
+    allow_single_fallback: bool = False,
+) -> list[dict[str, Any]]:
+    """Return data-table rows from a questionnaire answer response.
+
+    EUDM usually keys ``ListOptionsChange`` by the table question ID. Some live
+    forms regenerate the dynamic location table after a city change and return
+    its single list change under a replacement ID. Location callers can opt in
+    to that safe fallback.
+    """
+    if not isinstance(events, dict):
+        return []
+
+    def rows(change: dict[str, Any]) -> list[dict[str, Any]]:
+        data = change.get("questionMultiColumn", {}).get("data", [])
+        return data if isinstance(data, list) else []
+
     changes = events.get(question_id, [])
-    for change in reversed(changes):
-        if change.get("type") == "ListOptionsChange":
-            return change.get("questionMultiColumn", {}).get("data", [])
-    return []
+    if isinstance(changes, list):
+        for change in reversed(changes):
+            if isinstance(change, dict) and change.get("type") == "ListOptionsChange":
+                return rows(change)
+    if not allow_single_fallback:
+        return []
+    candidates = [
+        change
+        for changes in events.values()
+        if isinstance(changes, list)
+        for change in changes
+        if isinstance(change, dict) and change.get("type") == "ListOptionsChange"
+    ]
+    return rows(candidates[0]) if len(candidates) == 1 else []
 
 
 def merge_events(*event_maps: dict[str, Any]) -> dict[str, Any]:

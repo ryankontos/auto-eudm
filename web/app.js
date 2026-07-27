@@ -485,7 +485,7 @@ function renderInspector() {
     const location = request.location || {};
     const results = locationResults(location.city);
     const hasExact = hasCompleteLocation(location);
-    populateLocationPicker(elements.locationInput, location, results, "Choose a city to load locations");
+    populateLocationPicker(elements.locationInput, location, results, locationEmptyText(location.city));
     elements.locationDetail.textContent = hasExact ? "" : "Choose a location.";
     elements.returningUserFields.hidden = bulk;
     elements.returningToggle.checked = Boolean(request.returning);
@@ -634,9 +634,20 @@ function locationResults(city) {
   return state.locationCache.get(city) || [];
 }
 
+function hasLoadedLocations(city) {
+  return Boolean(city) && state.locationCache.has(city);
+}
+
+function locationEmptyText(city) {
+  if (!city) return "Choose a city to load locations";
+  return hasLoadedLocations(city)
+    ? "No locations are available for this city"
+    : "Loading locations…";
+}
+
 function fetchLocationResults(city, { force = false } = {}) {
   if (!city) return Promise.resolve([]);
-  if (!force && locationResults(city).length) {
+  if (!force && hasLoadedLocations(city)) {
     return Promise.resolve(locationResults(city));
   }
   if (state.locationLoading.has(city)) {
@@ -763,8 +774,8 @@ async function loadLocations({ city: requestedCity, force = false, quiet = false
     if (!quiet) toast("Choose a city first.", "error");
     return;
   }
-  if (!force && locationResults(city).length) {
-    populateLocationPicker(elements.locationInput, request.location || emptyLocation(), locationResults(city), "Choose a city to load locations");
+  if (!force && hasLoadedLocations(city)) {
+    populateLocationPicker(elements.locationInput, request.location || emptyLocation(), locationResults(city), locationEmptyText(city));
     elements.locationDetail.textContent = hasCompleteLocation(request.location) ? "" : "Choose a location.";
     return;
   }
@@ -788,13 +799,20 @@ async function loadLocations({ city: requestedCity, force = false, quiet = false
 }
 
 function ensureLocationsLoaded(city) {
-  if (!city || locationResults(city).length) return;
+  if (!city || hasLoadedLocations(city)) return;
   if (!["connected", "simulation"].includes(state.connection?.state)) return;
   loadLocations({ city, quiet: true });
 }
 
 function updateConnection(status) {
+  const previousState = state.connection?.state;
   state.connection = status;
+  if (status.state === "connected" && previousState && previousState !== "connected") {
+    // Results from an expired session are not trustworthy. Reload them after
+    // a successful reconnection rather than retaining stale choices.
+    state.locationCache.clear();
+    state.locationLoading.clear();
+  }
   elements.connectionBadge.className = `connection-badge ${status.state}`;
   const label = status.state === "simulation" ? "Simulation ready"
     : status.state === "connected" ? "EUDM connected"
@@ -905,14 +923,16 @@ function renderPasteLocationFields() {
   const location = state.pasteLocation || preferredLocation();
   fillSelect($("#pairsCityInput"), locationCities(location), location.city, "Choose a city");
   state.pasteLocationResults = locationResults(location.city).map((result) => ({ ...result, city: location.city }));
-  populateLocationPicker($("#pairsLocationInput"), location, state.pasteLocationResults, "Choose a city to load locations");
+  populateLocationPicker($("#pairsLocationInput"), location, state.pasteLocationResults, locationEmptyText(location.city));
   const locationNotice = $("#pairsLocation");
   const complete = hasCompleteLocation(location);
   locationNotice.classList.toggle("incomplete", !complete);
   locationNotice.textContent = complete
     ? locationDisplay(location)
     : location.city
-      ? "Loading locations for the selected city…"
+      ? hasLoadedLocations(location.city)
+        ? "No locations are available for the selected city."
+        : "Loading locations for the selected city…"
       : "Choose a city to load locations.";
   ensurePasteLocationsLoaded(location.city);
 }
@@ -934,7 +954,9 @@ async function findPasteLocations({ force = false, quiet = false } = {}) {
     }
     renderPasteLocationFields();
     if (!hasCompleteLocation(state.pasteLocation)) {
-      $("#pairsLocation").textContent = `${results.length} location${results.length === 1 ? "" : "s"} ready to choose.`;
+      $("#pairsLocation").textContent = results.length
+        ? `${results.length} location${results.length === 1 ? "" : "s"} ready to choose.`
+        : "No locations are available for the selected city.";
     }
   } catch (error) {
     state.pasteLocationResults = [];
@@ -946,7 +968,7 @@ async function findPasteLocations({ force = false, quiet = false } = {}) {
 }
 
 function ensurePasteLocationsLoaded(city) {
-  if (!city || locationResults(city).length) return;
+  if (!city || hasLoadedLocations(city)) return;
   if (!["connected", "simulation"].includes(state.connection?.state)) return;
   findPasteLocations({ quiet: true });
 }

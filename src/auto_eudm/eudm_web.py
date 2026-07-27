@@ -138,7 +138,6 @@ class SearchProbe:
         self.all_items: list[dict[str, Any]] = []
         self.lock = threading.Lock()
         self._search_ready = False
-        self._returning_search_ready = False
 
     def ensure(self) -> None:
         if self.request_id:
@@ -238,51 +237,16 @@ class SearchProbe:
     def users(self, query: str, returning: bool = False) -> list[dict[str, Any]]:
         with self.lock:
             self.ensure()
+            # The return-specific EUDM picker cannot be enabled in a search
+            # session: it only becomes valid after its device, status, city,
+            # and location have been set. Use the normal EUDM directory lookup
+            # to verify and preview the person here. The actual request follows
+            # EUDM's required return sequence during submission.
             if returning:
-                if not self._returning_search_ready:
-                    returned = eudm.field_by_label(
-                        self.all_items,
-                        "Is this a return from a user",
-                        type_="RadioButtons",
-                    )
-                    eudm.answer(
-                        self.client,
-                        self.request_id,
-                        self.questionnaire_id,
-                        returned,
-                        "YES",
-                    )
-                    add_dropoff = eudm.field_by_label(
-                        self.all_items,
-                        "Add Name of person who dropped off device",
-                        type_="YesNo",
-                    )
-                    eudm.answer(
-                        self.client,
-                        self.request_id,
-                        self.questionnaire_id,
-                        add_dropoff,
-                        "true",
-                    )
-                    self._returning_search_ready = True
-                search = eudm.field_by_label(
-                    self.all_items,
-                    "Search Name or User ID that dropped off devices",
-                    type_="TextField",
-                )
-                table = eudm.field_by_label(
-                    self.all_items,
-                    "Select person who dropped device/s off",
-                    type_="DataTable",
-                )
-                events = eudm.answer(
+                eudm.verbose_detail(
                     self.client,
-                    self.request_id,
-                    self.questionnaire_id,
-                    search,
-                    query,
+                    "Verifying returning user through the EUDM directory.",
                 )
-                return display_rows(eudm.option_data(events, table["id"]))
             label = (
                 "Please select user - device has been deployed to"
             )
@@ -314,7 +278,23 @@ class SearchProbe:
                 city,
                 city_name,
             )
-            return display_rows(eudm.option_data(events, location["id"]))
+            rows = eudm.option_data(
+                events, location["id"], allow_single_fallback=True
+            )
+            eudm.verbose_detail(
+                self.client,
+                f"Location lookup for {city_name!r}: {len(rows)} row(s) returned.",
+            )
+            # A connected EUDM form always returns its location table after a
+            # valid city selection. The SSO gateway can instead leave a stale
+            # session with a superficially successful, but empty, answer
+            # response. Fail closed so reconnection is explicit.
+            if not rows:
+                raise eudm.SSOExpiredError(
+                    "EUDM did not return any locations. Your signed-in session "
+                    "may have expired; reconnect before trying again."
+                )
+            return display_rows(rows)
 
 
 class ClientManager:
