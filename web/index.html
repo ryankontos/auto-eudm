@@ -38,22 +38,6 @@
   <main class="workspace">
     <aside class="tool-rail" aria-label="Request preparation tools">
       <div class="rail-section">
-        <h2>Prepare</h2>
-        <button id="addUserButton" class="tool-button" type="button">
-          <span class="tool-icon add-icon" aria-hidden="true"></span>
-          <span><strong>Deploy to user</strong></span>
-        </button>
-        <button id="addLocationButton" class="tool-button" type="button">
-          <span class="tool-icon add-icon" aria-hidden="true"></span>
-          <span><strong>Add to location stock</strong></span>
-        </button>
-        <button id="addBulkButton" class="tool-button" type="button">
-          <span class="tool-icon add-icon" aria-hidden="true"></span>
-          <span><strong>Bulk add to location stock</strong><small>Many devices</small></span>
-        </button>
-      </div>
-
-      <div class="rail-section">
         <h2>Import</h2>
         <button id="pastePairsButton" class="tool-button" type="button">
           <span class="tool-icon import-icon" aria-hidden="true">↓</span>
@@ -107,8 +91,7 @@
           <p id="queueCounts">0 requests · 0 devices</p>
         </div>
         <div class="queue-actions">
-          <button id="clearQueueButton" class="button quiet compact" type="button">Clear</button>
-          <button id="reviewButton" class="button primary" type="button" disabled>Review &amp; submit</button>
+          <button id="newRequestButton" class="new-request-button" type="button" aria-label="Prepare a request" title="Prepare a request"><span aria-hidden="true">+</span></button>
         </div>
       </div>
 
@@ -146,6 +129,10 @@
           </thead>
           <tbody id="queueBody"></tbody>
         </table>
+      </div>
+      <div class="queue-toolbar">
+        <button id="clearQueueButton" class="button quiet compact" type="button">Clear</button>
+        <button id="reviewButton" class="button primary" type="button" disabled>Review &amp; submit</button>
       </div>
     </section>
 
@@ -243,6 +230,34 @@
       </div>
     </aside>
   </main>
+
+  <dialog id="newRequestTypeDialog" class="modal request-type-modal">
+    <form method="dialog" class="modal-card">
+      <div class="modal-header">
+        <h2>Prepare a request</h2>
+        <button class="icon-button" value="cancel" aria-label="Close">×</button>
+      </div>
+      <div class="request-type-list">
+        <button class="request-type-option" type="button" data-new-request-kind="user"><strong>Deploy to user</strong><small>Assign one device to a user</small></button>
+        <button class="request-type-option" type="button" data-new-request-kind="location"><strong>Add to location stock</strong><small>Add one device to a location</small></button>
+        <button class="request-type-option" type="button" data-new-request-kind="bulk_location"><strong>Bulk add to location stock</strong><small>Add multiple devices to one location</small></button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="newRequestDialog" class="modal request-sheet">
+    <div class="modal-card request-sheet-card">
+      <div class="modal-header">
+        <h2>Prepare request</h2>
+        <button id="cancelNewRequestButton" class="icon-button" type="button" aria-label="Discard request">×</button>
+      </div>
+      <div id="newRequestEditorMount"></div>
+      <div class="modal-actions request-sheet-actions">
+        <button id="discardNewRequestButton" class="button secondary" type="button">Cancel</button>
+        <button id="saveNewRequestButton" class="button primary" type="button" disabled>Add to queue</button>
+      </div>
+    </div>
+  </dialog>
 
   <dialog id="pasteDialog" class="modal">
     <form method="dialog" class="modal-card">

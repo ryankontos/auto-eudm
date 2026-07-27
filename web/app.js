@@ -14,6 +14,7 @@ const state = {
   locationCache: new Map(),
   locationLoading: new Map(),
   recordedLocationJobs: new Set(),
+  newRequest: null,
 };
 
 const THEME_STORAGE_KEY = "auto-eudm-theme";
@@ -86,7 +87,7 @@ function parseSerials(raw) {
 }
 
 function selectedRequest() {
-  return state.queue.find((request) => request.id === state.selectedId) || null;
+  return state.newRequest || state.queue.find((request) => request.id === state.selectedId) || null;
 }
 
 function toast(message, type = "") {
@@ -431,11 +432,15 @@ function refreshSelectedValidation() {
     $("#confirmLocation").textContent = destinationLabel(request);
     renderReturningUserInfo(request);
   }
-  const errors = queueValidation().get(request.id) || [];
+  const errors = state.newRequest === request
+    ? validateRequest(request)
+    : queueValidation().get(request.id) || [];
   elements.validationPanel.hidden = !errors.length;
   elements.validationPanel.innerHTML = errors.length
     ? `<ul>${errors.map((error) => `<li>${escapeHtml(error)}</li>`).join("")}</ul>`
     : "";
+  const saveButton = $("#saveNewRequestButton");
+  if (saveButton) saveButton.disabled = state.newRequest === request && errors.length > 0;
 }
 
 function fillSelect(select, options, selected, placeholder = null) {
@@ -501,16 +506,47 @@ function renderAll() {
   renderInspector();
 }
 
-function addRequest(kind) {
-  const request = makeRequest(kind);
+function openNewRequestTypePicker() {
+  $("#newRequestTypeDialog").showModal();
+}
+
+function restoreInspector() {
+  const content = elements.inspectorContent;
+  const inspector = $("#inspector");
+  if (content.parentElement !== inspector) inspector.append(content);
+}
+
+function discardNewRequest() {
+  state.newRequest = null;
+  restoreInspector();
+  renderAll();
+}
+
+function startNewRequest(kind) {
+  $("#newRequestTypeDialog").close();
+  state.newRequest = makeRequest(kind);
+  const dialog = $("#newRequestDialog");
+  $("#newRequestEditorMount").append(elements.inspectorContent);
+  dialog.showModal();
+  renderAll();
+  setTimeout(() => (kind === "bulk_location" ? elements.serialsInput : elements.serialInput).focus(), 0);
+}
+
+function saveNewRequest() {
+  const request = state.newRequest;
+  if (!request) return;
+  const errors = validateRequest(request);
+  if (errors.length) {
+    refreshSelectedValidation();
+    return;
+  }
   state.queue.push(request);
   state.selectedId = request.id;
+  state.newRequest = null;
+  $("#newRequestDialog").close();
+  restoreInspector();
   renderAll();
-  if (kind === "bulk_location") {
-    setTimeout(() => elements.serialsInput.focus(), 0);
-  } else {
-    setTimeout(() => elements.serialInput.focus(), 0);
-  }
+  toast("Request added to the queue.", "success");
 }
 
 function removeRequest(id) {
@@ -758,7 +794,6 @@ function ensureLocationsLoaded(city) {
 }
 
 function updateConnection(status) {
-  const previousConnectionState = state.connection?.state;
   state.connection = status;
   elements.connectionBadge.className = `connection-badge ${status.state}`;
   const label = status.state === "simulation" ? "Simulation ready"
@@ -804,12 +839,6 @@ function updateConnection(status) {
         : "Resolved automatically after connection";
   if (status.state === "connected" && !state.liveOptionsLoaded) {
     refreshFormOptions();
-  }
-  if (
-    ["connected", "simulation"].includes(status.state)
-    && !["connected", "simulation"].includes(previousConnectionState)
-  ) {
-    state.lastDraftQueueSignature = null;
   }
   renderQueue();
 }
@@ -1664,9 +1693,14 @@ async function submitQueue() {
 
 function bindEvents() {
   $("#themeToggle").addEventListener("click", toggleTheme);
-  $("#addUserButton").addEventListener("click", () => addRequest("user"));
-  $("#addLocationButton").addEventListener("click", () => addRequest("location"));
-  $("#addBulkButton").addEventListener("click", () => addRequest("bulk_location"));
+  $("#newRequestButton").addEventListener("click", openNewRequestTypePicker);
+  $$('[data-new-request-kind]').forEach((button) => button.addEventListener("click", () => startNewRequest(button.dataset.newRequestKind)));
+  $("#saveNewRequestButton").addEventListener("click", saveNewRequest);
+  $("#cancelNewRequestButton").addEventListener("click", () => $("#newRequestDialog").close());
+  $("#discardNewRequestButton").addEventListener("click", () => $("#newRequestDialog").close());
+  $("#newRequestDialog").addEventListener("close", () => {
+    if (state.newRequest) discardNewRequest();
+  });
   $("#pastePairsButton").addEventListener("click", openPasteDialog);
   $("#reviewPairsButton").addEventListener("click", reviewPairs);
   $("#addPairsButton").addEventListener("click", addPairs);
