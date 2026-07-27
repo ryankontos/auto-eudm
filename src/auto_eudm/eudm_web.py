@@ -1166,7 +1166,7 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
                 )
                 return
             concurrency = int(payload.get("concurrency") or self.app.config.concurrency)
-            concurrency = max(1, min(20, concurrency))
+            concurrency = max(1, min(50, concurrency))
             job = self.app.jobs.create(specs, request_for, concurrency)
             self._json(job.to_json(), 202)
             return

@@ -207,7 +207,7 @@ to use a configuration file elsewhere.
 | `EUDM_DEFAULT_USER_STATUS` | Default direct/new pasted-pair user status. |
 | `EUDM_DEFAULT_LOCATION_STATUS` | Default direct location status. |
 | `EUDM_SIMULATE`, `EUDM_VERBOSE`, `EUDM_LOGGING`, `EUDM_MANUAL_REVIEW` | Shared default CLI modes. |
-| `EUDM_CONCURRENCY` | Parallel requests, from 1 to 20. |
+| `EUDM_CONCURRENCY` | Parallel requests, from 1 to 50. |
 
 Command-line options take precedence over shell variables, which take precedence
 over `.env`. Use `--no-simulate`, `--no-verbose`, or `--no-manual-review` when a

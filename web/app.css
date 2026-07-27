@@ -593,9 +593,12 @@ fieldset { margin: 0; padding: 0; border: 0; }
 .return-user-info small, .return-user-info span { color: var(--muted); overflow-wrap: anywhere; }
 .return-user-info.unknown { border-left-color: var(--red); background: var(--red-soft); color: var(--red); }
 .return-user-info.unknown span, .return-user-info.unknown em { color: var(--red); }
-.cell-request-id, .progress-request-id, .history-request-id { display: block; margin-top: 4px; color: var(--blue); font-size: 11px; font-weight: 750; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.cell-request-id, .progress-request-id, .history-request-id { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; margin-top: 5px; color: var(--blue); font-size: 12px; font-weight: 750; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.cell-request-id strong, .progress-request-id strong, .history-request-id strong { color: var(--blue); font-size: 13px; letter-spacing: .01em; }
 .progress-request-id { color: var(--text); }
-.progress-request-id strong { color: var(--blue); }
+.copy-request-id { min-height: 24px; padding: 2px 7px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--blue); background: var(--surface); font-size: 10px; font-weight: 750; }
+.copy-request-id:hover { border-color: var(--blue); background: var(--blue-soft); }
+.copy-request-id.copied { color: var(--green); border-color: var(--green); background: var(--green-soft); }
 .import-return-info { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; line-height: 1.25; }
 .import-return-info.unknown { color: var(--red); }
 .quick-import-return { display: grid; gap: 2px; margin-top: 6px; padding: 6px 8px; border-left: 3px solid var(--green); background: var(--surface-alt); font-size: 10px; }

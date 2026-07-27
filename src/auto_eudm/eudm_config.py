@@ -81,8 +81,8 @@ class AppConfig:
             return value or None
 
         raw_concurrency = os.getenv("EUDM_CONCURRENCY", "1").strip()
-        if not raw_concurrency.isdigit() or int(raw_concurrency) < 1 or int(raw_concurrency) > 20:
-            raise ValueError("EUDM_CONCURRENCY must be a whole number between 1 and 20")
+        if not raw_concurrency.isdigit() or int(raw_concurrency) < 1 or int(raw_concurrency) > 50:
+            raise ValueError("EUDM_CONCURRENCY must be a whole number between 1 and 50")
 
         return cls(
             env_file=env_file,

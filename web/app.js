@@ -21,6 +21,7 @@ const state = {
 
 const THEME_STORAGE_KEY = "auto-eudm-theme";
 const RECENT_LOCATIONS_STORAGE_KEY = "auto-eudm-recent-locations";
+const CONCURRENCY_STORAGE_KEY = "auto-eudm-concurrency";
 const MAX_RECENT_LOCATIONS = 8;
 const IMPORT_PREVIEW_ROW_LIMIT = 80;
 const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
@@ -83,6 +84,54 @@ function escapeHtml(value) {
 
 function uid() {
   return crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+}
+
+function configureConcurrency(defaultValue) {
+  const configured = Math.max(1, Math.min(50, Number(defaultValue) || 1));
+  let remembered = null;
+  try {
+    const candidate = Number(localStorage.getItem(CONCURRENCY_STORAGE_KEY));
+    if (Number.isInteger(candidate) && candidate >= 1 && candidate <= 50) remembered = candidate;
+  } catch (_) {}
+  elements.concurrency.innerHTML = Array.from(
+    { length: 50 },
+    (_, index) => `<option value="${index + 1}">${index + 1}</option>`,
+  ).join("");
+  elements.concurrency.value = String(remembered ?? configured);
+}
+
+function requestIdDisplay(requestId, className) {
+  if (!requestId) return "";
+  const id = escapeHtml(requestId);
+  return `<span class="${className}"><span>Request ID</span><strong>${id}</strong><button class="copy-request-id" type="button" data-copy-request-id="${id}" aria-label="Copy request ID ${id}" title="Copy request ID">Copy</button></span>`;
+}
+
+async function copyRequestId(button) {
+  const value = button.dataset.copyRequestId || "";
+  if (!value) return;
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+    } else {
+      const input = document.createElement("textarea");
+      input.value = value;
+      input.style.position = "fixed";
+      input.style.opacity = "0";
+      document.body.append(input);
+      input.select();
+      const copied = document.execCommand("copy");
+      input.remove();
+      if (!copied) throw new Error("Copy was not available.");
+    }
+    button.textContent = "Copied";
+    button.classList.add("copied");
+    window.setTimeout(() => {
+      button.textContent = "Copy";
+      button.classList.remove("copied");
+    }, 1200);
+  } catch (_) {
+    toast("Could not copy the request ID. Select and copy it manually.", "error");
+  }
 }
 
 function parseSerials(raw) {
@@ -390,7 +439,7 @@ function renderQueue() {
     const secondary = request.source
       || (request.group && request.group !== kindLabel(request.kind) ? request.group : "");
     const requestId = request.request_id
-      ? `<span class="cell-request-id">Request ID: ${escapeHtml(request.request_id)}</span>`
+      ? requestIdDisplay(request.request_id, "cell-request-id")
       : "";
     const resultState = request.result_state === "succeeded" ? "Submitted"
       : request.result_state === "failed" ? "Failed" : "";
@@ -408,7 +457,7 @@ function renderQueue() {
 
   elements.queueBody.querySelectorAll("tr").forEach((row) => {
     row.addEventListener("click", (event) => {
-      if (event.target.closest("[data-remove]")) return;
+      if (event.target.closest("[data-remove], [data-copy-request-id]")) return;
       state.selectedId = row.dataset.id;
       renderAll();
     });
@@ -1704,7 +1753,7 @@ function renderProgress(job) {
       <div class="progress-message"><div class="progress-message-title"><span class="progress-status ${entry.state}">${progressStateLabel(entry)}</span><strong>${escapeHtml(entry.message)}</strong></div><small>${escapeHtml(entry.destination)}${entry.returning_user ? ` · returned by ${escapeHtml(entry.returning_user)}` : ""}</small></div>
       <div class="progress-step">${entry.state === "queued" ? "Waiting" : `Step ${step.current} of ${step.total}`}<small>${step.percent}%</small></div>
       <div class="request-id">${entry.request_id
-        ? `<span class="progress-request-id">Request ID: <strong>${escapeHtml(entry.request_id)}</strong></span>`
+        ? requestIdDisplay(entry.request_id, "progress-request-id")
         : entry.state === "queued" ? "Queued" : "Preparing"}</div>
     </div>`;
   }).join("");
@@ -1735,7 +1784,9 @@ function renderHistory(runs) {
       ? `${succeeded} deployed · ${failed} failed`
       : run.state;
     const entries = (run.entries || []).map((entry) => {
-      const requestLink = `<strong class="history-request-id">${escapeHtml(entry.request_id ? `Request ID: ${entry.request_id}` : "No request ID")}</strong>`;
+      const requestLink = entry.request_id
+        ? requestIdDisplay(entry.request_id, "history-request-id")
+        : '<strong class="history-request-id">No request ID</strong>';
       return `<div class="history-entry ${entry.state === "failed" ? "failed" : ""}">
         <div><strong>${escapeHtml(entry.serials.join(", ") || "No serial")}</strong><small>${escapeHtml(kindLabel(entry.kind))} · ${escapeHtml(entry.status)}</small></div>
         <div><strong>${escapeHtml(entry.destination || "No destination")}</strong><small>${escapeHtml(entry.message || "")}</small></div>
@@ -1808,6 +1859,18 @@ async function submitQueue() {
 }
 
 function bindEvents() {
+  elements.concurrency.addEventListener("change", () => {
+    try {
+      localStorage.setItem(CONCURRENCY_STORAGE_KEY, elements.concurrency.value);
+    } catch (_) {}
+  });
+  document.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-copy-request-id]");
+    if (!button) return;
+    event.preventDefault();
+    event.stopPropagation();
+    copyRequestId(button);
+  });
   $("#themeToggle").addEventListener("click", toggleTheme);
   $("#newRequestButton").addEventListener("click", openNewRequestTypePicker);
   $$('[data-new-request-kind]').forEach((button) => button.addEventListener("click", () => startNewRequest(button.dataset.newRequestKind)));
@@ -2021,7 +2084,7 @@ async function init() {
     }
     state.config = await api("/api/config");
     elements.requestForValue.textContent = state.config.request_for || "Waiting for EUDM";
-    elements.concurrency.value = String(state.config.concurrency);
+    configureConcurrency(state.config.concurrency);
     bindEvents();
     await refreshConnection();
     renderAll();
