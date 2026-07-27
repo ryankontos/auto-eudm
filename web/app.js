@@ -12,15 +12,8 @@ const state = {
   pasteLocationResults: [],
   pasteEntries: [],
   locationCache: new Map(),
-  locationLoading: new Set(),
+  locationLoading: new Map(),
   recordedLocationJobs: new Set(),
-  draftPreparationEnabled: false,
-  draftStatuses: new Map(),
-  draftDebounceTimer: null,
-  draftPollTimer: null,
-  lastDraftQueueSignature: null,
-  draftInputSignatures: new Map(),
-  draftDirtyIds: new Set(),
 };
 
 const THEME_STORAGE_KEY = "auto-eudm-theme";
@@ -49,9 +42,6 @@ const elements = {
   connectionGateButton: $("#connectionGateButton"),
   historyButton: $("#historyButton"),
   historyList: $("#historyList"),
-  eudmFormLink: $("#eudmFormLink"),
-  prepareDraftsToggle: $("#prepareDraftsToggle"),
-  draftPreparationSummary: $("#draftPreparationSummary"),
   reviewButton: $("#reviewButton"),
   clearQueueButton: $("#clearQueueButton"),
   inspectorEmpty: $("#inspectorEmpty"),
@@ -306,107 +296,6 @@ function validateRequest(request) {
   return errors;
 }
 
-function scheduleDraftPreparation() {
-  clearTimeout(state.draftDebounceTimer);
-  if (!state.draftPreparationEnabled) return;
-  if (!["connected", "simulation"].includes(state.connection?.state)) return;
-  const signature = JSON.stringify(state.queue);
-  if (signature === state.lastDraftQueueSignature) return;
-  state.lastDraftQueueSignature = signature;
-  state.draftDebounceTimer = setTimeout(prepareReadyDrafts, 1200);
-}
-
-function synchronizeDraftInputs() {
-  const currentIds = new Set();
-  for (const request of state.queue) {
-    currentIds.add(request.id);
-    const signature = JSON.stringify(request);
-    if (state.draftInputSignatures.get(request.id) !== signature) {
-      state.draftInputSignatures.set(request.id, signature);
-      state.draftDirtyIds.add(request.id);
-      state.draftStatuses.delete(request.id);
-    }
-  }
-  for (const id of state.draftInputSignatures.keys()) {
-    if (!currentIds.has(id)) {
-      state.draftInputSignatures.delete(id);
-      state.draftDirtyIds.delete(id);
-      state.draftStatuses.delete(id);
-    }
-  }
-}
-
-async function prepareReadyDrafts() {
-  if (!state.draftPreparationEnabled) return;
-  if (!["connected", "simulation"].includes(state.connection?.state)) return;
-  const validations = queueValidation();
-  const ready = state.queue.filter(
-    (request) => !(validations.get(request.id) || []).length,
-  );
-  await Promise.all(ready.map(async (request) => {
-    try {
-      const draft = await api("/api/drafts/prepare", {
-        method: "POST",
-        body: JSON.stringify({ request }),
-      });
-      state.draftStatuses.set(request.id, draft);
-      state.draftDirtyIds.delete(request.id);
-    } catch (error) {
-      if (error.payload?.code === "sso_expired") return;
-      state.draftStatuses.set(request.id, {
-        client_id: request.id,
-        state: "failed",
-        message: error.message,
-      });
-      state.draftDirtyIds.delete(request.id);
-    }
-  }));
-  renderQueue();
-  pollDraftStatuses();
-}
-
-async function pollDraftStatuses() {
-  clearTimeout(state.draftPollTimer);
-  if (!state.draftPreparationEnabled) return;
-  try {
-    const payload = await api("/api/drafts");
-    state.draftStatuses = new Map(
-      (payload.drafts || [])
-        .filter((draft) => !state.draftDirtyIds.has(draft.client_id))
-        .map((draft) => [draft.client_id, draft]),
-    );
-    renderQueue();
-    if ((payload.drafts || []).some((draft) => draft.state === "preparing")) {
-      state.draftPollTimer = setTimeout(pollDraftStatuses, 900);
-    }
-  } catch (_) {}
-}
-
-function draftStateFor(request) {
-  return state.draftPreparationEnabled
-    ? state.draftStatuses.get(request.id)
-    : null;
-}
-
-function renderDraftSummary() {
-  const summary = elements.draftPreparationSummary;
-  if (!summary) return;
-  if (!state.draftPreparationEnabled) {
-    summary.hidden = true;
-    return;
-  }
-  const queueIds = new Set(state.queue.map((request) => request.id));
-  const statuses = [...state.draftStatuses.values()].filter(
-    (draft) => queueIds.has(draft.client_id),
-  );
-  const prepared = statuses.filter((draft) => draft.state === "prepared").length;
-  const preparing = statuses.filter((draft) => draft.state === "preparing").length;
-  summary.hidden = false;
-  summary.textContent = prepared || preparing
-    ? `${prepared} ready · ${preparing} preparing`
-    : "Valid requests will be prepared after you pause editing.";
-}
-
 function queueValidation() {
   const errors = new Map(state.queue.map((request) => [request.id, validateRequest(request)]));
   const owners = new Map();
@@ -444,7 +333,6 @@ function destinationLabel(request) {
 }
 
 function renderQueue() {
-  synchronizeDraftInputs();
   const validations = queueValidation();
   const requestCount = state.queue.length;
   const deviceCount = state.queue.reduce((sum, request) => sum + request.serials.length, 0);
@@ -459,25 +347,14 @@ function renderQueue() {
   const runtimeReady = state.connection?.state === "simulation"
     || state.connection?.state === "connected";
   const requesterReady = Boolean(state.connection?.request_for || state.config?.request_for);
-  const waitingForDrafts = state.draftPreparationEnabled
-    && state.queue.some((request) => {
-      if ((validations.get(request.id) || []).length) return false;
-      const draft = state.draftStatuses.get(request.id);
-      return state.draftDirtyIds.has(request.id)
-        || !draft
-        || draft.state === "preparing";
-    });
   elements.reviewButton.disabled = requestCount === 0
     || invalidCount > 0
     || !runtimeReady
-    || !requesterReady
-    || waitingForDrafts;
+    || !requesterReady;
   elements.reviewButton.title = invalidCount
     ? "Fix every request error before reviewing or submitting."
     : !runtimeReady || !requesterReady
       ? "Connect to EUDM before submitting."
-      : waitingForDrafts
-        ? "Wait for background draft preparation to finish."
       : "Review every request before submitting.";
 
   elements.queueBody.innerHTML = state.queue.map((request, index) => {
@@ -493,15 +370,7 @@ function renderQueue() {
         <td><span class="cell-primary">${escapeHtml(kindLabel(request.kind))}</span>${secondary ? `<span class="cell-secondary">${escapeHtml(secondary)}</span>` : ""}</td>
         <td title="${escapeHtml(statusLabel(request))}">${escapeHtml(statusLabel(request))}</td>
         <td title="${escapeHtml(destinationLabel(request))}"><span class="cell-primary">${escapeHtml(destinationLabel(request))}</span>${request.returning_user ? `<span class="cell-secondary">Returned by ${escapeHtml(request.returning_user)}</span>` : ""}</td>
-        <td class="state-column" title="${escapeHtml(errors.join(" "))}">${(() => {
-          const draft = draftStateFor(request);
-          if (errors.length) return '<span class="invalid-mark">!</span>';
-          if (!draft) return '<span class="ready-mark">✓</span>';
-          if (draft.state === "preparing") return '<span class="draft-ready"><span class="ready-mark"><i class="activity-spinner"></i></span><small class="draft-state preparing">Preparing</small></span>';
-          if (draft.state === "prepared") return '<span class="draft-ready"><span class="ready-mark">✓</span><small class="draft-state prepared">Draft ready</small></span>';
-          if (draft.state === "failed") return '<span class="draft-ready"><span class="ready-mark">✓</span><small class="draft-state failed" title="' + escapeHtml(draft.message) + '">Prepare later</small></span>';
-          return '<span class="ready-mark">✓</span>';
-        })()}</td>
+        <td class="state-column" title="${escapeHtml(errors.join(" "))}">${errors.length ? '<span class="invalid-mark">!</span>' : '<span class="ready-mark">✓</span>'}</td>
         <td><button class="row-menu" data-remove="${escapeHtml(request.id)}" aria-label="Remove request" title="Remove request"><span class="trash-icon" aria-hidden="true"></span></button></td>
       </tr>`;
   }).join("");
@@ -524,8 +393,6 @@ function renderQueue() {
     button.addEventListener("click", () => removeRequest(button.dataset.remove));
   });
   refreshSelectedValidation();
-  renderDraftSummary();
-  scheduleDraftPreparation();
 }
 
 function refreshSelectedValidation() {
@@ -701,6 +568,28 @@ function locationResults(city) {
   return state.locationCache.get(city) || [];
 }
 
+function fetchLocationResults(city, { force = false } = {}) {
+  if (!city) return Promise.resolve([]);
+  if (!force && locationResults(city).length) {
+    return Promise.resolve(locationResults(city));
+  }
+  if (state.locationLoading.has(city)) {
+    return state.locationLoading.get(city);
+  }
+  const request = api("/api/search/locations", {
+    method: "POST",
+    body: JSON.stringify({ city }),
+  }).then((payload) => {
+    const results = payload.results || [];
+    state.locationCache.set(city, results);
+    return results;
+  }).finally(() => {
+    state.locationLoading.delete(city);
+  });
+  state.locationLoading.set(city, request);
+  return request;
+}
+
 function populateLocationPicker(input, location, results, emptyText) {
   const exact = hasCompleteLocation(location);
   const selectedIndex = results.findIndex((result) => {
@@ -798,6 +687,7 @@ async function searchUsers(returning = false) {
 async function loadLocations({ city: requestedCity, force = false, quiet = false } = {}) {
   const request = selectedRequest();
   if (!request || request.kind === "user") return;
+  const requestId = request.id;
   const city = requestedCity || elements.cityInput.value;
   if (!city) {
     if (!quiet) toast("Choose a city first.", "error");
@@ -808,30 +698,27 @@ async function loadLocations({ city: requestedCity, force = false, quiet = false
     elements.locationDetail.textContent = hasCompleteLocation(request.location) ? "" : "Choose a location.";
     return;
   }
-  if (state.locationLoading.has(city)) return;
-  state.locationLoading.add(city);
   $("#loadLocationsButton").disabled = true;
   elements.locationInput.innerHTML = '<option>Loading locations…</option>';
   try {
-    const payload = await api("/api/search/locations", {
-      method: "POST",
-      body: JSON.stringify({ city }),
-    });
-    state.locationCache.set(city, payload.results);
-    populateLocationPicker(elements.locationInput, request.location || emptyLocation(), payload.results, "Choose a city to load locations");
-    renderQueue();
-    elements.locationDetail.textContent = hasCompleteLocation(request.location) ? "" : "Choose a location.";
+    const results = await fetchLocationResults(city, { force });
+    const current = state.queue.find((item) => item.id === requestId);
+    if (current && current.kind !== "user" && current.location?.city === city) {
+      if (state.selectedId === requestId) renderInspector();
+      renderQueue();
+    }
   } catch (error) {
-    elements.locationInput.innerHTML = '<option value="">Could not load locations</option>';
+    if (state.selectedId === requestId) {
+      elements.locationInput.innerHTML = '<option value="">Could not load locations</option>';
+    }
     if (!quiet) toast(error.message, "error");
   } finally {
-    state.locationLoading.delete(city);
     $("#loadLocationsButton").disabled = false;
   }
 }
 
 function ensureLocationsLoaded(city) {
-  if (!city || locationResults(city).length || state.locationLoading.has(city)) return;
+  if (!city || locationResults(city).length) return;
   if (!["connected", "simulation"].includes(state.connection?.state)) return;
   loadLocations({ city, quiet: true });
 }
@@ -973,42 +860,30 @@ async function findPasteLocations({ force = false, quiet = false } = {}) {
     if (!quiet) toast("Choose a city first.", "error");
     return;
   }
-  if (!force && locationResults(city).length) {
-    state.pasteLocationResults = locationResults(city).map((result) => ({ ...result, city }));
-    renderPasteLocationFields();
-    return;
-  }
-  if (state.locationLoading.has(city)) return;
-  state.locationLoading.add(city);
   const button = $("#pairsFindLocationsButton");
   button.disabled = true;
   $("#pairsLocationInput").innerHTML = '<option>Loading locations…</option>';
   try {
-    const payload = await api("/api/search/locations", {
-      method: "POST",
-      body: JSON.stringify({ city }),
-    });
-    state.locationCache.set(city, payload.results);
-    state.pasteLocationResults = payload.results.map((result) => ({ ...result, city }));
+    const results = await fetchLocationResults(city, { force });
+    state.pasteLocationResults = results.map((result) => ({ ...result, city }));
     if (state.pasteLocation?.city !== city) {
       state.pasteLocation = { city, building: "", floor: "", room: "", cabinet: "" };
     }
     renderPasteLocationFields();
     if (!hasCompleteLocation(state.pasteLocation)) {
-      $("#pairsLocation").textContent = `${payload.results.length} location${payload.results.length === 1 ? "" : "s"} ready to choose.`;
+      $("#pairsLocation").textContent = `${results.length} location${results.length === 1 ? "" : "s"} ready to choose.`;
     }
   } catch (error) {
     state.pasteLocationResults = [];
     $("#pairsLocationInput").innerHTML = '<option value="">Could not load locations</option>';
     if (!quiet) toast(error.message, "error");
   } finally {
-    state.locationLoading.delete(city);
     button.disabled = false;
   }
 }
 
 function ensurePasteLocationsLoaded(city) {
-  if (!city || locationResults(city).length || state.locationLoading.has(city)) return;
+  if (!city || locationResults(city).length) return;
   if (!["connected", "simulation"].includes(state.connection?.state)) return;
   findPasteLocations({ quiet: true });
 }
@@ -1039,7 +914,15 @@ function parseQuickImportLines() {
       return;
     }
     seenSerials.add(serialKey);
-    entries.push({ serial, username, kind: username ? "user" : "location" });
+    entries.push({
+      serial,
+      username,
+      kind: username ? "user" : "location",
+      locationStatus: resolveStatus(
+        state.config.location_statuses,
+        state.config.default_location_status,
+      ),
+    });
   });
   if (!entries.length && !errors.length) errors.push("Paste at least one serial number.");
   return { entries, errors };
@@ -1059,17 +942,35 @@ function renderQuickImportReview() {
       : entry.username
         ? `Returned by ${escapeHtml(entry.username)}`
         : "No returning user";
+    const locationStatus = entry.kind === "location"
+      ? `<label class="quick-import-status">Status
+          <select data-pairs-status="${index}" aria-label="Location status for ${escapeHtml(entry.serial)}">
+            ${state.config.location_statuses.map((option) => `<option value="${escapeHtml(option.value)}" ${option.value === entry.locationStatus ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
+          </select>
+        </label>`
+      : "";
     return `<div class="quick-import-row">
       <div><strong>${escapeHtml(entry.serial)}</strong><small>${username}</small></div>
       <div class="quick-import-row-actions">
+        ${locationStatus}
         ${selector}
         <button class="row-menu" type="button" data-pairs-remove="${index}" aria-label="Remove ${escapeHtml(entry.serial)}" title="Remove device"><span class="trash-icon" aria-hidden="true"></span></button>
       </div>
     </div>`;
   }).join("");
   $$('[data-pairs-kind]').forEach((select) => select.addEventListener("change", () => {
-    state.pasteEntries[Number(select.dataset.pairsKind)].kind = select.value;
+    const entry = state.pasteEntries[Number(select.dataset.pairsKind)];
+    entry.kind = select.value;
+    if (entry.kind === "location" && !locationStatusValues().has(entry.locationStatus)) {
+      entry.locationStatus = resolveStatus(
+        state.config.location_statuses,
+        state.config.default_location_status,
+      );
+    }
     renderQuickImportReview();
+  }));
+  $$("[data-pairs-status]").forEach((select) => select.addEventListener("change", () => {
+    state.pasteEntries[Number(select.dataset.pairsStatus)].locationStatus = select.value;
   }));
   $$("[data-pairs-remove]").forEach((button) => button.addEventListener("click", () => {
     state.pasteEntries.splice(Number(button.dataset.pairsRemove), 1);
@@ -1102,7 +1003,15 @@ function applyQuickImportKind() {
   const kind = $("#pairsBulkKind").value;
   if (!kind) return;
   state.pasteEntries.forEach((entry) => {
-    if (kind === "location" || entry.username) entry.kind = kind;
+    if (kind === "location" || entry.username) {
+      entry.kind = kind;
+      if (kind === "location" && !locationStatusValues().has(entry.locationStatus)) {
+        entry.locationStatus = resolveStatus(
+          state.config.location_statuses,
+          state.config.default_location_status,
+        );
+      }
+    }
   });
   renderQuickImportReview();
 }
@@ -1136,7 +1045,15 @@ function addQuickImportEntry() {
     $("#pairsError").hidden = false;
     return;
   }
-  state.pasteEntries.push({ serial, username, kind: username ? "user" : "location" });
+  state.pasteEntries.push({
+    serial,
+    username,
+    kind: username ? "user" : "location",
+    locationStatus: resolveStatus(
+      state.config.location_statuses,
+      state.config.default_location_status,
+    ),
+  });
   cancelQuickImportAdd();
   renderQuickImportReview();
 }
@@ -1155,12 +1072,16 @@ function addPairs() {
     $("#pairsError").hidden = false;
     return;
   }
-  const requests = state.pasteEntries.map(({ serial, username, kind }) => {
+  const requests = state.pasteEntries.map(({ serial, username, kind, locationStatus }) => {
     const locationMode = kind === "location";
     const request = makeRequest(locationMode ? "location" : "user");
     request.serials = [serial];
     request.status = locationMode
-      ? resolveStatus(state.config.location_statuses, state.config.default_location_status)
+      ? resolveStatus(
+        state.config.location_statuses,
+        locationStatus,
+        state.config.default_location_status,
+      )
       : resolveStatus(state.config.user_statuses, state.config.default_user_status);
     request.source = "Quick import";
     if (locationMode) {
@@ -1527,9 +1448,7 @@ function renderProgress(job) {
       <div class="progress-message"><div class="progress-message-title"><span class="progress-status ${entry.state}">${progressStateLabel(entry)}</span><strong>${escapeHtml(entry.message)}</strong></div><small>${escapeHtml(entry.destination)}${entry.returning_user ? ` · returned by ${escapeHtml(entry.returning_user)}` : ""}</small></div>
       <div class="progress-step">${entry.state === "queued" ? "Waiting" : `Step ${step.current} of ${step.total}`}<small>${step.percent}%</small></div>
       <div class="request-id">${entry.request_id
-        ? entry.request_page_url
-          ? `<a href="${escapeHtml(entry.request_page_url)}" target="_blank" rel="noopener">Open ${escapeHtml(entry.request_id)}</a>`
-          : `Request ${escapeHtml(entry.request_id)}`
+        ? `Request ${escapeHtml(entry.request_id)}`
         : entry.state === "queued" ? "Queued" : "Preparing"}</div>
     </div>`;
   }).join("");
@@ -1540,21 +1459,6 @@ function renderProgress(job) {
   $("#progressActions").hidden = !finished;
   $("#closeProgressButton").hidden = !finished;
   $("#downloadResultsLink").href = `/api/jobs/${job.job_id}/results.txt`;
-  const requestPages = job.entries.filter((entry) => entry.request_page_url);
-  const openAll = $("#openAllRequestsButton");
-  openAll.hidden = !finished || requestPages.length === 0;
-  openAll.disabled = requestPages.length === 0;
-}
-
-function openAllRequestPages() {
-  const pages = (state.currentJob?.entries || [])
-    .map((entry) => entry.request_page_url)
-    .filter(Boolean);
-  if (!pages.length) {
-    toast("Request pages are available after a completed EUDM submission.", "error");
-    return;
-  }
-  pages.forEach((url) => window.open(url, "_blank", "noopener"));
 }
 
 function formatHistoryDate(value) {
@@ -1575,9 +1479,7 @@ function renderHistory(runs) {
       ? `${succeeded} deployed · ${failed} failed`
       : run.state;
     const entries = (run.entries || []).map((entry) => {
-      const requestLink = entry.request_page_url
-        ? `<a href="${escapeHtml(entry.request_page_url)}" target="_blank" rel="noopener">Open ${escapeHtml(entry.request_id || "request")}</a>`
-        : `<span>${escapeHtml(entry.request_id ? `Request ${entry.request_id}` : "No request ID")}</span>`;
+      const requestLink = `<span>${escapeHtml(entry.request_id ? `Request ${entry.request_id}` : "No request ID")}</span>`;
       return `<div class="history-entry ${entry.state === "failed" ? "failed" : ""}">
         <div><strong>${escapeHtml(entry.serials.join(", ") || "No serial")}</strong><small>${escapeHtml(kindLabel(entry.kind))} · ${escapeHtml(entry.status)}</small></div>
         <div><strong>${escapeHtml(entry.destination || "No destination")}</strong><small>${escapeHtml(entry.message || "")}</small></div>
@@ -1610,10 +1512,6 @@ async function openHistory() {
 function clearQueueAfterFlow() {
   state.queue = [];
   state.selectedId = null;
-  state.draftStatuses.clear();
-  state.draftInputSignatures.clear();
-  state.draftDirtyIds.clear();
-  state.lastDraftQueueSignature = null;
   renderAll();
 }
 
@@ -1661,18 +1559,6 @@ async function submitQueue() {
 
 function bindEvents() {
   $("#themeToggle").addEventListener("click", toggleTheme);
-  elements.prepareDraftsToggle.addEventListener("change", () => {
-    state.draftPreparationEnabled = elements.prepareDraftsToggle.checked;
-    state.lastDraftQueueSignature = null;
-    clearTimeout(state.draftDebounceTimer);
-    clearTimeout(state.draftPollTimer);
-    if (state.draftPreparationEnabled) {
-      toast("Draft preparation enabled.");
-      scheduleDraftPreparation();
-      pollDraftStatuses();
-    }
-    renderQueue();
-  });
   $("#addUserButton").addEventListener("click", () => addRequest("user"));
   $("#addLocationButton").addEventListener("click", () => addRequest("location"));
   $("#addBulkButton").addEventListener("click", () => addRequest("bulk_location"));
@@ -1768,10 +1654,6 @@ function bindEvents() {
     if (!state.queue.length || confirm(`Remove all ${state.queue.length} prepared requests?`)) {
       state.queue = [];
       state.selectedId = null;
-      state.draftStatuses.clear();
-      state.draftInputSignatures.clear();
-      state.draftDirtyIds.clear();
-      state.lastDraftQueueSignature = null;
       renderAll();
     }
   });
@@ -1854,7 +1736,6 @@ function bindEvents() {
   $("#progressDialog").addEventListener("close", () => {
     if (state.currentJob?.state === "finished") clearQueueAfterFlow();
   });
-  $("#openAllRequestsButton").addEventListener("click", openAllRequestPages);
   document.addEventListener("keydown", (event) => {
     if ((event.metaKey || event.ctrlKey) && event.key === "Enter" && !elements.reviewButton.disabled) {
       event.preventDefault();
@@ -1877,9 +1758,6 @@ async function init() {
     state.config = await api("/api/config");
     elements.requestForValue.textContent = state.config.request_for || "Waiting for EUDM";
     elements.concurrency.value = String(state.config.concurrency);
-    elements.eudmFormLink.href = state.config.eudm_form_url;
-    state.draftPreparationEnabled = Boolean(state.config.prepare_drafts);
-    elements.prepareDraftsToggle.checked = state.draftPreparationEnabled;
     bindEvents();
     await refreshConnection();
     renderAll();

@@ -110,8 +110,8 @@ def add_runtime_arguments(
         "--concurrency",
         type=int,
         default=config.concurrency,
-        choices=range(1, 9),
-        metavar="1-8",
+        choices=range(1, 21),
+        metavar="1-20",
         help="Parallel user requests (default: EUDM_CONCURRENCY; review mode stays sequential).",
     )
     parser.add_argument(

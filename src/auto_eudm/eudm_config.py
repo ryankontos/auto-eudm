@@ -71,7 +71,6 @@ class AppConfig:
     logging: bool
     concurrency: int
     manual_review: bool
-    prepare_drafts: bool
 
     @classmethod
     def load(cls) -> "AppConfig":
@@ -82,8 +81,8 @@ class AppConfig:
             return value or None
 
         raw_concurrency = os.getenv("EUDM_CONCURRENCY", "1").strip()
-        if not raw_concurrency.isdigit() or int(raw_concurrency) < 1 or int(raw_concurrency) > 8:
-            raise ValueError("EUDM_CONCURRENCY must be a whole number between 1 and 8")
+        if not raw_concurrency.isdigit() or int(raw_concurrency) < 1 or int(raw_concurrency) > 20:
+            raise ValueError("EUDM_CONCURRENCY must be a whole number between 1 and 20")
 
         return cls(
             env_file=env_file,
@@ -107,5 +106,4 @@ class AppConfig:
             logging=env_bool("EUDM_LOGGING"),
             concurrency=int(raw_concurrency),
             manual_review=env_bool("EUDM_MANUAL_REVIEW"),
-            prepare_drafts=env_bool("EUDM_PREPARE_DRAFTS"),
         )

@@ -159,26 +159,11 @@ date choices include local relative labels such as `[Today]`, `[Tomorrow]`, and
 
 Review & Submit displays the whole queue before creating requests. Submission
 progress reports each row as queued, running, submitted, or failed and shows
-the EUDM request ID as soon as it is created. Each request ID has an **Open**
-link to an authenticated AutoEUDM details page, and the completed view provides
-**Open all request pages** to open them in separate tabs. Closing the completed run clears the prepared
-queue; the **Request history** menu keeps the run, request IDs, statuses, and
-detail links available for the rest of the server session. The final view
+the EUDM request ID as soon as it is created. Closing the completed run clears
+the prepared queue; the **Request history** menu keeps the run, request IDs,
+and statuses available for the rest of the server session. The final view
 keeps every request ID visible and downloads a plain-text summary. The same
 summary is written to the gitignored `results/` directory.
-
-The captured EUDM application uses `/dwp/app/#activity/events/details` for its
-request detail route. It passes the authenticated
-`/dwp/api/v1.0/events/{event-token}` self-link through router/browser state, so
-adding a request ID to the route URL does not work. AutoEUDM instead opens a
-local detail page backed by that event API and links to the native Activity
-gallery as a fallback.
-
-Enable **Prepare drafts early**, or set `EUDM_PREPARE_DRAFTS=true`, to populate
-each error-free row after editing pauses. Submission reuses an exact matching
-prepared draft and sends only its final order call. Editing a row makes its
-existing draft stale and prepares a replacement; abandoned drafts may remain
-in EUDM.
 
 The web workspace always requires this queue-level review, so it is safe and
 clear whether or not `EUDM_MANUAL_REVIEW` is enabled. It does not use terminal
@@ -223,8 +208,7 @@ to use a configuration file elsewhere.
 | `EUDM_DEFAULT_USER_STATUS` | Default direct/new pasted-pair user status. |
 | `EUDM_DEFAULT_LOCATION_STATUS` | Default direct location status. |
 | `EUDM_SIMULATE`, `EUDM_VERBOSE`, `EUDM_LOGGING`, `EUDM_MANUAL_REVIEW` | Shared default CLI modes. |
-| `EUDM_PREPARE_DRAFTS` | Start the web workspace with background draft preparation enabled. |
-| `EUDM_CONCURRENCY` | Parallel user deployments, from 1 to 8; use 2-3 initially. |
+| `EUDM_CONCURRENCY` | Parallel requests, from 1 to 20. |
 
 Command-line options take precedence over shell variables, which take precedence
 over `.env`. Use `--no-simulate`, `--no-verbose`, or `--no-manual-review` when a
@@ -304,8 +288,8 @@ Alternatively set `EUDM_COOKIE` to the full browser `Cookie` request header and
 use `--cookie-mode` in any CLI. Cookies are never saved. Do not put
 them in source code, shared shell history, or the public repository.
 
-If Python cannot validate a corporate certificate chain, the real client retries
-using macOS system `curl` trust while retaining certificate verification. Add
+The real client uses the operating system `curl` trust store directly while
+retaining certificate verification. Add
 `--verbose` to see transport diagnostics, questionnaire field updates, matching
 details, and per-request spreadsheet progress; it never prints cookies or bodies.
 
@@ -484,7 +468,7 @@ manual review, and retry-or-skip matching behave identically.
 | --- | --- |
 | SSO redirect or unauthenticated Chrome | Refresh/complete SSO in the dedicated EUDM Chrome window, then retry. |
 | Cookie mode redirects to SSO | Refresh the browser session and replace the whole `EUDM_COOKIE`, or use Chrome mode. |
-| Certificate validation error | Retry normally; macOS `curl` trust is attempted automatically. Add `--verbose` to confirm. |
+| Certificate validation error | Confirm the corporate certificate is trusted by the operating system; API requests use system `curl` directly. |
 | No serial or username match | The request pauses and asks for a corrected value or `skip`; it never guesses. |
 | More than one exact serial/user match | The request pauses and asks for a more specific value or `skip`; it never picks a match for you. |
 | `NOT SUBMITTED` in spreadsheet results | Manual review declined the final order; the shown request ID is populated but not ordered. |

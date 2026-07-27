@@ -4,12 +4,10 @@
 from __future__ import annotations
 
 import argparse
-import base64
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime
-import hashlib
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -42,20 +40,6 @@ from .web_models import (
 ROOT = Path(__file__).resolve().parents[2]
 WEB_ROOT = ROOT / "web"
 MAX_BODY = 42 * 1024 * 1024
-
-
-def spec_fingerprint(spec: RequestSpec) -> str:
-    payload = spec.to_json()
-    payload.pop("errors", None)
-    payload.pop("destination", None)
-    payload.pop("device_count", None)
-    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    return hashlib.sha256(raw).hexdigest()
-
-
-def activity_event_path(request_id: str) -> str:
-    token = base64.b64encode(f"REQ:{request_id}".encode()).decode().rstrip("=")
-    return f"/dwp/api/v1.0/events/{token}"
 
 
 def populate_spec(
@@ -144,7 +128,7 @@ def open_existing_server(url: str) -> bool:
 
 
 class SearchProbe:
-    """One unsubmitted EUDM draft reused for live lookup operations."""
+    """One stateful EUDM questionnaire session reused for live form options."""
 
     def __init__(self, client: Any, request_for: str) -> None:
         self.client = client
@@ -154,13 +138,14 @@ class SearchProbe:
         self.all_items: list[dict[str, Any]] = []
         self.lock = threading.Lock()
         self._search_ready = False
+        self._returning_search_ready = False
 
     def ensure(self) -> None:
         if self.request_id:
             return
         created = eudm.request_step(
             self.client,
-            "Could not create the live-search draft",
+            "Could not start the live EUDM search session",
             "POST",
             "v2/sbe/services/requests",
             {
@@ -253,13 +238,57 @@ class SearchProbe:
     def users(self, query: str, returning: bool = False) -> list[dict[str, Any]]:
         with self.lock:
             self.ensure()
+            if returning:
+                if not self._returning_search_ready:
+                    returned = eudm.field_by_label(
+                        self.all_items,
+                        "Is this a return from a user",
+                        type_="RadioButtons",
+                    )
+                    eudm.answer(
+                        self.client,
+                        self.request_id,
+                        self.questionnaire_id,
+                        returned,
+                        "YES",
+                    )
+                    add_dropoff = eudm.field_by_label(
+                        self.all_items,
+                        "Add Name of person who dropped off device",
+                        type_="YesNo",
+                    )
+                    eudm.answer(
+                        self.client,
+                        self.request_id,
+                        self.questionnaire_id,
+                        add_dropoff,
+                        "true",
+                    )
+                    self._returning_search_ready = True
+                search = eudm.field_by_label(
+                    self.all_items,
+                    "Search Name or User ID that dropped off devices",
+                    type_="TextField",
+                )
+                table = eudm.field_by_label(
+                    self.all_items,
+                    "Select person who dropped device/s off",
+                    type_="DataTable",
+                )
+                events = eudm.answer(
+                    self.client,
+                    self.request_id,
+                    self.questionnaire_id,
+                    search,
+                    query,
+                )
+                return display_rows(eudm.option_data(events, table["id"]))
             label = (
-                "Search Name or User ID that dropped off devices"
-                if returning
-                else "Please select user - device has been deployed to"
+                "Please select user - device has been deployed to"
             )
-            type_ = "TextField" if returning else "DataTable"
-            search = eudm.field_by_label(self.all_items, label, type_=type_)
+            search = eudm.field_by_label(
+                self.all_items, label, type_="DataTable"
+            )
             result = self.client.request(
                 "POST",
                 f"v2/sbe/services/requests/{self.request_id}/questions/{search['id']}/lookup",
@@ -392,7 +421,7 @@ class ClientManager:
                     "EUDM SSO did not complete within two minutes. Try Connect again."
                 ) from last_error
             # Capture authenticated cookies while still on Playwright's owning
-            # thread. All web requests use independent urllib clients after this.
+            # thread. Subsequent EUDM API calls use independent system-curl clients.
             client = browser.parallel_clients(1)[0]
             try:
                 carts = client.request("GET", "v2/carts") or {}
@@ -453,38 +482,6 @@ class ClientManager:
         client = self.require()
         return client.parallel_clients(max(1, count))
 
-    def request_page_url(self, request_id: str | None) -> str | None:
-        """Return AutoEUDM's authenticated request-detail viewer."""
-        if not request_id:
-            return None
-        encoded = urllib.parse.quote(str(request_id), safe="")
-        return f"/request-details.html?request_id={encoded}"
-
-    def eudm_app_root(self) -> str:
-        return self.config.base.split("/rest", 1)[0].rstrip("/") + "/app/"
-
-    def eudm_activity_url(self) -> str:
-        return self.eudm_app_root() + "#activity"
-
-    def eudm_form_url(self) -> str:
-        return self.eudm_app_root() + "#itemprofile/25301"
-
-    def request_details(self, request_id: str) -> dict[str, Any]:
-        if not request_id or not request_id.replace("-", "").isalnum():
-            raise eudm.EUDMError("The request ID is invalid.")
-        client = self.require()
-        details = client.request("GET", activity_event_path(request_id))
-        if not isinstance(details, dict):
-            raise eudm.EUDMError(
-                f"EUDM did not return details for request {request_id}."
-            )
-        return {
-            "request_id": request_id,
-            "event_path": activity_event_path(request_id),
-            "eudm_activity_url": self.eudm_activity_url(),
-            "details": details,
-        }
-
     def search(self) -> SearchProbe:
         with self.lock:
             if self.client is None:
@@ -511,7 +508,6 @@ class JobEntry:
     step_count: int = 3
     request_id: str | None = None
     order_id: str | None = None
-    request_page_url: str | None = None
     started_at: float | None = None
     finished_at: float | None = None
 
@@ -527,7 +523,6 @@ class JobEntry:
             else 0,
             "request_id": self.request_id,
             "order_id": self.order_id,
-            "request_page_url": self.request_page_url,
             "elapsed_seconds": (
                 round((self.finished_at or time.time()) - self.started_at, 1)
                 if self.started_at
@@ -583,7 +578,6 @@ class SubmissionJob:
         step: int | None = None,
         request_id: str | None = None,
         order_id: str | None = None,
-        request_page_url: str | None = None,
     ) -> None:
         with self.lock:
             if state:
@@ -596,126 +590,11 @@ class SubmissionJob:
                 entry.request_id = request_id
             if order_id:
                 entry.order_id = order_id
-            if request_page_url:
-                entry.request_page_url = request_page_url
-
-
-@dataclass
-class PreparedDraft:
-    client_id: str
-    fingerprint: str
-    state: str = "preparing"
-    message: str = "Preparing EUDM draft"
-    request_id: str | None = None
-    prepared_at: str | None = None
-    consumed: bool = False
-
-    def to_json(self) -> dict[str, Any]:
-        return {
-            "client_id": self.client_id,
-            "fingerprint": self.fingerprint,
-            "state": self.state,
-            "message": self.message,
-            "request_id": self.request_id,
-            "prepared_at": self.prepared_at,
-        }
-
-
-class DraftStore:
-    """Prepare valid queue rows before the operator starts submission."""
-
-    def __init__(self, clients: ClientManager) -> None:
-        self.clients = clients
-        self.current: dict[str, PreparedDraft] = {}
-        self.lock = threading.Lock()
-        self.slots = threading.Semaphore(2)
-
-    def statuses(self) -> list[dict[str, Any]]:
-        with self.lock:
-            return [draft.to_json() for draft in self.current.values()]
-
-    def schedule(self, spec: RequestSpec, request_for: str) -> PreparedDraft:
-        fingerprint = spec_fingerprint(spec)
-        with self.lock:
-            existing = self.current.get(spec.client_id)
-            if (
-                existing
-                and existing.fingerprint == fingerprint
-                and existing.state in {"preparing", "prepared"}
-                and not existing.consumed
-            ):
-                return existing
-            draft = PreparedDraft(spec.client_id, fingerprint)
-            self.current[spec.client_id] = draft
-        threading.Thread(
-            target=self._prepare,
-            args=(draft, spec, request_for),
-            daemon=True,
-        ).start()
-        return draft
-
-    def _prepare(
-        self, draft: PreparedDraft, spec: RequestSpec, request_for: str
-    ) -> None:
-        with self.slots:
-            try:
-                client = self.clients.clients(1)[0]
-                result = populate_spec(
-                    client,
-                    spec,
-                    request_for,
-                    submit=False,
-                    on_request_created=lambda request_id: self._created(
-                        draft, request_id
-                    ),
-                )
-                with self.lock:
-                    current = self.current.get(draft.client_id)
-                    if current is not draft:
-                        draft.state = "stale"
-                        draft.message = "Replaced after the request was edited"
-                        return
-                    draft.request_id = result.request_id
-                    draft.state = "prepared"
-                    draft.message = "Draft ready for fast submission"
-                    draft.prepared_at = datetime.now().isoformat(
-                        timespec="seconds"
-                    )
-            except eudm.EUDMError as exc:
-                if eudm.is_sso_expired_error(exc):
-                    self.clients.mark_sso_expired()
-                with self.lock:
-                    if self.current.get(draft.client_id) is draft:
-                        draft.state = "failed"
-                        draft.message = str(exc)
-
-    def _created(self, draft: PreparedDraft, request_id: str) -> None:
-        with self.lock:
-            draft.request_id = request_id
-            draft.message = f"Draft {request_id} created; applying details"
-
-    def claim(self, spec: RequestSpec) -> str | None:
-        fingerprint = spec_fingerprint(spec)
-        with self.lock:
-            draft = self.current.get(spec.client_id)
-            if (
-                not draft
-                or draft.fingerprint != fingerprint
-                or draft.state != "prepared"
-                or draft.consumed
-                or not draft.request_id
-            ):
-                return None
-            draft.consumed = True
-            draft.state = "submitting"
-            draft.message = "Submitting prepared draft"
-            return draft.request_id
 
 
 class JobStore:
-    def __init__(self, clients: ClientManager, drafts: DraftStore) -> None:
+    def __init__(self, clients: ClientManager) -> None:
         self.clients = clients
-        self.drafts = drafts
         self.jobs: dict[str, SubmissionJob] = {}
         self.lock = threading.Lock()
 
@@ -729,14 +608,6 @@ class JobStore:
             concurrency,
             self.clients.config.simulate,
         )
-        for entry in job.entries:
-            prepared_id = self.drafts.claim(entry.spec)
-            if prepared_id:
-                entry.request_id = prepared_id
-                entry.request_page_url = self.clients.request_page_url(
-                    prepared_id
-                )
-                entry.message = "Prepared draft is ready to submit"
         with self.lock:
             self.jobs[job.job_id] = job
         threading.Thread(target=self._run, args=(job,), daemon=True).start()
@@ -799,47 +670,29 @@ class JobStore:
     ) -> None:
         entry.started_at = time.time()
         spec = entry.spec
-        prepared_request_id = entry.request_id
-        if prepared_request_id:
-            job.update(
-                entry,
-                state="running",
-                step=2,
-                message=f"Submitting prepared draft {prepared_request_id}",
-            )
-        else:
-            job.update(
-                entry,
-                state="running",
-                step=1,
-                message="Creating the EUDM request",
-            )
+        job.update(
+            entry,
+            state="running",
+            step=1,
+            message="Creating the EUDM request",
+        )
 
         def created(request_id: str) -> None:
-            request_page = self.clients.request_page_url(request_id)
-            if request_page:
-                run_reporting.event("Request %s details page: %s", request_id, request_page)
             job.update(
                 entry,
                 request_id=request_id,
-                request_page_url=request_page,
                 step=2,
                 message=f"Request {request_id} created — applying device details",
             )
 
         try:
-            if prepared_request_id:
-                result = eudm.submit_prepared_request(
-                    client, prepared_request_id
-                )
-            else:
-                result = populate_spec(
-                    client,
-                    spec,
-                    job.request_for,
-                    submit=True,
-                    on_request_created=created,
-                )
+            result = populate_spec(
+                client,
+                spec,
+                job.request_for,
+                submit=True,
+                on_request_created=created,
+            )
             job.update(
                 entry,
                 state="succeeded" if result.submitted else "failed",
@@ -885,7 +738,6 @@ class JobStore:
                         f"returning_user={spec.returning_user or '-'}",
                         f"request={entry.request_id or '-'}",
                         f"order={entry.order_id or '-'}",
-                        f"request_page={entry.request_page_url or '-'}",
                         f"detail={entry.message}",
                     )
                 )
@@ -911,7 +763,6 @@ class JobStore:
                     f"  Returning user: {entry['returning_user'] or '-'}",
                     f"  Request ID: {entry['request_id'] or '-'}",
                     f"  Order ID: {entry['order_id'] or '-'}",
-                    f"  Request page: {entry['request_page_url'] or '-'}",
                     f"  Detail: {entry['message']}",
                     "",
                 )
@@ -923,8 +774,7 @@ class Application:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
         self.clients = ClientManager(config)
-        self.drafts = DraftStore(self.clients)
-        self.jobs = JobStore(self.clients, self.drafts)
+        self.jobs = JobStore(self.clients)
         self.imports: dict[str, WorkbookImport] = {}
         self.import_lock = threading.Lock()
         self.allowed_user_statuses = {value for _, value in USER_STATUSES}
@@ -945,10 +795,7 @@ class Application:
             "request_for_source": self.clients.request_for_source,
             "simulation": self.config.simulate,
             "manual_review": self.config.manual_review,
-            "prepare_drafts": self.config.prepare_drafts,
             "concurrency": self.config.concurrency,
-            "eudm_form_url": self.clients.eudm_form_url(),
-            "eudm_activity_url": self.clients.eudm_activity_url(),
             "default_user_status": self.config.default_user_status,
             "default_location_status": self.config.default_location_status,
             "default_location": default_location,
@@ -1087,15 +934,6 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
         if path == "/api/history":
             self._json({"runs": self.app.jobs.history()})
             return
-        if path == "/api/drafts":
-            self._json({"drafts": self.app.drafts.statuses()})
-            return
-        if path.startswith("/api/requests/") and path.endswith("/details"):
-            parts = path.strip("/").split("/")
-            if len(parts) == 4:
-                request_id = urllib.parse.unquote(parts[2])
-                self._json(self.app.clients.request_details(request_id))
-                return
         if path.startswith("/api/jobs/"):
             parts = path.strip("/").split("/")
             if len(parts) == 4 and parts[3] == "results.txt":
@@ -1197,28 +1035,6 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
                 )
             )
             return
-        if path == "/api/drafts/prepare":
-            spec = RequestSpec.from_json(payload.get("request"))
-            request_for = self.app.clients.request_for
-            errors = validate_queue(
-                [spec],
-                request_for,
-                user_statuses=self.app.allowed_user_statuses,
-                location_statuses=self.app.allowed_location_statuses,
-            )
-            if errors:
-                self._json(
-                    {
-                        "error": "This request must be complete before its draft can be prepared.",
-                        "validation": errors,
-                    },
-                    422,
-                )
-                return
-            self.app.clients.require()
-            draft = self.app.drafts.schedule(spec, request_for)
-            self._json(draft.to_json(), 202)
-            return
         if path == "/api/jobs":
             raw_requests = payload.get("requests")
             if not isinstance(raw_requests, list):
@@ -1245,7 +1061,7 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
                 )
                 return
             concurrency = int(payload.get("concurrency") or self.app.config.concurrency)
-            concurrency = max(1, min(8, concurrency))
+            concurrency = max(1, min(20, concurrency))
             job = self.app.jobs.create(specs, request_for, concurrency)
             self._json(job.to_json(), 202)
             return

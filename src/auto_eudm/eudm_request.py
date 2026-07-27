@@ -20,12 +20,9 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-import ssl
 import threading
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -580,7 +577,7 @@ class Client:
         return [Client(self.base, self.cookie, self.verbose) for _ in range(count)]
 
     def _curl_request(self, method: str, url: str, body: bytes | None, headers: dict[str, str]) -> tuple[int, str]:
-        """Use the OS curl trust store when Python/OpenSSL rejects a chain."""
+        """Send an EUDM request through the operating system curl trust store."""
         config: list[str] = [f"url = {json.dumps(url)}", f"request = {json.dumps(method)}"]
         for name, value in headers.items():
             config.append(f"header = {json.dumps(f'{name}: {value}')}")
@@ -588,7 +585,18 @@ class Client:
             config.append(f"data-binary = {json.dumps(body.decode('utf-8'))}")
         config.append('write-out = "\\n__EUDM_HTTP_STATUS:%{http_code}"')
         result = subprocess.run(
-            ["curl", "--silent", "--show-error", "--location", "--config", "-"],
+            [
+                "curl",
+                "--silent",
+                "--show-error",
+                "--location",
+                "--connect-timeout",
+                "15",
+                "--max-time",
+                "60",
+                "--config",
+                "-",
+            ],
             input=("\n".join(config) + "\n").encode(),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -628,44 +636,20 @@ class Client:
             headers["Content-Type"] = "application/json"
         if self.cookie:
             headers["Cookie"] = self.cookie
-        req = urllib.request.Request(url, data=body, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(req, timeout=45) as response:
-                raw = response.read().decode("utf-8", errors="replace")
-                status = response.status
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            run_reporting.network(
-                method, path, status=exc.code,
-                duration_ms=int((time.monotonic() - started) * 1000), transport="urllib",
-            )
-            if exc.code in (401, 403) and "single sign on" in detail.lower():
-                raise SSOExpiredError(
-                    "EUDM redirected to SSO. Reconnect and complete sign-in in Chrome."
-                ) from exc
-            raise EUDMError(http_error_message(exc.code, f"EUDM request {method} {path}")) from exc
-        except urllib.error.URLError as exc:
-            reason = exc.reason
-            cert_error = isinstance(reason, ssl.SSLCertVerificationError) or "CERTIFICATE_VERIFY_FAILED" in str(reason)
-            if not cert_error:
-                run_reporting.network(
-                    method, path, duration_ms=int((time.monotonic() - started) * 1000),
-                    transport="urllib", error=type(reason).__name__,
-                )
-                raise EUDMError(
-                    f"EUDM request {method} {path} could not connect. "
-                    "Check the network connection and try again."
-                ) from exc
-            if self.verbose:
-                print("Python TLS validation failed; retrying with system curl trust store", file=sys.stderr)
-            run_reporting.event("TLS verification failed; retrying %s %s with system curl", method, path)
             status, raw = self._curl_request(method, url, body, headers)
-            transport = "curl"
-        else:
-            transport = "urllib"
+        except EUDMError:
+            run_reporting.network(
+                method,
+                path,
+                duration_ms=int((time.monotonic() - started) * 1000),
+                transport="curl",
+                error="transport",
+            )
+            raise
         run_reporting.network(
             method, path, status=status,
-            duration_ms=int((time.monotonic() - started) * 1000), transport=transport,
+            duration_ms=int((time.monotonic() - started) * 1000), transport="curl",
         )
         if self.verbose:
             print(f"{method} {path} -> {status}", file=sys.stderr)
@@ -795,79 +779,6 @@ def choose_location_data_value(
     )
 
 
-def batch_asset_selection(
-    all_items: list[dict[str, Any]], events: dict[str, Any], serials: list[str]
-) -> tuple[dict[str, Any], list[str]]:
-    """Find the live bulk asset table and match every requested serial."""
-    tables_by_id = {
-        item["id"]: item
-        for item in all_items
-        if item.get("type") == "MultiSelectDataTable" and item.get("label") == "Select Asset"
-    }
-    candidates = [
-        (tables_by_id[question_id], option_data(events, question_id))
-        for question_id in tables_by_id
-        if option_data(events, question_id)
-    ]
-    if len(candidates) != 1:
-        raise MatchError(
-            "Bulk serial entry did not expose exactly one populated 'Select Asset' table; "
-            f"found {len(candidates)}"
-        )
-    table, rows = candidates[0]
-    selected: list[str] = []
-    missing: list[str] = []
-    for serial in serials:
-        matches = [
-            row for row in rows
-            if any(str(value).casefold() == serial.casefold() for value in row.get("displayValue", []))
-        ]
-        if len(matches) == 1:
-            selected.append(matches[0]["dataValue"])
-        elif not matches:
-            missing.append(f"{serial} (no exact serial match)")
-        else:
-            missing.append(f"{serial} (more than one exact serial match)")
-    if missing:
-        raise MatchError(
-            "The bulk search did not uniquely match these serials: " + ", ".join(missing)
-        )
-    return table, selected
-
-
-def answer_batch_assets_with_retry(
-    client: Any,
-    request_id: str,
-    questionnaire_id: str,
-    all_items: list[dict[str, Any]],
-    inventory_events: dict[str, Any],
-    serial_list: dict[str, Any],
-    serials: list[str],
-) -> list[str]:
-    """Resolve every bulk serial exactly, or let the operator skip the request."""
-    current = serials
-    while True:
-        serial_events = answer(client, request_id, questionnaire_id, serial_list, ",".join(current))
-        try:
-            asset_table, asset_values = batch_asset_selection(
-                all_items, merge_events(inventory_events, serial_events), current
-            )
-        except MatchError as exc:
-            raw = retry_or_skip("comma-separated serial numbers", ",".join(current), exc)
-            candidate = [value.strip() for value in raw.split(",")]
-            if (
-                not candidate
-                or any(not value or any(character.isspace() for character in value) for value in candidate)
-                or len({value.casefold() for value in candidate}) != len(candidate)
-            ):
-                print("Enter one or more comma-separated serial numbers without spaces or duplicates.")
-                continue
-            current = candidate
-            continue
-        answer_values(client, request_id, questionnaire_id, asset_table, asset_values)
-        return current
-
-
 def lookup_and_answer(
     client: Any,
     request_id: str,
@@ -949,6 +860,62 @@ def lookup_and_answer_exact(
     return query
 
 
+def search_question_and_answer_exact(
+    client: Any,
+    request_id: str,
+    questionnaire_id: str,
+    all_items: list[dict[str, Any]],
+    search_label: str,
+    table_label: str,
+    query: str,
+) -> str:
+    """Search a dynamic questionnaire field and select one exact returned row.
+
+    EUDM's returning-user branch does not expose a ``/lookup`` endpoint. Typing
+    into its search field is itself a questionnaire answer, and the response
+    contains the matching rows for the adjacent table.
+    """
+    search = field_by_label(all_items, search_label, type_="TextField")
+    table = field_by_label(all_items, table_label, type_="DataTable")
+    events = answer(
+        client,
+        request_id,
+        questionnaire_id,
+        search,
+        query,
+    )
+    rows = option_data(events, table["id"])
+    value = choose_data_value(rows, query, exact=True, kind="user")
+    answer(client, request_id, questionnaire_id, table, value)
+    return query
+
+
+def search_question_and_answer(
+    client: Any,
+    request_id: str,
+    questionnaire_id: str,
+    all_items: list[dict[str, Any]],
+    search_label: str,
+    table_label: str,
+    query: str,
+) -> str:
+    """Interactive variant of ``search_question_and_answer_exact``."""
+    current = query
+    while True:
+        try:
+            return search_question_and_answer_exact(
+                client,
+                request_id,
+                questionnaire_id,
+                all_items,
+                search_label,
+                table_label,
+                current,
+            )
+        except MatchError as exc:
+            current = retry_or_skip("username", current, exc)
+
+
 def answer_single_asset_with_retry(
     client: Any,
     request_id: str,
@@ -985,28 +952,6 @@ def answer_single_asset_exact(
     value = choose_data_value(devices, serial, exact=True, kind="serial number")
     answer(client, request_id, questionnaire_id, device_table, value)
     return serial
-
-
-def answer_batch_assets_exact(
-    client: Any,
-    request_id: str,
-    questionnaire_id: str,
-    all_items: list[dict[str, Any]],
-    inventory_events: dict[str, Any],
-    serial_list: dict[str, Any],
-    serials: list[str],
-) -> list[str]:
-    """Resolve every bulk serial exactly without interactive correction."""
-    serial_events = answer(
-        client, request_id, questionnaire_id, serial_list, ",".join(serials)
-    )
-    asset_table, asset_values = batch_asset_selection(
-        all_items, merge_events(inventory_events, serial_events), serials
-    )
-    answer_values(
-        client, request_id, questionnaire_id, asset_table, asset_values
-    )
-    return serials
 
 
 def deploy_device_to_user(
@@ -1064,29 +1009,6 @@ def deploy_device_to_user(
         )
     except EUDMError as exc:
         raise DeploymentExecutionError(request_id, str(exc)) from exc
-
-
-def submit_prepared_request(client: Any, request_id: str) -> DeploymentResult:
-    """Submit a previously populated EUDM draft without repeating its lookups."""
-    if not request_id or request_id != request_id.strip():
-        raise EUDMError("The prepared request ID is invalid.")
-    order = request_step(
-        client,
-        "Could not submit the prepared request",
-        "POST",
-        "v2/sbe/orders",
-        {"requestIds": [request_id], "title": None},
-    )
-    order_id = (
-        str(order["id"])
-        if isinstance(order, dict) and order.get("id")
-        else None
-    )
-    return DeploymentResult(
-        request_id=request_id,
-        order_id=order_id,
-        submitted=True,
-    )
 
 
 def _complete_user_deployment(
@@ -1267,21 +1189,20 @@ def deploy_device_to_location(
             all_items, "Inventory Request Type", type_="RadioButtons"
         )
         if bulk:
-            inventory_events = answer(
-                client, request_id, questionnaire_id, inventory, "BULK"
-            )
+            answer(client, request_id, questionnaire_id, inventory, "BULK")
             serial_list = field_by_label(
                 all_items, "Please add serial number list", type_="TextArea"
             )
-            selected_serials = answer_batch_assets_exact(
+            # EUDM bulk mode accepts the comma-separated list directly. It does
+            # not expose or require the asset-selection table used by ADD mode.
+            answer(
                 client,
                 request_id,
                 questionnaire_id,
-                all_items,
-                inventory_events,
                 serial_list,
-                cleaned_serials,
+                ",".join(cleaned_serials),
             )
+            selected_serials = cleaned_serials
         else:
             answer(client, request_id, questionnaire_id, inventory, "ADD")
             search_by = field_by_label(all_items, "Search by", type_="RadioButtons")
@@ -1333,38 +1254,39 @@ def deploy_device_to_location(
             location_value,
         )
 
-        returned = field_by_label(
-            all_items, "Is this a return from a user", type_="RadioButtons"
-        )
-        if returning_user:
-            answer(client, request_id, questionnaire_id, returned, "YES")
-            add_dropoff = field_by_label(
-                all_items,
-                "Add Name of person who dropped off device",
-                type_="YesNo",
+        if not bulk:
+            returned = field_by_label(
+                all_items, "Is this a return from a user", type_="RadioButtons"
             )
-            answer(client, request_id, questionnaire_id, add_dropoff, "true")
-            lookup_and_answer_exact(
-                client,
-                request_id,
-                questionnaire_id,
-                all_items,
-                "Search Name or User ID that dropped off devices",
-                "Select person who dropped device/s off",
-                returning_user,
-            )
-            confirmation = field_by_label(
-                all_items, "Does this look right?", type_="RadioButtons"
-            )
-            answer(
-                client,
-                request_id,
-                questionnaire_id,
-                confirmation,
-                "YES",
-            )
-        else:
-            answer(client, request_id, questionnaire_id, returned, "NO")
+            if returning_user:
+                answer(client, request_id, questionnaire_id, returned, "YES")
+                add_dropoff = field_by_label(
+                    all_items,
+                    "Add Name of person who dropped off device",
+                    type_="YesNo",
+                )
+                answer(client, request_id, questionnaire_id, add_dropoff, "true")
+                search_question_and_answer_exact(
+                    client,
+                    request_id,
+                    questionnaire_id,
+                    all_items,
+                    "Search Name or User ID that dropped off devices",
+                    "Select person who dropped device/s off",
+                    returning_user,
+                )
+                confirmation = field_by_label(
+                    all_items, "Does this look right?", type_="RadioButtons"
+                )
+                answer(
+                    client,
+                    request_id,
+                    questionnaire_id,
+                    confirmation,
+                    "YES",
+                )
+            else:
+                answer(client, request_id, questionnaire_id, returned, "NO")
 
         if not submit:
             return DeploymentResult(
@@ -1613,17 +1535,16 @@ Safety:
 
     inventory = field_by_label(all_items, "Inventory Request Type", type_="RadioButtons")
     if args.batch:
-        inventory_events = answer(client, request_id, questionnaire_id, inventory, "BULK")
+        answer(client, request_id, questionnaire_id, inventory, "BULK")
         serial_list = field_by_label(all_items, "Please add serial number list", type_="TextArea")
-        selected_serials = answer_batch_assets_with_retry(
+        answer(
             client,
             request_id,
             questionnaire_id,
-            all_items,
-            inventory_events,
             serial_list,
-            args.batch_serials,
+            ",".join(args.batch_serials),
         )
+        selected_serials = args.batch_serials
     else:
         answer(client, request_id, questionnaire_id, inventory, "ADD")
         search_by = field_by_label(all_items, "Search by", type_="RadioButtons")
@@ -1659,15 +1580,14 @@ Safety:
         )
         answer(client, request_id, questionnaire_id, location_table, location_value)
 
-        # Batch location changes have no associated user.
-        returned = field_by_label(all_items, "Is this a return from a user", type_="RadioButtons")
-        if args.batch:
-            answer(client, request_id, questionnaire_id, returned, "NO")
-        else:
+        # Bulk mode ends after location selection. Individual location returns
+        # additionally activate and complete EUDM's returning-user branch.
+        if not args.batch:
+            returned = field_by_label(all_items, "Is this a return from a user", type_="RadioButtons")
             answer(client, request_id, questionnaire_id, returned, "YES")
             add_dropoff = field_by_label(all_items, "Add Name of person who dropped off device", type_="YesNo")
             answer(client, request_id, questionnaire_id, add_dropoff, "true")
-            lookup_and_answer(
+            search_question_and_answer(
                 client,
                 request_id,
                 questionnaire_id,
@@ -1675,6 +1595,16 @@ Safety:
                 "Search Name or User ID that dropped off devices",
                 "Select person who dropped device/s off",
                 args.dropped_by,
+            )
+            confirmation = field_by_label(
+                all_items, "Does this look right?", type_="RadioButtons"
+            )
+            answer(
+                client,
+                request_id,
+                questionnaire_id,
+                confirmation,
+                "YES",
             )
         location_summary = " --> ".join([args.building, args.floor, args.room])
         if args.cabinet:

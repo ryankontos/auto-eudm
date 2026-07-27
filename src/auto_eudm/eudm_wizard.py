@@ -163,20 +163,16 @@ Review:
 
     inventory = eudm.field_by_label(all_items, "Inventory Request Type", type_="RadioButtons")
     if mode == "batch":
-        inventory_events = eudm.answer(
-            client, request_id, questionnaire_id, inventory, "BULK"
-        )
+        eudm.answer(client, request_id, questionnaire_id, inventory, "BULK")
         serial_list = eudm.field_by_label(all_items, "Please add serial number list", type_="TextArea")
-        serials = eudm.answer_batch_assets_with_retry(
+        eudm.answer(
             client,
             request_id,
             questionnaire_id,
-            all_items,
-            inventory_events,
             serial_list,
-            serials,
+            ",".join(serials),
         )
-        eudm.verbose_detail(client, f"Matched all {len(serials)} requested assets.")
+        eudm.verbose_detail(client, f"Added {len(serials)} serials to the EUDM bulk list.")
     else:
         eudm.answer(client, request_id, questionnaire_id, inventory, "ADD")
         search_by = eudm.field_by_label(all_items, "Search by", type_="RadioButtons")
@@ -230,19 +226,17 @@ Review:
             value for value in (config.building, config.floor, config.room, config.cabinet) if value
         )
         location_display, location_value = choose_preferred(
-            "Specific location", location_choices, preferred_location
+            "Location", location_choices, preferred_location
         )
         eudm.answer(client, request_id, questionnaire_id, location_table, location_value)
         review_target = "location"
         review_destination = location_display
         review_detail = "No associated user" if mode == "batch" else None
 
-        returned = eudm.field_by_label(
-            all_items, "Is this a return from a user", type_="RadioButtons"
-        )
-        if mode == "batch":
-            eudm.answer(client, request_id, questionnaire_id, returned, "NO")
-        else:
+        if mode != "batch":
+            returned = eudm.field_by_label(
+                all_items, "Is this a return from a user", type_="RadioButtons"
+            )
             is_return = yes_no("Is this a return from a user?")
             eudm.answer(
                 client, request_id, questionnaire_id, returned, "YES" if is_return else "NO"
@@ -276,6 +270,16 @@ Review:
                     eudm.answer(client, request_id, questionnaire_id, table, dropoff_value)
                     review_detail = f"Dropped by {dropoff_query}"
                     break
+                confirmation = eudm.field_by_label(
+                    all_items, "Does this look right?", type_="RadioButtons"
+                )
+                eudm.answer(
+                    client,
+                    request_id,
+                    questionnaire_id,
+                    confirmation,
+                    "YES",
+                )
 
     if args.manual_review:
         approved = eudm.manual_review(
