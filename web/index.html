@@ -272,11 +272,9 @@
       <div id="pairsReview" hidden>
         <div class="quick-import-toolbar">
           <strong>Devices</strong>
-          <label>Set all actions
+          <label>Apply deployment type to all
             <select id="pairsBulkKind">
-              <option value="">Choose an action</option>
-              <option value="user">Deploy lines with usernames to user</option>
-              <option value="location">Add every line to location stock</option>
+              <option value="">Choose a deployment type</option>
             </select>
           </label>
           <button id="pairsApplyBulkButton" class="button secondary compact" type="button">Apply</button>
@@ -354,7 +352,7 @@
           <label><input type="radio" name="importMode" value="returns"><span><strong>Returns</strong><small id="returnImportCount">0 requests</small></span></label>
           <label><input type="radio" name="importMode" value="both"><span><strong>Both</strong><small id="bothImportCount">0 requests</small></span></label>
         </fieldset>
-        <div class="notice"><strong>Rows with red text and unusable serial numbers are excluded.</strong> Column J creates deployments; column L creates Deployed - Pending Return requests. Usernames come only from column D.</div>
+        <div class="notice"><strong>Rows with red text, column G set to false, and unusable serial numbers are excluded.</strong> Column J creates deployments; column L creates Deployed - Pending Return requests. Usernames come only from column D.</div>
       </div>
       <div id="importPreview" hidden>
         <div class="import-preview-heading">

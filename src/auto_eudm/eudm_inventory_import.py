@@ -51,6 +51,7 @@ class SheetRow:
     new_serial: str | None
     old_serial: str | None
     marked_red: bool
+    enabled: bool
 
 
 @dataclass(frozen=True)
@@ -71,6 +72,13 @@ def clean_text(value: Any) -> str | None:
     if isinstance(value, float) and value.is_integer():
         text = str(int(value))
     return text
+
+
+def column_g_allows(value: Any) -> bool:
+    """Column G is an optional eligibility flag; only an explicit false excludes a row."""
+    if value is False:
+        return False
+    return str(value).strip().casefold() != "false"
 
 
 def looks_like_serial(value: str | None) -> bool:
@@ -186,6 +194,7 @@ def load_sheet(path: Path) -> tuple[str, list[SheetRow]]:
                     new_serial=clean_text(values[9].value),
                     old_serial=clean_text(values[11].value),
                     marked_red=any(cell_is_red(cell) for cell in values),
+                    enabled=column_g_allows(values[6].value),
                 )
             )
         if not rows:
@@ -249,7 +258,7 @@ def parse_number_selection(raw: str, maximum: int) -> set[int]:
 
 
 def eligible_counts(rows: Iterable[SheetRow]) -> tuple[int, int]:
-    eligible = [row for row in rows if not row.marked_red and row.username]
+    eligible = [row for row in rows if row.enabled and not row.marked_red and row.username]
     return (
         sum(looks_like_serial(row.new_serial) for row in eligible),
         sum(looks_like_serial(row.old_serial) for row in eligible),
@@ -263,6 +272,9 @@ def build_actions(
     ignored: Counter[str] = Counter()
     for row in rows:
         if row.deployment_date != selected_date:
+            continue
+        if not row.enabled:
+            ignored["column G is false"] += 1
             continue
         if row.marked_red:
             ignored["marked red"] += 1

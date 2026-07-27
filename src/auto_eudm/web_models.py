@@ -388,6 +388,7 @@ class WorkbookImport:
                             marked_red=any(
                                 inventory.cell_is_red(cell) for cell in values
                             ),
+                            enabled=inventory.column_g_allows(values[6].value),
                         )
                     )
                 if rows:
@@ -436,7 +437,6 @@ class WorkbookImport:
         sheet_name: str,
         selected_date: str,
         mode: str,
-        default_location: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if sheet_name not in self.sheets:
             raise eudm.EUDMError("Choose one of the workbook's available sheets.")
@@ -455,18 +455,17 @@ class WorkbookImport:
             )
         requests = []
         for action in actions:
-            is_return = action.group == "Pending returns"
             requests.append(RequestSpec(
                 client_id=uuid.uuid4().hex,
-                kind="location" if is_return else "user",
+                kind="user",
                 serials=(action.serial,),
-                status=("Used Stock" if is_return else action.status),
-                user=None if is_return else action.username,
-                returning_requested=is_return and bool(action.username),
-                returning_user=action.username if is_return else None,
+                status=action.status,
+                user=action.username,
+                returning_requested=False,
+                returning_user=None,
                 return_confirmed=True,
                 returning_user_info=None,
-                location=Location.from_json(default_location) if is_return and default_location else None,
+                location=None,
                 group=action.group,
                 source=f"{self.filename} · {sheet_name}",
             ).to_json())

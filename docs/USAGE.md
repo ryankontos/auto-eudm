@@ -133,8 +133,7 @@ automatically loads other locations for that city. The centre queue is
 the complete execution plan.
 
 This automatic location behaviour is shared by Quick import, individual
-**Add to location stock** requests, bulk location requests, and imported
-location rows: selecting or opening a location-based request immediately loads
+**Add to location stock** requests and bulk location requests: selecting or opening a location-based request immediately loads
 the locations for its selected city. The **Refresh** button is only for
 updating the list if EUDM's locations have changed.
 The right inspector edits the selected request and provides live EUDM device,
@@ -389,12 +388,13 @@ which matches the same column layout for local rehearsals.
 | --- | --- | --- |
 | A | Deployment date | The CLI lists dates and asks which date to process. |
 | D | Username | Used as the deployed-to login ID. |
+| G | Eligibility flag | A row is ignored only when this value is explicitly `false`. |
 | F | Email | Ignored. The importer never derives usernames from email. |
 | J | New serial | Required. It becomes a new user deployment. |
 | L | Old serial | If valid, it becomes a separate `Deployed - Pending Return` request for that user. |
 
-Rows are excluded before authentication when any cell in A:L has red font, or
-no username is present in D. New and old serials are checked
+Rows are excluded before authentication when column G is explicitly `false`,
+any cell in A:L has red font, or no username is present in D. New and old serials are checked
 independently, so a missing serial in one column does not discard a valid serial
 in the other. Short markers such as `1` to `5` are not serials. The preview
 reports ignored serial numbers.

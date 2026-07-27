@@ -983,6 +983,10 @@ function parseQuickImportLines() {
       returningUserInfo: null,
       returningUserChecked: false,
       kind: username ? "user" : "location",
+      userStatus: resolveStatus(
+        state.config.user_statuses,
+        state.config.default_user_status,
+      ),
       locationStatus: resolveStatus(
         state.config.location_statuses,
         state.config.default_location_status,
@@ -994,6 +998,7 @@ function parseQuickImportLines() {
 }
 
 function renderQuickImportReview() {
+  populateQuickImportBulkOptions();
   const list = $("#pairsReviewList");
   list.innerHTML = state.pasteEntries.map((entry, index) => {
     const selector = entry.username
@@ -1007,20 +1012,22 @@ function renderQuickImportReview() {
       : entry.username
         ? `Returned by ${escapeHtml(entry.username)}`
         : "No returning user";
-    const locationStatus = entry.kind === "location"
-      ? `<label class="quick-import-status">Status
-          <select data-pairs-status="${index}" aria-label="Location status for ${escapeHtml(entry.serial)}">
-            ${state.config.location_statuses.map((option) => `<option value="${escapeHtml(option.value)}" ${option.value === entry.locationStatus ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
+    const statusOptions = entry.kind === "location"
+      ? state.config.location_statuses
+      : state.config.user_statuses;
+    const selectedStatus = entry.kind === "location" ? entry.locationStatus : entry.userStatus;
+    const deploymentStatus = `<label class="quick-import-status">Status
+          <select data-pairs-status="${index}" aria-label="Deployment status for ${escapeHtml(entry.serial)}">
+            ${statusOptions.map((option) => `<option value="${escapeHtml(option.value)}" ${option.value === selectedStatus ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
           </select>
-        </label>`
-      : "";
+        </label>`;
     const returnInfo = entry.kind === "location" && entry.username
       ? `<div class="quick-import-return ${entry.returningUserInfo ? "" : "unknown"}"><strong>Returning user</strong><span>${escapeHtml(entry.returningUserInfo?.login || entry.username)}</span><small>${entry.returningUserInfo?.columns?.length ? escapeHtml(entry.returningUserInfo.columns.join(" · ")) : "Details unknown — search and verify before submitting. An email will be sent to this user."}</small></div>`
       : "";
     return `<div class="quick-import-row">
       <div><strong>${escapeHtml(entry.serial)}</strong><small>${username}</small>${returnInfo}</div>
       <div class="quick-import-row-actions">
-        ${locationStatus}
+        ${deploymentStatus}
         ${selector}
         <button class="row-menu" type="button" data-pairs-remove="${index}" aria-label="Remove ${escapeHtml(entry.serial)}" title="Remove device"><span class="trash-icon" aria-hidden="true"></span></button>
       </div>
@@ -1035,10 +1042,14 @@ function renderQuickImportReview() {
         state.config.default_location_status,
       );
     }
+    if (entry.kind === "location" && entry.username) entry.returningUserChecked = false;
     renderQuickImportReview();
+    resolveQuickImportReturningUsers();
   }));
   $$("[data-pairs-status]").forEach((select) => select.addEventListener("change", () => {
-    state.pasteEntries[Number(select.dataset.pairsStatus)].locationStatus = select.value;
+    const entry = state.pasteEntries[Number(select.dataset.pairsStatus)];
+    if (entry.kind === "location") entry.locationStatus = select.value;
+    else entry.userStatus = select.value;
   }));
   $$("[data-pairs-remove]").forEach((button) => button.addEventListener("click", () => {
     state.pasteEntries.splice(Number(button.dataset.pairsRemove), 1);
@@ -1048,6 +1059,23 @@ function renderQuickImportReview() {
   $("#pairsLocationFields").hidden = !locationNeeded;
   $("#addPairsButton").disabled = state.pasteEntries.length === 0;
   if (locationNeeded) renderPasteLocationFields();
+}
+
+function populateQuickImportBulkOptions() {
+  const select = $("#pairsBulkKind");
+  const selected = select.value;
+  const userOptions = state.config.user_statuses.map((option) =>
+    `<option value="user|${escapeHtml(option.value)}">Deploy username lines to user — ${escapeHtml(option.label)}</option>`,
+  );
+  const locationOptions = state.config.location_statuses.map((option) =>
+    `<option value="location|${escapeHtml(option.value)}">Add all devices to location stock — ${escapeHtml(option.label)}</option>`,
+  );
+  select.innerHTML = [
+    '<option value="">Choose a deployment type</option>',
+    ...userOptions,
+    ...locationOptions,
+  ].join("");
+  if ([...select.options].some((option) => option.value === selected)) select.value = selected;
 }
 
 function reviewPairs() {
@@ -1100,20 +1128,21 @@ async function resolveQueueReturningUsers(requests) {
 }
 
 function applyQuickImportKind() {
-  const kind = $("#pairsBulkKind").value;
-  if (!kind) return;
+  const [kind, status] = $("#pairsBulkKind").value.split("|", 2);
+  if (!kind || !status) return;
   state.pasteEntries.forEach((entry) => {
     if (kind === "location" || entry.username) {
       entry.kind = kind;
-      if (kind === "location" && !locationStatusValues().has(entry.locationStatus)) {
-        entry.locationStatus = resolveStatus(
-          state.config.location_statuses,
-          state.config.default_location_status,
-        );
+      if (kind === "location") {
+        entry.locationStatus = resolveStatus(state.config.location_statuses, status);
+        if (entry.username) entry.returningUserChecked = false;
+      } else {
+        entry.userStatus = resolveStatus(state.config.user_statuses, status);
       }
     }
   });
   renderQuickImportReview();
+  resolveQuickImportReturningUsers();
 }
 
 function showQuickImportAdd() {
@@ -1151,6 +1180,10 @@ function addQuickImportEntry() {
     returningUserInfo: null,
     returningUserChecked: false,
     kind: username ? "user" : "location",
+    userStatus: resolveStatus(
+      state.config.user_statuses,
+      state.config.default_user_status,
+    ),
     locationStatus: resolveStatus(
       state.config.location_statuses,
       state.config.default_location_status,
@@ -1174,7 +1207,7 @@ function addPairs() {
     $("#pairsError").hidden = false;
     return;
   }
-  const requests = state.pasteEntries.map(({ serial, username, kind, locationStatus, returningUserInfo }) => {
+  const requests = state.pasteEntries.map(({ serial, username, kind, userStatus, locationStatus, returningUserInfo }) => {
     const locationMode = kind === "location";
     const request = makeRequest(locationMode ? "location" : "user");
     request.serials = [serial];
@@ -1184,7 +1217,7 @@ function addPairs() {
         locationStatus,
         state.config.default_location_status,
       )
-      : resolveStatus(state.config.user_statuses, state.config.default_user_status);
+      : resolveStatus(state.config.user_statuses, userStatus, state.config.default_user_status);
     request.source = "Quick import";
     if (locationMode) {
       request.location = structuredClone(state.pasteLocation || preferredLocation());
@@ -1354,18 +1387,14 @@ function renderImportPreview() {
             <option value="Deployed - New Stock" ${request.status === "Deployed - New Stock" ? "selected" : ""}>Deployed - New Stock</option>
             <option value="Deployed - Existing Stock" ${request.status === "Deployed - Existing Stock" ? "selected" : ""}>Deployed - Existing Stock</option>
           </select>`
-        : `<span class="fixed-status">Used Stock</span>`;
-      const returnUser = request.returning_user || request.user || "";
-      const returnInfo = !isNew
-        ? `<small class="import-return-info ${returnUser ? "" : "unknown"}">${returnUser ? `Returning user: ${escapeHtml(returnUser)} · Email will be sent — verify details.` : "Returning user unknown — select one before submitting."}</small>`
-        : "";
+        : `<span class="fixed-status">Deployed - Pending Return</span>`;
       return `<div class="import-preview-row ${isIncluded ? "" : "excluded"}">
         <label class="include-control" title="${isIncluded ? "Included" : "Do not deploy"}">
           <input type="checkbox" data-import-include="${escapeHtml(request.id)}" ${isIncluded ? "checked" : ""}>
           <span>${index + 1}</span>
         </label>
         <div><strong>${escapeHtml(request.serials[0])}</strong><small>${isNew ? "New serial" : "Old serial"}</small></div>
-        <div><strong>${escapeHtml(isNew ? (request.user || "No user") : (returnUser || "No user"))}</strong><small>${isNew ? "Receiving user" : "Returning user"}</small>${returnInfo}</div>
+        <div><strong>${escapeHtml(request.user || "No user")}</strong><small>Receiving user</small></div>
         <div>${statusControl}<small>${isIncluded ? "" : "Do not deploy"}</small></div>
       </div>`;
     }).join("");
@@ -1411,26 +1440,6 @@ function renderImportPreview() {
 
   $("#importIgnored").hidden = !payload.ignored.length;
   $("#importIgnoredList").innerHTML = payload.ignored.map((item) => `<li>${item.count} × ${escapeHtml(item.reason)}</li>`).join("");
-  resolveImportPreviewReturningUsers(payload);
-}
-
-async function resolveImportPreviewReturningUsers(payload) {
-  if (payload.returningUsersLoading || !["connected", "simulation"].includes(state.connection?.state)) return;
-  const requests = payload.requests.filter((request) => request.group === "Pending returns" && request.returning_user && !request.returning_user_info && !request.returning_user_checked);
-  if (!requests.length) return;
-  payload.returningUsersLoading = true;
-  await Promise.all(requests.map(async (request) => {
-    request.returning_user_checked = true;
-    try {
-      const resultPayload = await api("/api/search/users", { method: "POST", body: JSON.stringify({ query: request.returning_user, returning: true }) });
-      const result = (resultPayload.results || []).find((item) => bestLogin(item, request.returning_user).toLowerCase() === request.returning_user.toLowerCase());
-      request.returning_user_info = result ? { login: bestLogin(result, request.returning_user), columns: (result.columns || [result.value]).map(String).filter(Boolean) } : null;
-    } catch (_) {
-      request.returning_user_info = null;
-    }
-  }));
-  payload.returningUsersLoading = false;
-  renderImportPreview();
 }
 
 function backToImportSelection() {
@@ -1452,7 +1461,6 @@ async function prepareImport() {
       .map((request) => {
         const cleanRequest = { ...request };
         delete cleanRequest.included;
-        delete cleanRequest.returning_user_checked;
         return cleanRequest;
       });
     if (!requests.length) {

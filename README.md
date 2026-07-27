@@ -372,7 +372,7 @@ python3 eudm_inventory_import.py --cookie-mode
 
 The importer lists the dates from column A, then asks whether to process new devices from column J, old devices from column L, or both. Column D supplies the target username; column F is never used.
 
-A row is excluded before authentication when any cell in columns A-L uses red font, or when no username is present in column D. New and old serials are evaluated independently, so a missing serial in one column does not discard a valid serial in the other. An old serial from column L becomes a separate `Deployed - Pending Return` request for the same user. Obvious non-serial sheet markers, such as the single digits `1`-`5`, are not treated as serial numbers.
+A row is excluded before authentication when column G is explicitly `false`, any cell in columns A-L uses red font, or no username is present in column D. New and old serials are evaluated independently, so a missing serial in one column does not discard a valid serial in the other. An old serial from column L becomes a separate `Deployed - Pending Return` request for the same user. Obvious non-serial sheet markers, such as the single digits `1`-`5`, are not treated as serial numbers.
 
 New devices default to `Deployed - New Stock`. Before the preview, enter one or more displayed numbers such as `2,4-6` to change those devices to `Deployed - Existing Stock`. The final preview includes every serial, username, source row, and status. The CLI asks once more before authentication and submission.
 

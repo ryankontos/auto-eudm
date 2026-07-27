@@ -1032,13 +1032,6 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
                     str(payload.get("sheet", "")),
                     str(payload.get("date", "")),
                     str(payload.get("mode", "")),
-                    default_location={
-                        "city": self.app.config.city or "",
-                        "building": self.app.config.building or "",
-                        "floor": self.app.config.floor or "",
-                        "room": self.app.config.room or "",
-                        "cabinet": self.app.config.cabinet or "",
-                    },
                 )
             )
             return
