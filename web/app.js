@@ -9,6 +9,7 @@ const state = {
   importExpandedGroups: new Set(),
   currentJob: null,
   pollTimer: null,
+  connectionHeartbeatTimer: null,
   liveOptionsLoaded: false,
   pasteLocation: null,
   pasteLocationResults: [],
@@ -908,10 +909,12 @@ function updateConnection(status) {
     : "Not connected";
   elements.connectionBadge.querySelector("span:last-child").textContent = label;
   elements.connectionBadge.title = status.message || "";
-  elements.connectButton.hidden = ["simulation", "connected"].includes(status.state);
+  elements.connectButton.hidden = status.state === "simulation";
   elements.connectButton.disabled = status.state === "connecting";
-  elements.connectButton.textContent = status.state === "expired"
-    ? "Reconnect to EUDM"
+  elements.connectButton.textContent = status.state === "connected"
+    ? "Refresh connection"
+    : status.state === "expired"
+      ? "Reconnect to EUDM"
     : status.state === "error" ? "Try again"
       : status.state === "connecting" ? "Connecting…" : "Connect to EUDM";
   const needsConnection = !state.config.simulation && !["connected", "simulation"].includes(status.state);
@@ -974,7 +977,23 @@ async function refreshConnection() {
   }
 }
 
+async function checkConnection() {
+  if (!state.connection || state.connection.state === "simulation") return;
+  try {
+    const status = await api("/api/connection/health", { method: "POST", body: "{}" });
+    updateConnection(status);
+  } catch (error) {
+    toast(error.message, "error");
+  }
+}
+
 async function connect() {
+  if (state.connection?.state === "connected") {
+    elements.connectButton.disabled = true;
+    await checkConnection();
+    elements.connectButton.disabled = false;
+    return;
+  }
   elements.connectButton.disabled = true;
   try {
     const status = await api("/api/connect", { method: "POST", body: "{}" });
@@ -2378,6 +2397,7 @@ async function init() {
     configureConcurrency(state.config.concurrency);
     bindEvents();
     await refreshConnection();
+    state.connectionHeartbeatTimer = window.setInterval(checkConnection, 30_000);
     renderAll();
   } catch (error) {
     document.body.innerHTML = `<main class="empty-state"><h1>AutoEUDM could not start</h1><p>${escapeHtml(error.message)}</p></main>`;

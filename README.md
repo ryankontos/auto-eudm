@@ -193,6 +193,11 @@ local file. Public links download directly. Private work links automatically
 retry headlessly through the saved Chrome profile, so sign in to Microsoft once
 in that profile if SharePoint asks for authentication.
 
+The web workspace verifies the authenticated EUDM session every 30 seconds
+with a read-only API request. If SSO has expired, it immediately switches to a
+reconnect prompt. **Refresh connection** is also always available while EUDM
+is connected for an on-demand check.
+
 Do not put `EUDM_COOKIE` in `.env`; export short-lived cookies in the current shell or use the dedicated Chrome profile.
 
 When SSO is already automatic in the dedicated profile, set

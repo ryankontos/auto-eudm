@@ -405,6 +405,8 @@ class ClientManager:
         )
         self.probe: SearchProbe | None = None
         self.connected_at: str | None = None
+        self.last_checked_at: str | None = None
+        self.health_lock = threading.Lock()
         self.request_for = (
             config.request_for
             or ("simulated.user" if config.simulate else "")
@@ -422,6 +424,7 @@ class ClientManager:
                 "message": self.message,
                 "simulation": self.config.simulate,
                 "connected_at": self.connected_at,
+                "last_checked_at": self.last_checked_at,
                 "request_for": self.request_for,
                 "request_for_source": self.request_for_source,
                 "search_request_id": (
@@ -446,6 +449,7 @@ class ClientManager:
             self.client = None
             self.probe = None
             self.connected_at = None
+            self.last_checked_at = None
             self.state = "expired"
             self.message = (
                 "Your EUDM session has expired. Reconnect and complete SSO in Chrome."
@@ -533,11 +537,42 @@ class ClientManager:
             self.probe = None
             self.state = "connected"
             self.connected_at = datetime.now().isoformat(timespec="seconds")
+            self.last_checked_at = self.connected_at
             self.request_for = request_for
             self.request_for_source = (
                 "EUDM signed-in account" if inferred_user else "environment"
             )
             self.message = "Connected to EUDM."
+
+    def check_connection(self) -> dict[str, Any]:
+        """Verify the authenticated API session with a small live EUDM request."""
+        if self.config.simulate:
+            return self.status()
+        with self.health_lock:
+            with self.lock:
+                client = self.client
+                connected = self.state == "connected"
+            if not client or not connected:
+                return self.status()
+            try:
+                # Carts is authenticated, has no form side effect, and is also
+                # what connection setup uses to identify the signed-in person.
+                client.request("GET", "v2/carts")
+            except eudm.EUDMError as exc:
+                message = str(exc).casefold()
+                if eudm.is_sso_expired_error(exc) or "401" in message or "403" in message or "single sign on" in message:
+                    self.mark_sso_expired()
+                else:
+                    with self.lock:
+                        if self.client is client:
+                            self.state = "error"
+                            self.message = "Could not verify the EUDM connection. Refresh it before continuing."
+                return self.status()
+            with self.lock:
+                if self.client is client and self.state == "connected":
+                    self.last_checked_at = datetime.now().isoformat(timespec="seconds")
+                    self.message = "Connected to EUDM."
+            return self.status()
 
     def require(self) -> Any:
         with self.lock:
@@ -1245,6 +1280,9 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
         if path == "/api/connect":
             self.app.clients.connect_async()
             self._json(self.app.clients.status(), 202)
+            return
+        if path == "/api/connection/health":
+            self._json(self.app.clients.check_connection())
             return
         if path == "/api/search/assets":
             query = str(payload.get("query", "")).strip()
