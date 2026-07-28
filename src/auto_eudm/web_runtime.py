@@ -937,6 +937,7 @@ class Application:
         return {
             "concurrency": max(1, min(50, int(self.config.concurrency or 1))),
             "validate_bulk_serials": False,
+            "workbook_headless": False,
             "workbook_url": "",
             "import_columns": {
                 "username": "Username",
@@ -956,7 +957,6 @@ class Application:
         if not isinstance(raw, dict):
             raise eudm.EUDMError("Settings must be a JSON object.")
         values = dict(base or self._preference_defaults())
-        values.pop("workbook_headless", None)
         concurrency = raw.get("concurrency", values["concurrency"])
         if isinstance(concurrency, bool):
             raise eudm.EUDMError("Parallel requests must be between 1 and 50.")
@@ -968,7 +968,7 @@ class Application:
             raise eudm.EUDMError("Parallel requests must be between 1 and 50.")
         values["concurrency"] = concurrency
 
-        for key in ("validate_bulk_serials",):
+        for key in ("validate_bulk_serials", "workbook_headless"):
             if key in raw and not isinstance(raw[key], bool):
                 raise eudm.EUDMError("A settings toggle had an invalid value.")
             if key in raw:
@@ -1080,6 +1080,7 @@ class Application:
                 self.config.browser_profile,
                 job=job,
                 diagnostics=diagnostics,
+                headless=bool(self.preferences_json().get("workbook_headless", False)),
             )
             job.filename = filename
             encoded = base64.b64encode(data).decode("ascii")

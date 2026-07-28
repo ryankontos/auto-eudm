@@ -115,14 +115,15 @@ def browser_is_waiting_for_sign_in(page: Any) -> bool:
         return False
 
 
-def download_workbook_with_browser(
+def _download_workbook_with_browser_once(
     url: str,
     profile: str | None,
     *,
     job: Any | None = None,
     diagnostics: WorkbookDownloadDiagnostics | None = None,
+    headless: bool = False,
 ) -> tuple[str, bytes]:
-    """Open Excel Online visibly, then use its Download a Copy menu command."""
+    """Run one Excel Online download attempt in either headless or visible Chrome."""
     if not profile:
         raise eudm.EUDMError(
             "A saved Chrome profile is required for this private ALM Workbook."
@@ -150,7 +151,7 @@ def download_workbook_with_browser(
             diagnostics.event(
                 "browser.starting",
                 source_url=url,
-                mode="visible_excel_menu",
+                mode="headless_excel_menu" if headless else "visible_excel_menu",
                 profile=profile,
                 profile_exists=Path(profile).expanduser().exists(),
             )
@@ -158,7 +159,7 @@ def download_workbook_with_browser(
         context = playwright.chromium.launch_persistent_context(
             user_data_dir=str(Path(profile).expanduser()),
             channel="chrome",
-            headless=False,
+            headless=headless,
             accept_downloads=True,
             downloads_path=download_dir.name,
         )
@@ -203,11 +204,13 @@ def download_workbook_with_browser(
         if diagnostics:
             diagnostics.event("browser.workbook_opened", current_url=str(page.url))
 
-        deadline = time.monotonic() + 300
+        deadline = time.monotonic() + (60 if headless else 300)
         announced_login = False
         file_menu = None
         while time.monotonic() < deadline:
             if browser_is_waiting_for_sign_in(page):
+                if headless:
+                    raise eudm.EUDMError("SharePoint sign-in is needed for the background workbook download.")
                 if not announced_login:
                     announced_login = True
                     update_job("Finish signing in in Chrome…", waiting_for_login=True)
@@ -383,3 +386,42 @@ def download_workbook_with_browser(
         download_dir.cleanup()
         if diagnostics:
             diagnostics.event("browser.stopped")
+
+
+def download_workbook_with_browser(
+    url: str,
+    profile: str | None,
+    *,
+    job: Any | None = None,
+    diagnostics: WorkbookDownloadDiagnostics | None = None,
+    headless: bool = False,
+) -> tuple[str, bytes]:
+    """Download through Excel's menu, retrying visibly when background mode fails."""
+    try:
+        return _download_workbook_with_browser_once(
+            url,
+            profile,
+            job=job,
+            diagnostics=diagnostics,
+            headless=headless,
+        )
+    except eudm.EUDMError as exc:
+        if not headless:
+            raise
+        if diagnostics:
+            diagnostics.event(
+                "browser.headless_failed_retrying_visible",
+                error=str(exc),
+            )
+        if job is not None:
+            job.update(
+                state="downloading",
+                message="Opening Chrome to finish the workbook download…",
+            )
+        return _download_workbook_with_browser_once(
+            url,
+            profile,
+            job=job,
+            diagnostics=diagnostics,
+            headless=False,
+        )

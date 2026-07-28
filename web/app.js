@@ -272,6 +272,12 @@ function savedSpreadsheetUrl() {
   try { return String(localStorage.getItem(SPREADSHEET_URL_STORAGE_KEY) || "").trim(); } catch (_) { return ""; }
 }
 
+function workbookHeadlessEnabled() {
+  return state.preferences?._saved && typeof state.preferences?.workbook_headless === "boolean"
+    ? state.preferences.workbook_headless
+    : false;
+}
+
 function bulkSerialValidationEnabled() {
   if (state.preferences?._saved && typeof state.preferences?.validate_bulk_serials === "boolean") {
     return state.preferences.validate_bulk_serials;
@@ -1147,6 +1153,7 @@ function openSettings() {
   $("#spreadsheetReturnedColumnInput").value = columns.returned_device || "";
   $("#spreadsheetPendingColumnInput").value = columns.pending_return || "OLD Device SN";
   $("#spreadsheetEnabledColumnInput").value = columns.enabled || "";
+  $("#workbookHeadlessInput").checked = workbookHeadlessEnabled();
   $("#validateBulkSerialsInput").checked = bulkSerialValidationEnabled();
   $("#settingsDialog").showModal();
 }
@@ -1793,6 +1800,7 @@ async function saveImportColumnPreferences(columns) {
   const preferences = {
     concurrency: Number(elements.concurrency.value),
     validate_bulk_serials: bulkSerialValidationEnabled(),
+    workbook_headless: workbookHeadlessEnabled(),
     workbook_url: savedSpreadsheetUrl(),
     import_columns: columns,
   };
@@ -1895,7 +1903,7 @@ async function downloadSavedWorkbook() {
   try {
     const job = await api("/api/import/download", {
       method: "POST",
-      body: JSON.stringify({ url }),
+      body: JSON.stringify({ url, headless: workbookHeadlessEnabled() }),
     });
     const workbook = await waitForWorkbookImport(job.job_id, token);
     if (workbook && token === state.importUploadToken) showImportedWorkbook(workbook);
@@ -2166,13 +2174,16 @@ async function prepareImport() {
     payload.requests.forEach((request) => {
       request.included = true;
       normalizeRequestStatus(request);
+      request.import_validation = "checking";
+      request.import_error = "";
     });
     state.importPreview = payload;
     state.importExpandedGroups.clear();
     $("#importConfigure").hidden = true;
     $("#importPreview").hidden = false;
     $("#backImportButton").hidden = false;
-    button.textContent = `Add ${payload.counts.requests} to queue`;
+    button.textContent = "Verifying selections…";
+    button.disabled = true;
     setImportStep(3);
     renderImportPreview();
     validateImportPreview();
@@ -2509,6 +2520,7 @@ function bindEvents() {
     const preferences = {
       concurrency: Number(elements.concurrency.value),
       validate_bulk_serials: $("#validateBulkSerialsInput").checked,
+      workbook_headless: $("#workbookHeadlessInput").checked,
       workbook_url: url,
       import_columns: columns,
     };
