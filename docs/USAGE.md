@@ -244,6 +244,11 @@ questionnaire progress, matches, and safe transport diagnostics. Set
 timings and statuses in `logs/`; cookies, request bodies, and response bodies
 are never logged. Every completed deployment run writes a text summary with
 serials, users/locations, statuses, request IDs, and failures to `results/`.
+Each ALM Workbook download also creates its own detailed
+`logs/*-alm-workbook-download.log`, regardless of `EUDM_LOGGING`. It includes
+direct-download and Playwright/Chrome events, redirects, response metadata,
+unredacted URLs, and page HTML. Browser cookies and password keystrokes are
+excluded.
 For user deployment batches, `EUDM_CONCURRENCY=2` or `3` can substantially reduce
 waits. The tool prints each request ID immediately after EUDM creates it. Manual
 review remains sequential so individual approvals cannot overlap.

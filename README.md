@@ -194,6 +194,13 @@ that login is complete. Chrome closes as soon as the completed workbook has
 been verified. The workbook stays in memory while it is mapped and read; it is
 never copied to Downloads or kept as a permanent local file.
 
+Every attempt to download a saved ALM Workbook also writes a dedicated
+`logs/*-alm-workbook-download.log` diagnostic file, even when `EUDM_LOGGING`
+is disabled. It records the browser/direct-download path, redirects, response
+metadata, browser events, unredacted URLs, and page HTML so a failed SharePoint
+flow can be diagnosed from another computer. It does not export browser cookies
+or record password keystrokes.
+
 The same settings tab lets you set the headings for username, deployment
 serial, returned device, pending return, and the optional TRUE/FALSE column.
 Web settings are stored in `results/web-settings.json`, so they survive browser

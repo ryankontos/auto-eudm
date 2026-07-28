@@ -18,6 +18,7 @@ import re
 import socket
 import threading
 import time
+import traceback
 from typing import Any
 import urllib.error
 import urllib.parse
@@ -46,6 +47,95 @@ WEB_ROOT = ROOT / "web"
 MAX_BODY = 42 * 1024 * 1024
 MAX_WORKBOOK_DOWNLOAD = 30 * 1024 * 1024
 WORKBOOK_DOWNLOAD_TIMEOUT_MS = 20_000
+WORKBOOK_DIAGNOSTIC_HTML_LIMIT = 350_000
+
+
+def diagnostic_headers(headers: Any) -> dict[str, str]:
+    """Only retain response metadata that helps identify a download response."""
+    wanted = {"content-disposition", "content-length", "content-type", "location", "x-ms-request-id"}
+    result: dict[str, str] = {}
+    try:
+        for key, value in dict(headers or {}).items():
+            if str(key).casefold() in wanted:
+                result[str(key)] = str(value)
+    except Exception:
+        pass
+    return result
+
+
+class WorkbookDownloadDiagnostics:
+    """Full-fidelity diagnostics for one ALM Workbook download."""
+
+    def __init__(self, url: str, *, headless: bool) -> None:
+        folder = ROOT / "logs"
+        folder.mkdir(parents=True, exist_ok=True)
+        self.path = folder / f"{datetime.now():%Y%m%d-%H%M%S-%f}-alm-workbook-download.log"
+        self._lock = threading.Lock()
+        self.event(
+            "diagnostic.started",
+            source_url=url,
+            headless_requested=headless,
+            python_version=__import__("sys").version,
+        )
+
+    def event(self, name: str, **details: Any) -> None:
+        record = {
+            "time": datetime.now().isoformat(timespec="milliseconds"),
+            "event": name,
+            **details,
+        }
+        line = json.dumps(record, ensure_ascii=False, default=str)
+        with self._lock:
+            with self.path.open("a", encoding="utf-8") as handle:
+                handle.write(line + "\n")
+
+    def page_snapshot(self, label: str, page: Any) -> None:
+        """Capture the current page HTML for diagnosing a browser download flow."""
+        try:
+            content = page.content()
+            truncated = len(content) > WORKBOOK_DIAGNOSTIC_HTML_LIMIT
+            if truncated:
+                content = content[:WORKBOOK_DIAGNOSTIC_HTML_LIMIT]
+            self.event(
+                "browser.page_snapshot",
+                label=label,
+                url=str(page.url),
+                title=page.title(),
+                html=content,
+                html_truncated=truncated,
+            )
+        except Exception as exc:
+            self.event("browser.page_snapshot_failed", label=label, error=repr(exc))
+
+
+class WorkbookDownloadRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Record each direct HTTP redirect before urllib follows it."""
+
+    def __init__(self, diagnostics: WorkbookDownloadDiagnostics | None) -> None:
+        super().__init__()
+        self.diagnostics = diagnostics
+
+    def redirect_request(
+        self,
+        request: Any,
+        file_pointer: Any,
+        code: int,
+        message: str,
+        headers: Any,
+        new_url: str,
+    ) -> Any:
+        if self.diagnostics:
+            self.diagnostics.event(
+                "direct_download.redirect",
+                status=code,
+                reason=message,
+                from_url=request.full_url,
+                to_url=new_url,
+                headers=diagnostic_headers(headers),
+            )
+        return super().redirect_request(
+            request, file_pointer, code, message, headers, new_url
+        )
 
 
 def sharepoint_download_url(raw_url: str) -> str:
@@ -54,7 +144,7 @@ def sharepoint_download_url(raw_url: str) -> str:
     if parsed.scheme != "https" or not parsed.netloc:
         raise eudm.EUDMError("Enter a valid https SharePoint or OneDrive workbook link.")
     host = parsed.hostname or ""
-    allowed = host == "1drv.ms" or host.endswith((".sharepoint.com", ".onedrive.com", ".office.com", ".live.com"))
+    allowed = host in {"1drv.ms", "excel.cloud.microsoft"} or host.endswith((".sharepoint.com", ".onedrive.com", ".office.com", ".live.com"))
     if not allowed:
         raise eudm.EUDMError("Use a SharePoint, OneDrive, or Office workbook link.")
     query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
@@ -83,13 +173,54 @@ def read_workbook_response(response: Any) -> bytes:
     return data
 
 
-def download_workbook_direct(url: str) -> tuple[str, bytes]:
+def download_workbook_direct(
+    url: str,
+    *,
+    diagnostics: WorkbookDownloadDiagnostics | None = None,
+) -> tuple[str, bytes]:
+    download_url = sharepoint_download_url(url)
+    if diagnostics:
+        diagnostics.event(
+            "direct_download.start",
+            source_url=url,
+            download_url=download_url,
+            timeout_seconds=35,
+        )
     request = urllib.request.Request(
-        sharepoint_download_url(url),
+        download_url,
         headers={"User-Agent": "AutoEUDM/1.0", "Accept": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,*/*"},
     )
-    with urllib.request.urlopen(request, timeout=35) as response:
-        return filename_from_headers(response.headers), read_workbook_response(response)
+    started = time.monotonic()
+    try:
+        opener = urllib.request.build_opener(WorkbookDownloadRedirectHandler(diagnostics))
+        with opener.open(request, timeout=35) as response:
+            if diagnostics:
+                diagnostics.event(
+                    "direct_download.response",
+                    final_url=response.geturl(),
+                    status=getattr(response, "status", None),
+                    headers=diagnostic_headers(response.headers),
+                    duration_ms=round((time.monotonic() - started) * 1000),
+                )
+            data = read_workbook_response(response)
+            filename = filename_from_headers(response.headers)
+            if diagnostics:
+                diagnostics.event(
+                    "direct_download.complete",
+                    filename=filename,
+                    byte_count=len(data),
+                    zip_signature=data[:4].hex(),
+                )
+            return filename, data
+    except Exception as exc:
+        if diagnostics:
+            diagnostics.event(
+                "direct_download.failed",
+                error=repr(exc),
+                traceback=traceback.format_exc(),
+                duration_ms=round((time.monotonic() - started) * 1000),
+            )
+        raise
 
 
 def browser_is_waiting_for_sign_in(page: Any) -> bool:
@@ -123,6 +254,7 @@ def download_workbook_with_browser(
     *,
     job: Any | None = None,
     headless: bool = False,
+    diagnostics: WorkbookDownloadDiagnostics | None = None,
 ) -> tuple[str, bytes]:
     """Download via Chrome, allowing sign-in when running visibly.
 
@@ -131,14 +263,27 @@ def download_workbook_with_browser(
     as soon as the context is closed.
     """
     if not profile:
+        if diagnostics:
+            diagnostics.event("browser.profile_missing")
         raise eudm.EUDMError("A saved browser profile is required for this private SharePoint workbook.")
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
+        if diagnostics:
+            diagnostics.event("browser.playwright_unavailable", error=repr(exc))
         raise eudm.EUDMError("Playwright could not be installed for SharePoint download.") from exc
     playwright = None
     context = None
     try:
+        if diagnostics:
+            diagnostics.event(
+                "browser.starting",
+                source_url=url,
+                download_url=sharepoint_download_url(url),
+                headless=headless,
+                profile=profile,
+                profile_exists=Path(profile).expanduser().exists(),
+            )
         playwright = sync_playwright().start()
         context = playwright.chromium.launch_persistent_context(
             user_data_dir=str(Path(profile).expanduser()),
@@ -146,26 +291,97 @@ def download_workbook_with_browser(
             headless=headless,
         )
         page = context.pages[0] if context.pages else context.new_page()
+        if diagnostics:
+            diagnostics.event(
+                "browser.started",
+                initial_pages=[str(item.url) for item in context.pages],
+                user_agent=page.evaluate("navigator.userAgent"),
+            )
+            page.on("request", lambda request: diagnostics.event(
+                "browser.request",
+                method=request.method,
+                url=request.url,
+                resource_type=request.resource_type,
+                has_post_data=bool(request.post_data),
+            ))
+            page.on("response", lambda response: diagnostics.event(
+                "browser.response",
+                status=response.status,
+                status_text=response.status_text,
+                url=response.url,
+                headers=diagnostic_headers(response.headers),
+            ))
+            page.on("requestfailed", lambda request: diagnostics.event(
+                "browser.request_failed",
+                method=request.method,
+                url=request.url,
+                resource_type=request.resource_type,
+                failure=str(request.failure),
+            ))
+            page.on("framenavigated", lambda frame: diagnostics.event(
+                "browser.navigation",
+                is_main_frame=frame == page.main_frame,
+                url=frame.url,
+            ))
+            page.on("console", lambda message: diagnostics.event(
+                "browser.console",
+                level=message.type,
+                text=message.text,
+            ))
+            page.on("pageerror", lambda error: diagnostics.event(
+                "browser.page_error",
+                error=repr(error),
+            ))
+            page.on("download", lambda item: diagnostics.event(
+                "browser.download_event",
+                suggested_filename=item.suggested_filename,
+            ))
 
         def begin_download(timeout: int) -> Any:
+            download_url = sharepoint_download_url(url)
+            if diagnostics:
+                diagnostics.event(
+                    "browser.download_attempt",
+                    download_url=download_url,
+                    timeout_ms=timeout,
+                    current_url=str(page.url),
+                )
             with page.expect_download(timeout=timeout) as pending:
                 try:
                     page.goto(
-                        sharepoint_download_url(url),
+                        download_url,
                         wait_until="domcontentloaded",
                         timeout=timeout,
                     )
                 except Exception as navigation_error:
+                    if diagnostics:
+                        diagnostics.event(
+                            "browser.goto_exception",
+                            error=repr(navigation_error),
+                            current_url=str(page.url),
+                        )
+                        diagnostics.page_snapshot("after_navigation_exception", page)
                     # Chromium aborts a navigation once it turns into a file
                     # download. Playwright reports that normal transition as a
                     # goto error even though expect_download has captured it.
                     if "download is starting" not in str(navigation_error).casefold():
                         raise
+            if diagnostics:
+                diagnostics.event("browser.download_captured", current_url=str(page.url))
             return pending.value
 
         try:
             download = begin_download(WORKBOOK_DOWNLOAD_TIMEOUT_MS)
         except Exception as initial_error:
+            if diagnostics:
+                diagnostics.event(
+                    "browser.initial_download_failed",
+                    headless=headless,
+                    error=repr(initial_error),
+                    current_url=str(page.url),
+                    sign_in_detected=browser_is_waiting_for_sign_in(page),
+                )
+                diagnostics.page_snapshot("after_initial_download_failure", page)
             if headless:
                 raise eudm.EUDMError(
                     "The background ALM Workbook download needs Chrome."
@@ -181,6 +397,9 @@ def download_workbook_with_browser(
             )
             if not job.wait_for_login_confirmation(timeout=300):
                 raise eudm.EUDMError("Sign-in was not confirmed before the workbook download timed out.")
+            if diagnostics:
+                diagnostics.event("browser.login_confirmation_received", current_url=str(page.url))
+                diagnostics.page_snapshot("after_login_confirmation", page)
             job.update(
                 state="downloading",
                 message="Downloading workbook…",
@@ -192,22 +411,46 @@ def download_workbook_with_browser(
         # verifying that completed temporary file is the shutdown boundary.
         failure = download.failure()
         if failure:
+            if diagnostics:
+                diagnostics.event("browser.download_failed", failure=failure, current_url=str(page.url))
             raise eudm.EUDMError(f"The ALM Workbook download failed: {failure}")
         downloaded_path = Path(download.path())
         data = downloaded_path.read_bytes()
         if len(data) > MAX_WORKBOOK_DOWNLOAD or not data.startswith(b"PK\x03\x04"):
+            if diagnostics:
+                diagnostics.event(
+                    "browser.download_invalid_file",
+                    suggested_filename=download.suggested_filename,
+                    byte_count=len(data),
+                    first_bytes=data[:32].hex(),
+                )
             raise eudm.EUDMError("SharePoint did not return an Excel workbook.")
         suggested = download.suggested_filename or "sharepoint-workbook.xlsx"
-        return filename_from_headers({}, suggested), data
-    except eudm.EUDMError:
+        filename = filename_from_headers({}, suggested)
+        if diagnostics:
+            diagnostics.event(
+                "browser.download_complete",
+                suggested_filename=suggested,
+                filename=filename,
+                byte_count=len(data),
+                zip_signature=data[:4].hex(),
+            )
+        return filename, data
+    except eudm.EUDMError as exc:
+        if diagnostics:
+            diagnostics.event("browser.failed", error=str(exc), traceback=traceback.format_exc())
         raise
     except Exception as exc:
+        if diagnostics:
+            diagnostics.event("browser.failed", error=repr(exc), traceback=traceback.format_exc())
         raise eudm.EUDMError("The workbook could not be downloaded with the current Chrome session.") from exc
     finally:
         # Close Chrome immediately after the saved file has been read and
         # verified. Workbook parsing happens later, outside this function.
         if context:
             try:
+                if diagnostics:
+                    diagnostics.event("browser.context_closing")
                 context.close()
             except Exception:
                 pass
@@ -216,6 +459,8 @@ def download_workbook_with_browser(
                 playwright.stop()
             except Exception:
                 pass
+        if diagnostics:
+            diagnostics.event("browser.stopped")
 
 
 def populate_spec(
@@ -1014,6 +1259,7 @@ class ImportJob:
     total_rows: int = 0
     workbook: dict[str, Any] | None = None
     error: str | None = None
+    diagnostic_log: str | None = None
     needs_login_confirmation: bool = False
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _login_confirmation: threading.Event = field(default_factory=threading.Event, repr=False)
@@ -1075,6 +1321,7 @@ class ImportJob:
                 "total_rows": self.total_rows,
                 "workbook": self.workbook,
                 "error": self.error,
+                "diagnostic_log": self.diagnostic_log,
                 "needs_login_confirmation": self.needs_login_confirmation,
             }
 
@@ -1262,6 +1509,10 @@ class Application:
 
     def _download_import(self, job: ImportJob, url: str, headless: bool) -> None:
         job.update(state="downloading", message="Downloading workbook…")
+        diagnostics = WorkbookDownloadDiagnostics(url, headless=headless)
+        job.diagnostic_log = str(diagnostics.path.relative_to(ROOT))
+        print(f"Workbook download diagnostic log: {diagnostics.path}")
+        diagnostics.event("import_job.started", job_id=job.job_id)
         try:
             try:
                 if headless:
@@ -1270,8 +1521,13 @@ class Application:
                             url,
                             self.config.browser_profile,
                             headless=True,
+                            diagnostics=diagnostics,
                         )
-                    except eudm.EUDMError:
+                    except eudm.EUDMError as headless_error:
+                        diagnostics.event(
+                            "import_job.headless_fallback",
+                            error=str(headless_error),
+                        )
                         job.update(
                             state="downloading",
                             message="Opening Chrome to finish the download…",
@@ -1281,6 +1537,7 @@ class Application:
                             self.config.browser_profile,
                             job=job,
                             headless=False,
+                            diagnostics=diagnostics,
                         )
                 else:
                     filename, data = download_workbook_with_browser(
@@ -1288,20 +1545,30 @@ class Application:
                         self.config.browser_profile,
                         job=job,
                         headless=False,
+                        diagnostics=diagnostics,
                     )
             except eudm.EUDMError as browser_error:
+                diagnostics.event("import_job.browser_fallback_to_direct", error=str(browser_error))
                 # Public links can still be downloaded without a saved profile.
                 try:
-                    filename, data = download_workbook_direct(url)
-                except (urllib.error.URLError, urllib.error.HTTPError, eudm.EUDMError):
+                    filename, data = download_workbook_direct(url, diagnostics=diagnostics)
+                except (urllib.error.URLError, urllib.error.HTTPError, eudm.EUDMError) as direct_error:
+                    diagnostics.event("import_job.direct_fallback_failed", error=repr(direct_error))
                     raise browser_error
             job.filename = filename
             encoded = base64.b64encode(data).decode("ascii")
+            diagnostics.event(
+                "import_job.download_ready",
+                filename=filename,
+                byte_count=len(data),
+            )
             self._inspect_import(job, encoded)
         except eudm.EUDMError as exc:
-            job.fail(str(exc))
-        except Exception:
-            job.fail("Could not download the workbook from SharePoint.")
+            diagnostics.event("import_job.failed", error=str(exc), traceback=traceback.format_exc())
+            job.fail(f"{exc} See {job.diagnostic_log}.")
+        except Exception as exc:
+            diagnostics.event("import_job.failed", error=repr(exc), traceback=traceback.format_exc())
+            job.fail(f"Could not download the workbook from SharePoint. See {job.diagnostic_log}.")
 
     def start_mapped_import(self, import_id: str, columns: dict[str, Any]) -> ImportJob:
         with self.import_lock:
