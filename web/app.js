@@ -1475,6 +1475,7 @@ function resetImportDialog() {
   $("#importLoginCompleteButton").hidden = true;
   $("#workbookInput").value = "";
   $("#importChoose").hidden = false;
+  $("#importFileChooser").hidden = false;
   $("#importConfigure").hidden = true;
   $("#importMapColumns").hidden = true;
   $("#importPreview").hidden = true;
@@ -1491,7 +1492,7 @@ function resetImportDialog() {
 }
 
 function setImportStep(step) {
-  [1, 2, 3, 4].forEach((number) => {
+  [1, 2, 3].forEach((number) => {
     const item = $(`#importStep${number}`);
     item.classList.toggle("active", number === step);
     item.classList.toggle("complete", number < step);
@@ -1665,7 +1666,8 @@ function workbookMappingMatches(workbook, saved) {
 function openImportColumnMapping() {
   const workbook = state.workbookInspection;
   if (!workbook) return;
-  $("#importChoose").hidden = true;
+  $("#importChoose").hidden = false;
+  $("#importFileChooser").hidden = true;
   $("#importConfigure").hidden = true;
   $("#importPreview").hidden = true;
   $("#importMapColumns").hidden = false;
@@ -1677,7 +1679,7 @@ function openImportColumnMapping() {
   renderImportColumnMap();
   $("#backImportButton").hidden = true;
   $("#prepareImportButton").textContent = "Use columns";
-  setImportStep(2);
+  setImportStep(1);
 }
 
 function showImportedWorkbook(workbook) {
@@ -1700,12 +1702,13 @@ function showImportedWorkbook(workbook) {
   }
   state.workbook = workbook;
   $("#importChoose").hidden = true;
+  $("#importFileChooser").hidden = false;
   $("#importMapColumns").hidden = true;
   $("#importConfigure").hidden = false;
   $("#importPreview").hidden = true;
   $("#backImportButton").hidden = true;
   $("#prepareImportButton").textContent = "Review import";
-  setImportStep(3);
+  setImportStep(2);
   $("#importFilename").textContent = workbook.filename;
   $("#importFileSummary").textContent = `${workbook.sheets.length} dated sheet${workbook.sheets.length === 1 ? "" : "s"}`;
   $("#sheetInput").innerHTML = workbook.sheets.map((sheet) => `<option value="${escapeHtml(sheet.name)}" ${sheet.name === workbook.default_sheet ? "selected" : ""}>${escapeHtml(sheet.name)}</option>`).join("");
@@ -1785,6 +1788,7 @@ async function mapWorkbookColumns({ persist = true } = {}) {
   $("#importMapColumns").hidden = true;
   $("#importConfigure").hidden = true;
   $("#importChoose").hidden = false;
+  $("#importFileChooser").hidden = true;
   setImportBusy(true, { percent: 25, title: "Reading ALM Workbook…", detail: "Matching workbook columns" });
   try {
     const job = await api("/api/import/map", {
@@ -1798,6 +1802,7 @@ async function mapWorkbookColumns({ persist = true } = {}) {
     showImportedWorkbook(workbook);
   } catch (error) {
     $("#importChoose").hidden = true;
+    $("#importFileChooser").hidden = false;
     openImportColumnMapping();
     throw error;
   } finally {
@@ -2069,7 +2074,7 @@ function backToImportSelection() {
   $("#prepareImportButton").textContent = "Review import";
   $("#prepareImportButton").disabled = false;
   $("#importError").hidden = true;
-  setImportStep(3);
+  setImportStep(2);
 }
 
 async function prepareImport() {
@@ -2123,7 +2128,7 @@ async function prepareImport() {
     $("#importPreview").hidden = false;
     $("#backImportButton").hidden = false;
     button.textContent = `Add ${payload.counts.requests} to queue`;
-    setImportStep(4);
+    setImportStep(3);
     renderImportPreview();
     validateImportPreview();
   } catch (error) {
