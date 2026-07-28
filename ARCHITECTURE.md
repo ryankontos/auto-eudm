@@ -12,7 +12,7 @@ right owner and avoids scanning the whole repository.
 | EUDM API workflow and request submission | `src/auto_eudm/eudm_request.py` |
 | Browser SSO/cookie setup | `src/auto_eudm/eudm_request.py` and `src/auto_eudm/bootstrap.py` |
 | Web UI state, EUDM searches, jobs, history, preferences, workbook imports | `src/auto_eudm/web_runtime.py` |
-| SharePoint/ALM Workbook download, WOPI, Chrome fallback and download diagnostics | `src/auto_eudm/web_downloads.py` |
+| SharePoint/ALM Workbook visible-Chrome download and diagnostics | `src/auto_eudm/web_downloads.py` |
 | Local HTTP API and static files | `src/auto_eudm/web_server.py` |
 | Request data shapes and browser-facing validation | `src/auto_eudm/web_models.py` |
 | Spreadsheet parsing and row rules | `src/auto_eudm/eudm_inventory_import.py` |
@@ -26,7 +26,7 @@ launcher / eudm_web.py
   → web_server.py          HTTP routes + static assets
   → web_runtime.py         application state + EUDM work
       → eudm_request.py    authenticated BMC/EUDM API calls
-      → web_downloads.py   ALM Workbook download via Chrome/WOPI/menu fallback
+      → web_downloads.py   ALM Workbook download via Chrome's Download a Copy menu
       → eudm_inventory_import.py  workbook parsing
   → web_models.py          queue/request validation
 ```

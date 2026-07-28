@@ -178,28 +178,26 @@ EUDM_CONCURRENCY=3
 EUDM_ENABLE_SPREADSHEET_IMPORT=true
 ```
 
-The web app’s spreadsheet importer maps workbook headings in a dedicated
-Columns step. Saved headings that all exist in the selected sheet skip that
-step; **Change columns** opens it again at any time. Updated mappings are saved
-with the other persistent web settings. The importer never relies on column letters. The deployment
+The web app’s spreadsheet importer shows heading pickers in the Workbook step
+only when saved headings do not match the selected sheet. **Change columns**
+opens them again at any time. Updated mappings are saved with the other
+persistent web settings. The importer never relies on column letters. The deployment
 serial goes to the user, the returned-device serial goes to one shared import
 location as Used Stock or Pending Decom, and the pending-return serial is sent
 as Deployed - Pending Return.
 
 In **Settings → ALM Workbook**, you can save a SharePoint or OneDrive workbook
-link. With **Try a headless download first** enabled, AutoEUDM starts the
-download in the background and automatically opens Chrome only when that
-attempt needs attention. If sign-in is required, it pauses until you confirm
-that login is complete. Chrome closes as soon as the completed workbook has
-been verified. The workbook stays in memory while it is mapped and read; it is
-never copied to Downloads or kept as a permanent local file.
+link. AutoEUDM opens Chrome immediately, waits for Excel Online and any
+required sign-in to finish, then uses **File → Save As → Download a Copy**.
+Chrome closes as soon as the completed workbook has been verified. The workbook
+stays in Playwright's temporary download area while it is mapped and read; it
+is never copied to Downloads or kept as a permanent local file.
 
 Every attempt to download a saved ALM Workbook also writes a dedicated
 `logs/*-alm-workbook-download.log` diagnostic file, even when `EUDM_LOGGING`
-is disabled. It records the browser/direct-download path, redirects, response
-metadata, browser events, unredacted URLs, and page HTML so a failed SharePoint
-flow can be diagnosed from another computer. It does not export browser cookies
-or record password keystrokes.
+is disabled. It records the browser path, navigation events, unredacted URLs,
+and page HTML so a failed SharePoint flow can be diagnosed from another
+computer. It does not export browser cookies or record password keystrokes.
 
 The same settings tab lets you set the headings for username, deployment
 serial, returned device, pending return, and the optional TRUE/FALSE column.

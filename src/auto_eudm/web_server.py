@@ -220,18 +220,8 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
         if path == "/api/import/download":
             if not self.app.config.spreadsheet_import_enabled:
                 raise eudm.EUDMError("Spreadsheet import is disabled by this AutoEUDM environment.")
-            headless = payload.get("headless", True)
-            if not isinstance(headless, bool):
-                raise eudm.EUDMError("The workbook download setting was invalid.")
-            job = self.app.start_remote_import(
-                str(payload.get("url", "")),
-                headless=headless,
-            )
+            job = self.app.start_remote_import(str(payload.get("url", "")))
             self._json(job.to_json(), 202)
-            return
-        if path.startswith("/api/imports/") and path.endswith("/continue"):
-            job_id = path.removeprefix("/api/imports/").removesuffix("/continue").strip("/")
-            self._json(self.app.continue_import_login(job_id))
             return
         if path == "/api/import/map":
             if not self.app.config.spreadsheet_import_enabled:
@@ -293,4 +283,3 @@ class AutoEUDMServer(ThreadingHTTPServer):
     def __init__(self, address: tuple[str, int], app: Any) -> None:
         super().__init__(address, AutoEUDMHandler)
         self.app = app
-

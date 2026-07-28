@@ -23,7 +23,6 @@ from . import run_reporting
 from .eudm_config import AppConfig
 from .web_downloads import (
     WorkbookDownloadDiagnostics,
-    download_workbook_direct,
     download_workbook_with_browser,
     sharepoint_download_url,
 )
@@ -837,9 +836,7 @@ class ImportJob:
     workbook: dict[str, Any] | None = None
     error: str | None = None
     diagnostic_log: str | None = None
-    needs_login_confirmation: bool = False
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
-    _login_confirmation: threading.Event = field(default_factory=threading.Event, repr=False)
 
     def update(
         self,
@@ -849,7 +846,6 @@ class ImportJob:
         sheet: str | None = None,
         processed_rows: int | None = None,
         total_rows: int | None = None,
-        needs_login_confirmation: bool | None = None,
     ) -> None:
         with self._lock:
             if state is not None:
@@ -862,17 +858,6 @@ class ImportJob:
                 self.processed_rows = processed_rows
             if total_rows is not None:
                 self.total_rows = total_rows
-            if needs_login_confirmation is not None:
-                self.needs_login_confirmation = needs_login_confirmation
-
-    def confirm_login(self) -> None:
-        with self._lock:
-            self.needs_login_confirmation = False
-        self._login_confirmation.set()
-
-    def wait_for_login_confirmation(self, timeout: float) -> bool:
-        return self._login_confirmation.wait(timeout)
-
     def fail(self, error: str) -> None:
         with self._lock:
             self.state = "failed"
@@ -899,7 +884,6 @@ class ImportJob:
                 "workbook": self.workbook,
                 "error": self.error,
                 "diagnostic_log": self.diagnostic_log,
-                "needs_login_confirmation": self.needs_login_confirmation,
             }
 
 
@@ -954,7 +938,6 @@ class Application:
             "concurrency": max(1, min(50, int(self.config.concurrency or 1))),
             "validate_bulk_serials": False,
             "workbook_url": "",
-            "workbook_headless": True,
             "import_columns": {
                 "username": "Username",
                 "deployment_serial": "SN",
@@ -973,6 +956,7 @@ class Application:
         if not isinstance(raw, dict):
             raise eudm.EUDMError("Settings must be a JSON object.")
         values = dict(base or self._preference_defaults())
+        values.pop("workbook_headless", None)
         concurrency = raw.get("concurrency", values["concurrency"])
         if isinstance(concurrency, bool):
             raise eudm.EUDMError("Parallel requests must be between 1 and 50.")
@@ -984,7 +968,7 @@ class Application:
             raise eudm.EUDMError("Parallel requests must be between 1 and 50.")
         values["concurrency"] = concurrency
 
-        for key in ("validate_bulk_serials", "workbook_headless"):
+        for key in ("validate_bulk_serials",):
             if key in raw and not isinstance(raw[key], bool):
                 raise eudm.EUDMError("A settings toggle had an invalid value.")
             if key in raw:
@@ -1073,65 +1057,30 @@ class Application:
         ).start()
         return job
 
-    def start_remote_import(self, url: str, *, headless: bool = True) -> ImportJob:
+    def start_remote_import(self, url: str) -> ImportJob:
         job = ImportJob(job_id=uuid.uuid4().hex, filename="sharepoint-workbook.xlsx")
         with self.import_lock:
             self.import_jobs[job.job_id] = job
         threading.Thread(
             target=self._download_import,
-            args=(job, url, headless),
+            args=(job, url),
             daemon=True,
         ).start()
         return job
 
-    def _download_import(self, job: ImportJob, url: str, headless: bool) -> None:
+    def _download_import(self, job: ImportJob, url: str) -> None:
         job.update(state="downloading", message="Downloading workbook…")
-        diagnostics = WorkbookDownloadDiagnostics(url, headless=headless)
+        diagnostics = WorkbookDownloadDiagnostics(url)
         job.diagnostic_log = str(diagnostics.path.relative_to(ROOT))
         print(f"Workbook download diagnostic log: {diagnostics.path}")
         diagnostics.event("import_job.started", job_id=job.job_id)
         try:
-            try:
-                if headless:
-                    try:
-                        filename, data = download_workbook_with_browser(
-                            url,
-                            self.config.browser_profile,
-                            headless=True,
-                            diagnostics=diagnostics,
-                        )
-                    except eudm.EUDMError as headless_error:
-                        diagnostics.event(
-                            "import_job.headless_fallback",
-                            error=str(headless_error),
-                        )
-                        job.update(
-                            state="downloading",
-                            message="Opening Chrome to finish the download…",
-                        )
-                        filename, data = download_workbook_with_browser(
-                            url,
-                            self.config.browser_profile,
-                            job=job,
-                            headless=False,
-                            diagnostics=diagnostics,
-                        )
-                else:
-                    filename, data = download_workbook_with_browser(
-                        url,
-                        self.config.browser_profile,
-                        job=job,
-                        headless=False,
-                        diagnostics=diagnostics,
-                    )
-            except eudm.EUDMError as browser_error:
-                diagnostics.event("import_job.browser_fallback_to_direct", error=str(browser_error))
-                # Public links can still be downloaded without a saved profile.
-                try:
-                    filename, data = download_workbook_direct(url, diagnostics=diagnostics)
-                except (urllib.error.URLError, urllib.error.HTTPError, eudm.EUDMError) as direct_error:
-                    diagnostics.event("import_job.direct_fallback_failed", error=repr(direct_error))
-                    raise browser_error
+            filename, data = download_workbook_with_browser(
+                url,
+                self.config.browser_profile,
+                job=job,
+                diagnostics=diagnostics,
+            )
             job.filename = filename
             encoded = base64.b64encode(data).decode("ascii")
             diagnostics.event(
@@ -1205,16 +1154,6 @@ class Application:
             )
         return job.to_json()
 
-    def continue_import_login(self, job_id: str) -> dict[str, Any]:
-        with self.import_lock:
-            job = self.import_jobs.get(job_id)
-        if not job:
-            raise eudm.EUDMError("That workbook import expired. Download it again.")
-        if job.state != "waiting_for_login":
-            raise eudm.EUDMError("This workbook is not waiting for a Chrome sign-in.")
-        job.confirm_login()
-        return job.to_json()
-
     def form_options(self) -> dict[str, Any]:
         options = self.clients.search().options()
         user_statuses = {
@@ -1241,5 +1180,3 @@ class Application:
                 "That spreadsheet import expired. Choose the file again."
             )
         return workbook
-
-

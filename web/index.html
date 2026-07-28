@@ -19,11 +19,6 @@
   <header class="app-header">
     <div class="product-name">AutoEUDM</div>
     <div class="header-actions">
-      <button id="themeToggle" class="button secondary compact theme-button" type="button">
-        <span id="themeIcon" aria-hidden="true">◐</span>
-        <span id="themeLabel">Appearance</span>
-      </button>
-      <button id="shortcutsButton" class="button secondary compact" type="button">Shortcuts</button>
       <button id="historyButton" class="button secondary compact" type="button">Request history</button>
       <div id="connectionBadge" class="connection-badge" aria-live="polite">
         <span class="status-dot"></span>
@@ -299,7 +294,6 @@
           </div>
           <div class="import-progress" aria-hidden="true"><span id="importBusyBar"></span></div>
           <span id="importBusyPercent" class="import-progress-percent">0%</span>
-          <button id="importLoginCompleteButton" class="button secondary compact" type="button" hidden>Continue</button>
         </div>
         <div id="importMapColumns" hidden>
           <div class="import-file-row">
@@ -384,16 +378,21 @@
         <button class="settings-tab" data-settings-tab="spreadsheet" type="button">ALM Workbook</button>
       </div>
       <section data-settings-panel="run">
+        <label>Appearance
+          <button id="themeToggle" class="button secondary theme-button" type="button">
+            <span id="themeIcon" aria-hidden="true">◐</span>
+            <span id="themeLabel">Appearance</span>
+          </button>
+        </label>
         <label>Parallel requests
           <select id="concurrencyInput">
             <option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option><option value="15">15</option><option value="20">20</option><option value="25">25</option><option value="30">30</option><option value="40">40</option><option value="50">50</option>
           </select>
         </label>
-        <label class="settings-checkbox"><input id="validateBulkSerialsInput" type="checkbox"><span>Check bulk serials before submission</span></label>
+        <label class="settings-checkbox"><input id="validateBulkSerialsInput" type="checkbox"><span>Recheck bulk serials before submission</span></label>
       </section>
       <section data-settings-panel="spreadsheet" hidden>
         <label>ALM Workbook link<input id="spreadsheetUrlInput" type="url" placeholder="SharePoint or OneDrive link"></label>
-        <label class="settings-checkbox"><input id="spreadsheetHeadlessInput" type="checkbox"><span>Try a headless download first</span></label>
         <div class="settings-column-grid">
           <label>Username column<input id="spreadsheetUsernameColumnInput" type="text" placeholder="Username"></label>
           <label>Deployment serial column<input id="spreadsheetDeploymentColumnInput" type="text" placeholder="SN"></label>
@@ -409,15 +408,15 @@
   <dialog id="shortcutsDialog" class="modal">
     <form method="dialog" class="modal-card shortcuts-card">
       <div class="modal-header"><h2>Keyboard shortcuts</h2><button class="icon-button" value="cancel" aria-label="Close">×</button></div>
-      <p class="shortcuts-note"><span class="shortcut-mac">⌘ Control</span> on Mac, <span class="shortcut-windows">Ctrl</span> on Windows and Linux.</p>
+      <p class="shortcuts-note"><span class="shortcut-mac">Option</span> on Mac, <span class="shortcut-windows">Ctrl</span> on Windows and Linux.</p>
       <div class="shortcut-list">
-        <div><span>New single-device request</span><kbd>⌘⌃ / Ctrl</kbd><kbd>N</kbd></div>
-        <div><span>Quick import</span><kbd>⌘⌃ / Ctrl</kbd><kbd>I</kbd></div>
-        <div><span>Choose ALM Workbook</span><kbd>⌘⌃ / Ctrl</kbd><kbd>O</kbd></div>
-        <div><span>Download saved ALM Workbook</span><kbd>⌘⌃ / Ctrl</kbd><kbd>Shift</kbd><kbd>D</kbd></div>
-        <div><span>Review request queue</span><kbd>⌘⌃ / Ctrl</kbd><kbd>Enter</kbd></div>
-        <div><span>Request history</span><kbd>⌘⌃ / Ctrl</kbd><kbd>Shift</kbd><kbd>H</kbd></div>
-        <div><span>Settings</span><kbd>⌘⌃ / Ctrl</kbd><kbd>,</kbd></div>
+        <div><span>New single-device request</span><kbd>⌥ / Ctrl</kbd><kbd>N</kbd></div>
+        <div><span>Quick import</span><kbd>⌥ / Ctrl</kbd><kbd>I</kbd></div>
+        <div><span>Choose ALM Workbook</span><kbd>⌥ / Ctrl</kbd><kbd>O</kbd></div>
+        <div><span>Download saved ALM Workbook</span><kbd>⌥ / Ctrl</kbd><kbd>Shift</kbd><kbd>D</kbd></div>
+        <div><span>Review request queue</span><kbd>⌥ / Ctrl</kbd><kbd>Enter</kbd></div>
+        <div><span>Request history</span><kbd>⌥ / Ctrl</kbd><kbd>Shift</kbd><kbd>H</kbd></div>
+        <div><span>Settings</span><kbd>⌥ / Ctrl</kbd><kbd>,</kbd></div>
         <div><span>Focus selected serial number</span><kbd>/</kbd></div>
         <div><span>Show these shortcuts</span><kbd>?</kbd></div>
         <div><span>Close a dialog</span><kbd>Esc</kbd></div>
