@@ -51,6 +51,7 @@ class ImportColumns:
     deployment_serial: str = "SN"
     returned_device: str = "Returned Device SN"
     pending_return: str = "OLD Device SN"
+    enabled: str = ""
 
 
 @dataclass(frozen=True)
@@ -86,6 +87,7 @@ def columns_from_mapping(raw: dict[str, Any] | None = None) -> ImportColumns:
         deployment_serial=clean_text(raw.get("deployment_serial")) or "SN",
         returned_device=clean_text(raw.get("returned_device")) or "",
         pending_return=clean_text(raw.get("pending_return")) or "OLD Device SN",
+        enabled=clean_text(raw.get("enabled")) or "",
     )
 
 
@@ -96,6 +98,7 @@ def find_column_indexes(sheet: Any, columns: ImportColumns) -> tuple[int, dict[s
         "deployment_serial": columns.deployment_serial,
         "returned_device": columns.returned_device,
         "pending_return": columns.pending_return,
+        "enabled": columns.enabled,
     }
     targets = {key: normalized_header(value) for key, value in desired.items()}
     date_titles = {"date", "deployment date", "booking date"}
@@ -127,8 +130,8 @@ def clean_text(value: Any) -> str | None:
     return text
 
 
-def column_g_allows(value: Any) -> bool:
-    """Column G is an optional eligibility flag; only an explicit false excludes a row."""
+def enabled_column_allows(value: Any) -> bool:
+    """An optional TRUE/FALSE column; only an explicit false excludes a row."""
     if value is False:
         return False
     return str(value).strip().casefold() != "false"
@@ -234,7 +237,7 @@ def load_sheet(path: Path, columns: ImportColumns | None = None) -> tuple[str, l
     try:
         sheet = select_workbook_sheet(workbook)
         header_row, indexes, date_index = find_column_indexes(sheet, columns or ImportColumns())
-        max_column = max(sheet.max_column or 1, date_index, 7, *indexes.values())
+        max_column = max(sheet.max_column or 1, date_index, *indexes.values())
         rows: list[SheetRow] = []
         for values in sheet.iter_rows(min_row=header_row + 1, min_col=1, max_col=max_column):
             deployment_date = normalize_date(values[date_index - 1].value, workbook.epoch)
@@ -250,7 +253,9 @@ def load_sheet(path: Path, columns: ImportColumns | None = None) -> tuple[str, l
                     returned_device_serial=clean_text(values[indexes["returned_device"] - 1].value) if indexes["returned_device"] else None,
                     pending_return_serial=clean_text(values[indexes["pending_return"] - 1].value) if indexes["pending_return"] else None,
                     marked_red=any(cell_is_red(cell) for cell in values),
-                    enabled=column_g_allows(values[6].value),
+                    enabled=enabled_column_allows(
+                        values[indexes["enabled"] - 1].value
+                    ) if indexes["enabled"] else True,
                 )
             )
         if not rows:
@@ -331,7 +336,7 @@ def build_actions(
         if row.deployment_date != selected_date:
             continue
         if not row.enabled:
-            ignored["column G is false"] += 1
+            ignored["TRUE/FALSE column is false"] += 1
             continue
         if row.marked_red:
             ignored["marked red"] += 1

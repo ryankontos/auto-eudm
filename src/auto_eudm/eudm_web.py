@@ -45,6 +45,7 @@ ROOT = Path(__file__).resolve().parents[2]
 WEB_ROOT = ROOT / "web"
 MAX_BODY = 42 * 1024 * 1024
 MAX_WORKBOOK_DOWNLOAD = 30 * 1024 * 1024
+WORKBOOK_DOWNLOAD_TIMEOUT_MS = 20_000
 
 
 def sharepoint_download_url(raw_url: str) -> str:
@@ -91,8 +92,44 @@ def download_workbook_direct(url: str) -> tuple[str, bytes]:
         return filename_from_headers(response.headers), read_workbook_response(response)
 
 
-def download_workbook_with_browser(url: str, profile: str | None) -> tuple[str, bytes]:
-    """Use saved Microsoft SSO headlessly when a private SharePoint link needs it."""
+def browser_is_waiting_for_sign_in(page: Any) -> bool:
+    """Return true only when Chrome has reached a Microsoft authentication page."""
+    try:
+        parsed = urllib.parse.urlsplit(str(page.url))
+        host = (parsed.hostname or "").casefold()
+        path = parsed.path.casefold()
+        if host in {
+            "login.live.com",
+            "login.microsoft.com",
+            "login.microsoftonline.com",
+            "login.windows.net",
+            "account.live.com",
+        }:
+            return True
+        if host.endswith(".microsoftonline.com") and any(
+            marker in path for marker in ("/login", "/oauth2/", "/common/")
+        ):
+            return True
+        return page.locator(
+            "input[name='loginfmt'], input[type='email'][autocomplete='username']"
+        ).count() > 0
+    except Exception:
+        return False
+
+
+def download_workbook_with_browser(
+    url: str,
+    profile: str | None,
+    *,
+    job: Any | None = None,
+    headless: bool = False,
+) -> tuple[str, bytes]:
+    """Download via Chrome, allowing sign-in when running visibly.
+
+    The file is saved explicitly before closing the browser context.  This is
+    important for larger workbooks: Playwright's temporary download disappears
+    as soon as the context is closed.
+    """
     if not profile:
         raise eudm.EUDMError("A saved browser profile is required for this private SharePoint workbook.")
     try:
@@ -101,18 +138,63 @@ def download_workbook_with_browser(url: str, profile: str | None) -> tuple[str, 
         raise eudm.EUDMError("Playwright could not be installed for SharePoint download.") from exc
     playwright = None
     context = None
-    temporary_path: Path | None = None
     try:
         playwright = sync_playwright().start()
         context = playwright.chromium.launch_persistent_context(
-            user_data_dir=str(Path(profile).expanduser()), channel="chrome", headless=True,
+            user_data_dir=str(Path(profile).expanduser()),
+            channel="chrome",
+            headless=headless,
         )
         page = context.pages[0] if context.pages else context.new_page()
-        with page.expect_download(timeout=45_000) as pending:
-            page.goto(sharepoint_download_url(url), wait_until="domcontentloaded", timeout=45_000)
-        download = pending.value
-        temporary_path = Path(download.path())
-        data = temporary_path.read_bytes()
+
+        def begin_download(timeout: int) -> Any:
+            with page.expect_download(timeout=timeout) as pending:
+                try:
+                    page.goto(
+                        sharepoint_download_url(url),
+                        wait_until="domcontentloaded",
+                        timeout=timeout,
+                    )
+                except Exception as navigation_error:
+                    # Chromium aborts a navigation once it turns into a file
+                    # download. Playwright reports that normal transition as a
+                    # goto error even though expect_download has captured it.
+                    if "download is starting" not in str(navigation_error).casefold():
+                        raise
+            return pending.value
+
+        try:
+            download = begin_download(WORKBOOK_DOWNLOAD_TIMEOUT_MS)
+        except Exception as initial_error:
+            if headless:
+                raise eudm.EUDMError(
+                    "The background ALM Workbook download needs Chrome."
+                ) from initial_error
+            if job is None or not browser_is_waiting_for_sign_in(page):
+                raise eudm.EUDMError(
+                    "The ALM Workbook download did not start within 20 seconds."
+                ) from initial_error
+            job.update(
+                state="waiting_for_login",
+                message="Sign in in Chrome, then continue.",
+                needs_login_confirmation=True,
+            )
+            if not job.wait_for_login_confirmation(timeout=300):
+                raise eudm.EUDMError("Sign-in was not confirmed before the workbook download timed out.")
+            job.update(
+                state="downloading",
+                message="Downloading workbook…",
+                needs_login_confirmation=False,
+            )
+            download = begin_download(120_000)
+
+        # path() waits for Chromium to mark the download complete. Reading and
+        # verifying that completed temporary file is the shutdown boundary.
+        failure = download.failure()
+        if failure:
+            raise eudm.EUDMError(f"The ALM Workbook download failed: {failure}")
+        downloaded_path = Path(download.path())
+        data = downloaded_path.read_bytes()
         if len(data) > MAX_WORKBOOK_DOWNLOAD or not data.startswith(b"PK\x03\x04"):
             raise eudm.EUDMError("SharePoint did not return an Excel workbook.")
         suggested = download.suggested_filename or "sharepoint-workbook.xlsx"
@@ -120,19 +202,20 @@ def download_workbook_with_browser(url: str, profile: str | None) -> tuple[str, 
     except eudm.EUDMError:
         raise
     except Exception as exc:
-        raise eudm.EUDMError(
-            "SharePoint needs a signed-in Microsoft session. Open the saved Chrome profile once, sign in to SharePoint, then try Download and import again."
-        ) from exc
+        raise eudm.EUDMError("The workbook could not be downloaded with the current Chrome session.") from exc
     finally:
-        if temporary_path:
-            try:
-                temporary_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+        # Close Chrome immediately after the saved file has been read and
+        # verified. Workbook parsing happens later, outside this function.
         if context:
-            context.close()
+            try:
+                context.close()
+            except Exception:
+                pass
         if playwright:
-            playwright.stop()
+            try:
+                playwright.stop()
+            except Exception:
+                pass
 
 
 def populate_spec(
@@ -710,6 +793,39 @@ class JobStore:
         self.clients = clients
         self.jobs: dict[str, SubmissionJob] = {}
         self.lock = threading.Lock()
+        self.history_path = ROOT / "results" / "web-request-history.json"
+        self.persisted_history = self._load_history()
+
+    def _load_history(self) -> list[dict[str, Any]]:
+        """Load completed web runs from prior server sessions, if available."""
+        try:
+            raw = json.loads(self.history_path.read_text(encoding="utf-8"))
+            if not isinstance(raw, list):
+                return []
+            return [item for item in raw if isinstance(item, dict) and item.get("job_id")][:100]
+        except (OSError, ValueError, TypeError):
+            return []
+
+    def _persist_history(self, job: SubmissionJob) -> None:
+        snapshot = job.to_json()
+        with self.lock:
+            self.persisted_history = [
+                existing
+                for existing in self.persisted_history
+                if existing.get("job_id") != job.job_id
+            ]
+            self.persisted_history.insert(0, snapshot)
+            self.persisted_history = self.persisted_history[:100]
+            payload = json.dumps(self.persisted_history, ensure_ascii=False, indent=2)
+        try:
+            self.history_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self.history_path.with_suffix(".tmp")
+            temporary.write_text(payload + "\n", encoding="utf-8")
+            temporary.replace(self.history_path)
+        except OSError:
+            # History is a convenience feature; it must never affect a
+            # completed EUDM request.
+            pass
 
     def create(
         self, specs: list[RequestSpec], request_for: str, concurrency: int
@@ -735,12 +851,12 @@ class JobStore:
 
     def history(self, limit: int = 50) -> list[dict[str, Any]]:
         with self.lock:
-            jobs = sorted(
-                self.jobs.values(),
-                key=lambda job: job.created_at,
-                reverse=True,
-            )[:limit]
-        return [job.to_json() for job in jobs]
+            live = [job.to_json() for job in self.jobs.values()]
+            live_ids = {job["job_id"] for job in live}
+            runs = live + [
+                run for run in self.persisted_history if run.get("job_id") not in live_ids
+            ]
+        return sorted(runs, key=lambda job: str(job.get("created_at", "")), reverse=True)[:limit]
 
     def _run(self, job: SubmissionJob) -> None:
         job.state = "running"
@@ -752,6 +868,7 @@ class JobStore:
                 job.update(entry, state="failed", message=str(exc))
             job.state = "finished"
             job.finished_at = datetime.now().isoformat(timespec="seconds")
+            self._write_results(job)
             return
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {
@@ -856,6 +973,7 @@ class JobStore:
                 )
             )
         run_reporting.write_result_file("eudm-web", lines)
+        self._persist_history(job)
 
     def result_text(self, job_id: str) -> str:
         job = self.get(job_id)
@@ -896,7 +1014,9 @@ class ImportJob:
     total_rows: int = 0
     workbook: dict[str, Any] | None = None
     error: str | None = None
+    needs_login_confirmation: bool = False
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _login_confirmation: threading.Event = field(default_factory=threading.Event, repr=False)
 
     def update(
         self,
@@ -906,6 +1026,7 @@ class ImportJob:
         sheet: str | None = None,
         processed_rows: int | None = None,
         total_rows: int | None = None,
+        needs_login_confirmation: bool | None = None,
     ) -> None:
         with self._lock:
             if state is not None:
@@ -918,6 +1039,16 @@ class ImportJob:
                 self.processed_rows = processed_rows
             if total_rows is not None:
                 self.total_rows = total_rows
+            if needs_login_confirmation is not None:
+                self.needs_login_confirmation = needs_login_confirmation
+
+    def confirm_login(self) -> None:
+        with self._lock:
+            self.needs_login_confirmation = False
+        self._login_confirmation.set()
+
+    def wait_for_login_confirmation(self, timeout: float) -> bool:
+        return self._login_confirmation.wait(timeout)
 
     def fail(self, error: str) -> None:
         with self._lock:
@@ -944,6 +1075,7 @@ class ImportJob:
                 "total_rows": self.total_rows,
                 "workbook": self.workbook,
                 "error": self.error,
+                "needs_login_confirmation": self.needs_login_confirmation,
             }
 
 
@@ -956,6 +1088,9 @@ class Application:
         self.pending_imports: dict[str, tuple[str, str]] = {}
         self.import_jobs: dict[str, ImportJob] = {}
         self.import_lock = threading.Lock()
+        self.preferences_path = ROOT / "results" / "web-settings.json"
+        self.preferences_lock = threading.Lock()
+        self.preferences = self._load_preferences()
         self.allowed_user_statuses = {value for _, value in USER_STATUSES}
         self.allowed_location_statuses = {
             value for _, value in LOCATION_STATUSES
@@ -990,6 +1125,101 @@ class Application:
             "cities": list(CITIES),
         }
 
+    def _preference_defaults(self) -> dict[str, Any]:
+        return {
+            "concurrency": max(1, min(50, int(self.config.concurrency or 1))),
+            "validate_bulk_serials": False,
+            "workbook_url": "",
+            "workbook_headless": True,
+            "import_columns": {
+                "username": "Username",
+                "deployment_serial": "SN",
+                "returned_device": "",
+                "pending_return": "OLD Device SN",
+                "enabled": "",
+            },
+        }
+
+    def _normalise_preferences(
+        self,
+        raw: dict[str, Any],
+        *,
+        base: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if not isinstance(raw, dict):
+            raise eudm.EUDMError("Settings must be a JSON object.")
+        values = dict(base or self._preference_defaults())
+        concurrency = raw.get("concurrency", values["concurrency"])
+        if isinstance(concurrency, bool):
+            raise eudm.EUDMError("Parallel requests must be between 1 and 50.")
+        try:
+            concurrency = int(concurrency)
+        except (TypeError, ValueError) as exc:
+            raise eudm.EUDMError("Parallel requests must be between 1 and 50.") from exc
+        if not 1 <= concurrency <= 50:
+            raise eudm.EUDMError("Parallel requests must be between 1 and 50.")
+        values["concurrency"] = concurrency
+
+        for key in ("validate_bulk_serials", "workbook_headless"):
+            if key in raw and not isinstance(raw[key], bool):
+                raise eudm.EUDMError("A settings toggle had an invalid value.")
+            if key in raw:
+                values[key] = raw[key]
+
+        if "workbook_url" in raw:
+            workbook_url = str(raw["workbook_url"] or "").strip()
+            if workbook_url:
+                sharepoint_download_url(workbook_url)
+            values["workbook_url"] = workbook_url
+
+        if "import_columns" in raw:
+            columns = raw["import_columns"]
+            if not isinstance(columns, dict):
+                raise eudm.EUDMError("Workbook columns must be a JSON object.")
+            normalised = {
+                key: str(columns.get(key, "") or "").strip()
+                for key in (
+                    "username",
+                    "deployment_serial",
+                    "returned_device",
+                    "pending_return",
+                    "enabled",
+                )
+            }
+            if not all(normalised[key] for key in ("username", "deployment_serial", "pending_return")):
+                raise eudm.EUDMError(
+                    "Set the username, deployment serial, and pending return columns."
+                )
+            values["import_columns"] = normalised
+        return values
+
+    def _load_preferences(self) -> dict[str, Any]:
+        defaults = self._preference_defaults()
+        try:
+            raw = json.loads(self.preferences_path.read_text(encoding="utf-8"))
+            return self._normalise_preferences(raw, base=defaults)
+        except (OSError, ValueError, TypeError, eudm.EUDMError):
+            return defaults
+
+    def preferences_json(self) -> dict[str, Any]:
+        with self.preferences_lock:
+            values = json.loads(json.dumps(self.preferences))
+            values["_saved"] = self.preferences_path.is_file()
+            return values
+
+    def save_preferences(self, raw: dict[str, Any]) -> dict[str, Any]:
+        with self.preferences_lock:
+            saved = self._normalise_preferences(raw, base=self.preferences)
+            payload = json.dumps(saved, ensure_ascii=False, indent=2)
+            self.preferences_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self.preferences_path.with_suffix(".tmp")
+            temporary.write_text(payload + "\n", encoding="utf-8")
+            temporary.replace(self.preferences_path)
+            self.preferences = saved
+            values = json.loads(json.dumps(saved))
+            values["_saved"] = True
+            return values
+
     def add_import(self, workbook: WorkbookImport) -> None:
         with self.import_lock:
             self.imports[workbook.import_id] = workbook
@@ -1019,21 +1249,52 @@ class Application:
         ).start()
         return job
 
-    def start_remote_import(self, url: str) -> ImportJob:
+    def start_remote_import(self, url: str, *, headless: bool = True) -> ImportJob:
         job = ImportJob(job_id=uuid.uuid4().hex, filename="sharepoint-workbook.xlsx")
         with self.import_lock:
             self.import_jobs[job.job_id] = job
-        threading.Thread(target=self._download_import, args=(job, url), daemon=True).start()
+        threading.Thread(
+            target=self._download_import,
+            args=(job, url, headless),
+            daemon=True,
+        ).start()
         return job
 
-    def _download_import(self, job: ImportJob, url: str) -> None:
-        job.update(state="downloading", message="Downloading the current workbook…")
+    def _download_import(self, job: ImportJob, url: str, headless: bool) -> None:
+        job.update(state="downloading", message="Downloading workbook…")
         try:
             try:
-                filename, data = download_workbook_direct(url)
-            except (urllib.error.URLError, urllib.error.HTTPError, eudm.EUDMError):
-                job.update(message="Using saved Microsoft sign-in…")
-                filename, data = download_workbook_with_browser(url, self.config.browser_profile)
+                if headless:
+                    try:
+                        filename, data = download_workbook_with_browser(
+                            url,
+                            self.config.browser_profile,
+                            headless=True,
+                        )
+                    except eudm.EUDMError:
+                        job.update(
+                            state="downloading",
+                            message="Opening Chrome to finish the download…",
+                        )
+                        filename, data = download_workbook_with_browser(
+                            url,
+                            self.config.browser_profile,
+                            job=job,
+                            headless=False,
+                        )
+                else:
+                    filename, data = download_workbook_with_browser(
+                        url,
+                        self.config.browser_profile,
+                        job=job,
+                        headless=False,
+                    )
+            except eudm.EUDMError as browser_error:
+                # Public links can still be downloaded without a saved profile.
+                try:
+                    filename, data = download_workbook_direct(url)
+                except (urllib.error.URLError, urllib.error.HTTPError, eudm.EUDMError):
+                    raise browser_error
             job.filename = filename
             encoded = base64.b64encode(data).decode("ascii")
             self._inspect_import(job, encoded)
@@ -1098,6 +1359,16 @@ class Application:
             raise eudm.EUDMError(
                 "That workbook import expired. Choose the file again."
             )
+        return job.to_json()
+
+    def continue_import_login(self, job_id: str) -> dict[str, Any]:
+        with self.import_lock:
+            job = self.import_jobs.get(job_id)
+        if not job:
+            raise eudm.EUDMError("That workbook import expired. Download it again.")
+        if job.state != "waiting_for_login":
+            raise eudm.EUDMError("This workbook is not waiting for a Chrome sign-in.")
+        job.confirm_login()
         return job.to_json()
 
     def form_options(self) -> dict[str, Any]:
@@ -1208,6 +1479,9 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
         if path == "/api/config":
             self._json(self.app.config_json())
             return
+        if path == "/api/preferences":
+            self._json(self.app.preferences_json())
+            return
         if path == "/api/status":
             self._json(self.app.clients.status())
             return
@@ -1281,6 +1555,9 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
             self.app.clients.connect_async()
             self._json(self.app.clients.status(), 202)
             return
+        if path == "/api/preferences":
+            self._json(self.app.save_preferences(payload))
+            return
         if path == "/api/connection/health":
             self._json(self.app.clients.check_connection())
             return
@@ -1323,8 +1600,18 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
         if path == "/api/import/download":
             if not self.app.config.spreadsheet_import_enabled:
                 raise eudm.EUDMError("Spreadsheet import is disabled by this AutoEUDM environment.")
-            job = self.app.start_remote_import(str(payload.get("url", "")))
+            headless = payload.get("headless", True)
+            if not isinstance(headless, bool):
+                raise eudm.EUDMError("The workbook download setting was invalid.")
+            job = self.app.start_remote_import(
+                str(payload.get("url", "")),
+                headless=headless,
+            )
             self._json(job.to_json(), 202)
+            return
+        if path.startswith("/api/imports/") and path.endswith("/continue"):
+            job_id = path.removeprefix("/api/imports/").removesuffix("/continue").strip("/")
+            self._json(self.app.continue_import_login(job_id))
             return
         if path == "/api/import/map":
             if not self.app.config.spreadsheet_import_enabled:

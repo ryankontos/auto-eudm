@@ -1,11 +1,14 @@
 const state = {
   config: null,
+  preferences: {},
   queue: [],
   selectedId: null,
   connection: null,
   workbook: null,
+  workbookInspection: null,
   importPreview: null,
   importUploadToken: 0,
+  importLoginJobId: null,
   importExpandedGroups: new Set(),
   currentJob: null,
   pollTimer: null,
@@ -28,6 +31,8 @@ const CONCURRENCY_STORAGE_KEY = "auto-eudm-concurrency";
 const IMPORT_COLUMNS_STORAGE_KEY = "auto-eudm-import-columns";
 const IMPORT_LOCATION_STORAGE_KEY = "auto-eudm-import-location";
 const SPREADSHEET_URL_STORAGE_KEY = "auto-eudm-spreadsheet-url";
+const SPREADSHEET_HEADLESS_STORAGE_KEY = "auto-eudm-spreadsheet-headless";
+const BULK_SERIAL_VALIDATION_STORAGE_KEY = "auto-eudm-validate-bulk-serials";
 const MAX_RECENT_LOCATIONS = 8;
 const IMPORT_PREVIEW_ROW_LIMIT = 80;
 const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
@@ -38,8 +43,6 @@ const $$ = (selector) => [...document.querySelectorAll(selector)];
 const elements = {
   connectionBadge: $("#connectionBadge"),
   connectButton: $("#connectButton"),
-  requestForValue: $("#requestForValue"),
-  requestForSource: $("#requestForSource"),
   concurrency: $("#concurrencyInput"),
   queueEmpty: $("#queueEmpty"),
   queueTableWrap: $("#queueTableWrap"),
@@ -95,9 +98,15 @@ function uid() {
 function configureConcurrency(defaultValue) {
   const configured = Math.max(1, Math.min(50, Number(defaultValue) || 1));
   let remembered = null;
+  const persisted = Number(state.preferences?.concurrency);
+  if (state.preferences?._saved && Number.isInteger(persisted) && persisted >= 1 && persisted <= 50) {
+    remembered = persisted;
+  }
   try {
     const candidate = Number(localStorage.getItem(CONCURRENCY_STORAGE_KEY));
-    if (Number.isInteger(candidate) && candidate >= 1 && candidate <= 50) remembered = candidate;
+    if (remembered === null && Number.isInteger(candidate) && candidate >= 1 && candidate <= 50) {
+      remembered = candidate;
+    }
   } catch (_) {}
   elements.concurrency.innerHTML = Array.from(
     { length: 50 },
@@ -240,6 +249,10 @@ function preferredLocation() {
 }
 
 function importColumns() {
+  const persisted = state.preferences?.import_columns;
+  if (state.preferences?._saved && persisted && typeof persisted === "object" && Object.keys(persisted).length) {
+    return structuredClone(persisted);
+  }
   try {
     const saved = JSON.parse(localStorage.getItem(IMPORT_COLUMNS_STORAGE_KEY) || "{}");
     return saved && typeof saved === "object" && Object.keys(saved).length ? saved : null;
@@ -255,7 +268,29 @@ function preferredImportLocation() {
 }
 
 function savedSpreadsheetUrl() {
+  if (state.preferences?._saved && typeof state.preferences?.workbook_url === "string") {
+    return state.preferences.workbook_url.trim();
+  }
   try { return String(localStorage.getItem(SPREADSHEET_URL_STORAGE_KEY) || "").trim(); } catch (_) { return ""; }
+}
+
+function spreadsheetDownloadHeadless() {
+  if (state.preferences?._saved && typeof state.preferences?.workbook_headless === "boolean") {
+    return state.preferences.workbook_headless;
+  }
+  try {
+    const saved = localStorage.getItem(SPREADSHEET_HEADLESS_STORAGE_KEY);
+    return saved === null ? true : saved === "true";
+  } catch (_) {
+    return true;
+  }
+}
+
+function bulkSerialValidationEnabled() {
+  if (state.preferences?._saved && typeof state.preferences?.validate_bulk_serials === "boolean") {
+    return state.preferences.validate_bulk_serials;
+  }
+  try { return localStorage.getItem(BULK_SERIAL_VALIDATION_STORAGE_KEY) === "true"; } catch (_) { return false; }
 }
 
 function rememberImportLocation(location) {
@@ -329,12 +364,53 @@ function locationStatusValues() {
   return new Set(state.config.location_statuses.map((option) => option.value));
 }
 
+function singleRequestStatusOptions() {
+  return [...state.config.user_statuses, ...state.config.location_statuses];
+}
+
+function kindForStatus(status, bulk = false) {
+  if (bulk) return "bulk_location";
+  return userStatusValues().has(status) ? "user" : "location";
+}
+
+function applyInferredKind(request, status, bulk = request.kind === "bulk_location") {
+  const kind = kindForStatus(status, bulk);
+  const changed = request.kind !== kind;
+  const wasUser = request.kind === "user";
+  request.kind = kind;
+  request.status = status;
+  request.group = kind === "user"
+    ? "Deploy to user"
+    : kind === "bulk_location"
+      ? "Bulk add to location stock"
+      : "Add to location stock";
+  if (kind === "user") {
+    request.location = null;
+    request.returning = false;
+    request.returning_user = "";
+    request.returning_user_info = null;
+    request.serials = request.serials.slice(0, 1);
+  } else if (changed) {
+    request.user = "";
+    request.location = wasUser || !request.location ? preferredLocation() : request.location;
+    if (kind === "location") request.serials = request.serials.slice(0, 1);
+    if (kind === "bulk_location") {
+      request.returning = false;
+      request.returning_user = "";
+      request.returning_user_info = null;
+    }
+  }
+}
+
 function validateRequest(request) {
   const errors = [];
   if (!["user", "location", "bulk_location"].includes(request.kind)) {
     return ["Choose Deploy to user, Add to location stock, or Bulk add to location stock."];
   }
   if (!request.serials.length) errors.push("Enter at least one serial number.");
+  if (request.kind === "bulk_location" && bulkSerialValidationEnabled() && request.bulk_validation === "failed") {
+    errors.push(request.bulk_validation_error || "One or more serial numbers could not be verified in EUDM.");
+  }
   if (request.kind !== "bulk_location" && request.serials.length !== 1) {
     errors.push("This request must contain exactly one serial number.");
   }
@@ -400,6 +476,40 @@ function queueValidation() {
     }
   }
   return errors;
+}
+
+async function validateBulkSerials() {
+  if (!bulkSerialValidationEnabled()) return true;
+  const bulkRequests = state.queue.filter((request) => request.kind === "bulk_location" && request.bulk_validation !== "valid");
+  if (!bulkRequests.length) return true;
+  const items = bulkRequests.flatMap((request) => request.serials.map((serial) => ({ request, serial })));
+  bulkRequests.forEach((request) => {
+    request.bulk_validation = "checking";
+    request.bulk_validation_error = "";
+  });
+  renderAll();
+  const missing = new Map(bulkRequests.map((request) => [request.id, []]));
+  await runConcurrent(items, async ({ request, serial }) => {
+    try {
+      const payload = await api("/api/search/assets", {
+        method: "POST",
+        body: JSON.stringify({ query: serial, fresh: true }),
+      });
+      const found = (payload.results || []).some((item) => bestSerial(item, serial).toLowerCase() === serial.toLowerCase());
+      if (!found) missing.get(request.id).push(serial);
+    } catch (_) {
+      missing.get(request.id).push(serial);
+    }
+  }, 12);
+  bulkRequests.forEach((request) => {
+    const invalid = missing.get(request.id);
+    request.bulk_validation = invalid.length ? "failed" : "valid";
+    request.bulk_validation_error = invalid.length
+      ? `Could not verify: ${invalid.slice(0, 3).join(", ")}${invalid.length > 3 ? ` and ${invalid.length - 3} more` : ""}.`
+      : "";
+  });
+  renderAll();
+  return !bulkRequests.some((request) => request.bulk_validation === "failed");
 }
 
 function statusLabel(request) {
@@ -478,14 +588,23 @@ function renderQueue() {
       : "";
     const resultState = request.result_state === "succeeded" ? "Submitted"
       : request.result_state === "failed" ? "Failed" : "";
+    const readinessMarkup = request.result_state === "failed"
+      ? '<span class="failed-mark" title="Request failed">!</span><span class="cell-secondary">Failed</span>'
+      : request.bulk_validation === "checking"
+        ? '<span class="checking-mark" title="Checking serial numbers"></span><span class="cell-secondary">Checking</span>'
+        : errors.length
+          ? '<span class="invalid-mark">!</span>'
+          : request.request_id
+            ? `<span class="ready-mark">✓</span><span class="cell-secondary">${resultState}</span>`
+            : '<span class="ready-mark">✓</span>';
     return `
-      <tr data-id="${escapeHtml(request.id)}" class="${selected ? "selected" : ""} ${errors.length ? "invalid" : ""}" tabindex="0">
+      <tr data-id="${escapeHtml(request.id)}" class="${selected ? "selected" : ""} ${errors.length ? "invalid" : ""} ${request.result_state === "failed" ? "failed" : ""}" tabindex="0">
         <td class="index-column">${index + 1}</td>
         <td><span class="cell-primary">${escapeHtml(serialDisplay)}</span>${request.kind === "bulk_location" ? `<span class="cell-secondary">${request.serials.length} devices</span>` : ""}${requestId}</td>
         <td><span class="cell-primary">${escapeHtml(kindLabel(request.kind))}</span>${secondary ? `<span class="cell-secondary">${escapeHtml(secondary)}</span>` : ""}</td>
         <td title="${escapeHtml(statusLabel(request))}">${escapeHtml(statusLabel(request))}</td>
         <td title="${escapeHtml(destinationLabel(request))}"><span class="cell-primary">${escapeHtml(destinationLabel(request))}</span>${request.returning_user ? `<span class="cell-secondary">Returned by ${escapeHtml(request.returning_user)}</span>` : ""}</td>
-        <td class="state-column" title="${escapeHtml(errors.join(" "))}">${errors.length ? '<span class="invalid-mark">!</span>' : request.request_id ? `<span class="ready-mark">✓</span><span class="cell-secondary">${resultState}</span>` : '<span class="ready-mark">✓</span>'}</td>
+        <td class="state-column" title="${escapeHtml(errors.join(" "))}">${readinessMarkup}</td>
         <td><button class="row-menu" data-remove="${escapeHtml(request.id)}" aria-label="Remove request" title="Remove request"><span class="trash-icon" aria-hidden="true"></span></button></td>
       </tr>`;
   }).join("");
@@ -544,14 +663,9 @@ function renderInspector() {
   hideSearchResults();
   if (!request) return;
 
-  $$('input[name="requestKind"]').forEach((radio) => {
-    const selected = radio.value === request.kind;
-    radio.checked = selected;
-    radio.parentElement.classList.toggle("is-selected", selected);
-    radio.setAttribute("aria-checked", String(selected));
-  });
   const bulk = request.kind === "bulk_location";
   const user = request.kind === "user";
+  $("#requestSizeInput").value = bulk ? "bulk" : "single";
   elements.serialInput.hidden = bulk;
   elements.serialsInput.hidden = !bulk;
   $("#searchSerialButton").hidden = bulk;
@@ -560,7 +674,7 @@ function renderInspector() {
   elements.serialsInput.value = bulk ? request.serials.join("\n") : "";
   elements.serialHint.textContent = bulk ? `${request.serials.length} serial${request.serials.length === 1 ? "" : "s"}` : "";
 
-  const statusOptions = user ? state.config.user_statuses : state.config.location_statuses;
+  const statusOptions = bulk ? state.config.location_statuses : singleRequestStatusOptions();
   normalizeRequestStatus(request);
   fillSelect(elements.statusInput, statusOptions, request.status, "Choose a status");
   elements.userFields.hidden = !user;
@@ -593,14 +707,33 @@ function renderAll() {
   renderInspector();
 }
 
-function openNewRequestTypePicker() {
-  $("#newRequestTypeDialog").showModal();
-}
-
 function restoreInspector() {
   const content = elements.inspectorContent;
   const inspector = $("#inspector");
   if (content.parentElement !== inspector) inspector.append(content);
+}
+
+function changeRequestSize(size) {
+  const request = selectedRequest();
+  if (!request) return;
+  if (size === "bulk") {
+    const locationStatus = state.config.location_statuses.some((option) => option.value === request.status)
+      ? request.status
+      : (state.config.default_location_status || state.config.location_statuses[0]?.value || "");
+    applyInferredKind(request, locationStatus);
+    request.kind = "bulk_location";
+    request.group = "Bulk add to location stock";
+    request.user = "";
+    request.returning = false;
+    request.returning_user = "";
+    request.returning_user_info = null;
+    request.location = request.location || preferredLocation();
+  } else if (request.kind === "bulk_location") {
+    request.serials = request.serials.slice(0, 1);
+    applyInferredKind(request, request.status, false);
+  }
+  renderAll();
+  setTimeout(() => (size === "bulk" ? elements.serialsInput : elements.serialInput).focus(), 0);
 }
 
 function discardNewRequest() {
@@ -609,8 +742,8 @@ function discardNewRequest() {
   renderAll();
 }
 
-function startNewRequest(kind) {
-  $("#newRequestTypeDialog").close();
+function startNewRequest() {
+  const kind = "user";
   state.newRequest = makeRequest(kind);
   const dialog = $("#newRequestDialog");
   $("#newRequestEditorMount").append(elements.inspectorContent);
@@ -658,43 +791,11 @@ function duplicateSelected() {
   renderAll();
 }
 
-function changeKind(kind) {
-  const request = selectedRequest();
-  if (!request || request.kind === kind) return;
-  const wasUser = request.kind === "user";
-  request.kind = kind;
-  request.group = kind === "user" ? "Deploy to user" : kind === "location" ? "Add to location stock" : "Bulk add to location stock";
-  if (kind === "user") {
-    request.location = null;
-    request.returning = false;
-    request.returning_user = "";
-    request.returning_user_info = null;
-    request.status = resolveStatus(
-      state.config.user_statuses,
-      request.status,
-      state.config.default_user_status,
-    );
-    request.serials = request.serials.slice(0, 1);
-  } else {
-    request.user = "";
-    request.location = wasUser || !request.location ? preferredLocation() : request.location;
-    request.status = resolveStatus(
-      state.config.location_statuses,
-      request.status,
-      state.config.default_location_status,
-    );
-    if (kind === "location") request.serials = request.serials.slice(0, 1);
-    if (kind === "bulk_location") {
-      request.returning = false;
-      request.returning_user = "";
-      request.returning_user_info = null;
-    }
-  }
-  renderAll();
-}
-
 function hideSearchResults() {
-  [elements.serialResults, elements.userResults, elements.returningResults].forEach((node) => { node.hidden = true; });
+  [elements.serialResults, elements.userResults, elements.returningResults].forEach((node) => {
+    node.hidden = true;
+    node.replaceChildren();
+  });
 }
 
 function renderSearchResults(container, results, onSelect, primaryIndex = 0) {
@@ -709,8 +810,9 @@ function renderSearchResults(container, results, onSelect, primaryIndex = 0) {
     }).join("");
     container.querySelectorAll("[data-index]").forEach((button) => {
       button.addEventListener("click", () => {
-        onSelect(results[Number(button.dataset.index)]);
-        container.hidden = true;
+        const selected = results[Number(button.dataset.index)];
+        hideSearchResults();
+        onSelect(selected);
       });
     });
   }
@@ -901,8 +1003,9 @@ function updateConnection(status) {
     state.locationLoading.clear();
   }
   elements.connectionBadge.className = `connection-badge ${status.state}`;
-  const label = status.state === "simulation" ? "Simulation ready"
-    : status.state === "connected" ? "EUDM connected"
+  const requester = status.request_for || state.config.request_for || "";
+  const label = status.state === "simulation" ? "Simulating EUDM API"
+    : status.state === "connected" ? requester ? `Connected to EUDM as ${requester}` : "Connected to EUDM"
     : status.state === "connecting" ? "Connecting"
     : status.state === "expired" ? "Reconnect to EUDM"
     : status.state === "error" ? "Connection failed"
@@ -935,15 +1038,6 @@ function updateConnection(status) {
       : "An authenticated EUDM connection is required. Your prepared queue is saved here.";
   elements.connectionGateButton.hidden = status.state === "connecting";
   elements.connectionGateButton.disabled = status.state === "connecting";
-  const requester = status.request_for || state.config.request_for || "";
-  elements.requestForValue.textContent = requester || "Waiting for EUDM";
-  elements.requestForSource.textContent = status.state === "simulation"
-    ? "From the shared simulation environment"
-    : status.request_for_source === "EUDM signed-in account"
-      ? "Detected from the signed-in EUDM session"
-      : requester
-        ? "From the shared environment"
-        : "Resolved automatically after connection";
   if (status.state === "connected" && !state.liveOptionsLoaded) {
     refreshFormOptions();
   }
@@ -1011,17 +1105,44 @@ function openPasteDialog() {
   state.pasteLocation = preferredLocation();
   state.pasteLocationResults = [];
   state.pasteEntries = [];
-  $("#pairsAddFields").hidden = true;
-  $("#pairsShowAddButton").hidden = false;
   $("#pairsAddSerial").value = "";
   $("#pairsAddUsername").value = "";
   $("#pairsEntry").hidden = false;
-  $("#pairsReview").hidden = true;
-  $("#pairsBackButton").hidden = true;
-  $("#reviewPairsButton").hidden = false;
-  $("#addPairsButton").hidden = true;
+  $("#pairsEntry .quick-import-add").hidden = false;
+  $("#pairsReview").hidden = false;
+  $("#pairsTextMode").hidden = true;
+  $("#pairsTextModeButton").textContent = "Add a list instead";
   $("#pasteDialog").showModal();
-  setTimeout(() => $("#pairsInput").focus(), 0);
+  renderQuickImportReview();
+  setTimeout(() => $("#pairsAddUsername").focus(), 0);
+}
+
+function openSettings() {
+  const columns = importColumns() || {};
+  $("#spreadsheetUrlInput").value = savedSpreadsheetUrl();
+  $("#spreadsheetUsernameColumnInput").value = columns.username || "Username";
+  $("#spreadsheetDeploymentColumnInput").value = columns.deployment_serial || "SN";
+  $("#spreadsheetReturnedColumnInput").value = columns.returned_device || "";
+  $("#spreadsheetPendingColumnInput").value = columns.pending_return || "OLD Device SN";
+  $("#spreadsheetEnabledColumnInput").value = columns.enabled || "";
+  $("#spreadsheetHeadlessInput").checked = spreadsheetDownloadHeadless();
+  $("#validateBulkSerialsInput").checked = bulkSerialValidationEnabled();
+  $("#settingsDialog").showModal();
+}
+
+function openAlmWorkbookImport() {
+  resetImportDialog();
+  $("#importDialog").showModal();
+}
+
+function openShortcuts() {
+  $("#shortcutsDialog").showModal();
+}
+
+function focusSelectedSerial() {
+  const request = selectedRequest();
+  if (!request) return;
+  (request.kind === "bulk_location" ? elements.serialsInput : elements.serialInput).focus();
 }
 
 function renderPasteLocationFields() {
@@ -1078,6 +1199,19 @@ function ensurePasteLocationsLoaded(city) {
   findPasteLocations({ quiet: true });
 }
 
+function makeQuickImportEntry(serial, username) {
+  return {
+    serial,
+    username,
+    returningUserInfo: null,
+    returningUserChecked: false,
+    validationChecked: false,
+    kind: username ? "user" : "location",
+    userStatus: resolveStatus(state.config.user_statuses, state.config.default_user_status),
+    locationStatus: resolveStatus(state.config.location_statuses, state.config.default_location_status),
+  };
+}
+
 function parseQuickImportLines() {
   const lines = $("#pairsInput").value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   const entries = [];
@@ -1104,23 +1238,9 @@ function parseQuickImportLines() {
       return;
     }
     seenSerials.add(serialKey);
-    entries.push({
-      serial,
-      username,
-      returningUserInfo: null,
-      returningUserChecked: false,
-      kind: username ? "user" : "location",
-      userStatus: resolveStatus(
-        state.config.user_statuses,
-        state.config.default_user_status,
-      ),
-      locationStatus: resolveStatus(
-        state.config.location_statuses,
-        state.config.default_location_status,
-      ),
-    });
+    entries.push(makeQuickImportEntry(serial, username));
   });
-  if (!entries.length && !errors.length) errors.push("Paste at least one serial number.");
+  if (!entries.length && !errors.length) errors.push("Enter at least one serial number.");
   return { entries, errors };
 }
 
@@ -1128,20 +1248,12 @@ function renderQuickImportReview() {
   populateQuickImportBulkOptions();
   const list = $("#pairsReviewList");
   list.innerHTML = state.pasteEntries.map((entry, index) => {
-    const selector = entry.username
-      ? `<select data-pairs-kind="${index}" aria-label="Action for ${escapeHtml(entry.serial)}">
-          <option value="user" ${entry.kind === "user" ? "selected" : ""}>Deploy to user</option>
-          <option value="location" ${entry.kind === "location" ? "selected" : ""}>Add to location stock</option>
-        </select>`
-      : '<span class="quick-import-fixed">Add to location stock</span>';
     const username = entry.kind === "user"
       ? `To ${escapeHtml(entry.username)}`
       : entry.username
         ? `Returned by ${escapeHtml(entry.username)}`
         : "No returning user";
-    const statusOptions = entry.kind === "location"
-      ? state.config.location_statuses
-      : state.config.user_statuses;
+    const statusOptions = singleRequestStatusOptions();
     const selectedStatus = entry.kind === "location" ? entry.locationStatus : entry.userStatus;
     const deploymentStatus = `<label class="quick-import-status">Status
           <select data-pairs-status="${index}" aria-label="Deployment status for ${escapeHtml(entry.serial)}">
@@ -1151,33 +1263,29 @@ function renderQuickImportReview() {
     const returnInfo = entry.kind === "location" && entry.username
       ? `<div class="quick-import-return ${entry.returningUserInfo ? "" : "unknown"}"><strong>Returning user</strong><span>${escapeHtml(entry.returningUserInfo?.login || entry.username)}</span><small>${entry.returningUserInfo?.columns?.length ? escapeHtml(entry.returningUserInfo.columns.join(" · ")) : "Details unknown — search and verify before submitting. An email will be sent to this user."}</small></div>`
       : "";
-    const checking = entry.validationState === "checking" ? '<small class="import-checking">Checking EUDM…</small>' : entry.validationState === "failed" ? `<small class="import-check-failed">${escapeHtml(entry.validationError || "Not found in EUDM")}</small>` : entry.validationState === "valid" ? '<small class="import-check-ok">Checked</small>' : "";
+    const checking = entry.validationState === "checking" ? '<small class="import-checking">Checking EUDM…</small>' : entry.validationState === "failed" ? `<small class="import-check-failed">${escapeHtml(entry.validationError || "Not found in EUDM")}</small>` : "";
     return `<div class="quick-import-row">
       <div><strong>${escapeHtml(entry.serial)}</strong><small>${username}</small>${returnInfo}${checking}</div>
       <div class="quick-import-row-actions">
         ${deploymentStatus}
-        ${selector}
         <button class="row-menu" type="button" data-pairs-remove="${index}" aria-label="Remove ${escapeHtml(entry.serial)}" title="Remove device"><span class="trash-icon" aria-hidden="true"></span></button>
       </div>
     </div>`;
   }).join("");
-  $$('[data-pairs-kind]').forEach((select) => select.addEventListener("change", () => {
-    const entry = state.pasteEntries[Number(select.dataset.pairsKind)];
-    entry.kind = select.value;
-    if (entry.kind === "location" && !locationStatusValues().has(entry.locationStatus)) {
-      entry.locationStatus = resolveStatus(
-        state.config.location_statuses,
-        state.config.default_location_status,
-      );
-    }
-    if (entry.kind === "location" && entry.username) entry.returningUserChecked = false;
-    renderQuickImportReview();
-    resolveQuickImportReturningUsers();
-  }));
   $$("[data-pairs-status]").forEach((select) => select.addEventListener("change", () => {
     const entry = state.pasteEntries[Number(select.dataset.pairsStatus)];
-    if (entry.kind === "location") entry.locationStatus = select.value;
-    else entry.userStatus = select.value;
+    const kind = kindForStatus(select.value);
+    entry.kind = kind;
+    if (kind === "location") {
+      entry.locationStatus = select.value;
+      if (entry.username) {
+        entry.validationChecked = false;
+        entry.validationState = "";
+        entry.returningUserInfo = null;
+      }
+    } else entry.userStatus = select.value;
+    renderQuickImportReview();
+    resolveQuickImportReturningUsers();
   }));
   $$("[data-pairs-remove]").forEach((button) => button.addEventListener("click", () => {
     state.pasteEntries.splice(Number(button.dataset.pairsRemove), 1);
@@ -1192,36 +1300,14 @@ function renderQuickImportReview() {
 function populateQuickImportBulkOptions() {
   const select = $("#pairsBulkKind");
   const selected = select.value;
-  const userOptions = state.config.user_statuses.map((option) =>
-    `<option value="user|${escapeHtml(option.value)}">Deploy username lines to user — ${escapeHtml(option.label)}</option>`,
-  );
-  const locationOptions = state.config.location_statuses.map((option) =>
-    `<option value="location|${escapeHtml(option.value)}">Add all devices to location stock — ${escapeHtml(option.label)}</option>`,
+  const statusOptions = singleRequestStatusOptions().map((option) =>
+    `<option value="${escapeHtml(option.value)}">${escapeHtml(option.label)}</option>`,
   );
   select.innerHTML = [
-    '<option value="">Choose a deployment type</option>',
-    ...userOptions,
-    ...locationOptions,
+    '<option value="">Choose a status</option>',
+    ...statusOptions,
   ].join("");
   if ([...select.options].some((option) => option.value === selected)) select.value = selected;
-}
-
-function reviewPairs() {
-  const { entries, errors } = parseQuickImportLines();
-  if (errors.length) {
-    $("#pairsError").textContent = errors.slice(0, 4).join(" ");
-    $("#pairsError").hidden = false;
-    return;
-  }
-  state.pasteEntries = entries;
-  $("#pairsError").hidden = true;
-  $("#pairsEntry").hidden = true;
-  $("#pairsReview").hidden = false;
-  $("#pairsBackButton").hidden = false;
-  $("#reviewPairsButton").hidden = true;
-  $("#addPairsButton").hidden = false;
-  renderQuickImportReview();
-  resolveQuickImportReturningUsers();
 }
 
 async function resolveQuickImportReturningUsers() {
@@ -1229,7 +1315,7 @@ async function resolveQuickImportReturningUsers() {
   if (!entries.length || !["connected", "simulation"].includes(state.connection?.state)) return;
   entries.forEach((entry) => { entry.validationChecked = true; entry.validationState = "checking"; });
   renderQuickImportReview();
-  await Promise.all(entries.map(async (entry) => {
+  await runConcurrent(entries, async (entry) => {
     try {
       const [assets, users] = await Promise.all([
         api("/api/search/assets", { method: "POST", body: JSON.stringify({ query: entry.serial, fresh: true }) }),
@@ -1245,16 +1331,16 @@ async function resolveQuickImportReturningUsers() {
       entry.validationState = "failed";
       entry.validationError = error.message || "Could not validate this entry.";
     }
-  }));
+  });
   renderQuickImportReview();
 }
 
 async function resolveQueueReturningUsers(requests) {
-  const entries = requests.filter((request) => request.kind === "location" && request.returning_user);
+  const entries = requests.filter((request) => request.kind === "location" && request.returning_user && !request.returning_user_info);
   if (!entries.length || !["connected", "simulation"].includes(state.connection?.state)) return;
   entries.forEach((request) => { request.returning_user_loading = true; });
   renderAll();
-  await Promise.all(entries.map(async (request) => {
+  await runConcurrent(entries, async (request) => {
     try {
       const payload = await api("/api/search/users", { method: "POST", body: JSON.stringify({ query: request.returning_user, returning: true }) });
       const result = (payload.results || []).find((item) => bestLogin(item, request.returning_user).toLowerCase() === request.returning_user.toLowerCase());
@@ -1264,41 +1350,29 @@ async function resolveQueueReturningUsers(requests) {
     } finally {
       request.returning_user_loading = false;
     }
-  }));
+  });
   renderAll();
 }
 
 function applyQuickImportKind() {
-  const [kind, status] = $("#pairsBulkKind").value.split("|", 2);
-  if (!kind || !status) return;
+  const status = $("#pairsBulkKind").value;
+  if (!status) return;
+  const kind = kindForStatus(status);
   state.pasteEntries.forEach((entry) => {
-    if (kind === "location" || entry.username) {
-      entry.kind = kind;
-      if (kind === "location") {
-        entry.locationStatus = resolveStatus(state.config.location_statuses, status);
-        if (entry.username) entry.returningUserChecked = false;
-      } else {
-        entry.userStatus = resolveStatus(state.config.user_statuses, status);
+    entry.kind = kind;
+    if (kind === "location") {
+      entry.locationStatus = resolveStatus(state.config.location_statuses, status);
+      if (entry.username) {
+        entry.validationChecked = false;
+        entry.validationState = "";
+        entry.returningUserInfo = null;
       }
+    } else {
+      entry.userStatus = resolveStatus(state.config.user_statuses, status);
     }
   });
   renderQuickImportReview();
   resolveQuickImportReturningUsers();
-}
-
-function showQuickImportAdd() {
-  $("#pairsAddFields").hidden = false;
-  $("#pairsShowAddButton").hidden = true;
-  $("#pairsError").hidden = true;
-  $("#pairsAddSerial").focus();
-}
-
-function cancelQuickImportAdd() {
-  $("#pairsAddFields").hidden = true;
-  $("#pairsShowAddButton").hidden = false;
-  $("#pairsAddSerial").value = "";
-  $("#pairsAddUsername").value = "";
-  $("#pairsError").hidden = true;
 }
 
 function addQuickImportEntry() {
@@ -1315,23 +1389,31 @@ function addQuickImportEntry() {
     $("#pairsError").hidden = false;
     return;
   }
-  state.pasteEntries.push({
-    serial,
-    username,
-    returningUserInfo: null,
-    returningUserChecked: false,
-    kind: username ? "user" : "location",
-    userStatus: resolveStatus(
-      state.config.user_statuses,
-      state.config.default_user_status,
-    ),
-    locationStatus: resolveStatus(
-      state.config.location_statuses,
-      state.config.default_location_status,
-    ),
-  });
-  cancelQuickImportAdd();
+  state.pasteEntries.push(makeQuickImportEntry(serial, username));
+  $("#pairsAddSerial").value = "";
+  $("#pairsAddUsername").value = "";
+  $("#pairsError").hidden = true;
   renderQuickImportReview();
+  resolveQuickImportReturningUsers();
+  $("#pairsAddUsername").focus();
+}
+
+function addQuickImportList() {
+  const { entries, errors } = parseQuickImportLines();
+  const existing = new Set(state.pasteEntries.map((entry) => entry.serial.toLowerCase()));
+  entries.forEach((entry) => {
+    if (existing.has(entry.serial.toLowerCase())) errors.push(`${entry.serial} is already in this import.`);
+    else { existing.add(entry.serial.toLowerCase()); state.pasteEntries.push(entry); }
+  });
+  if (errors.length) {
+    $("#pairsError").textContent = errors.slice(0, 4).join(" ");
+    $("#pairsError").hidden = false;
+  } else {
+    $("#pairsInput").value = "";
+    $("#pairsError").hidden = true;
+  }
+  renderQuickImportReview();
+  resolveQuickImportReturningUsers();
 }
 
 function addPairs() {
@@ -1345,6 +1427,7 @@ function addPairs() {
   }
   if (state.pasteEntries.some((entry) => entry.validationState === "checking")) errors.push("Wait for EUDM validation to finish.");
   if (state.pasteEntries.some((entry) => entry.validationState === "failed")) errors.push("Correct the entries EUDM could not validate.");
+  if (state.pasteEntries.some((entry) => entry.kind === "user" && !entry.username)) errors.push("A username is required for a deployed status.");
   if (errors.length) {
     $("#pairsError").textContent = errors.join(" ");
     $("#pairsError").hidden = false;
@@ -1385,10 +1468,12 @@ function addPairs() {
 function resetImportDialog() {
   state.importUploadToken += 1;
   state.workbook = null;
+  state.workbookInspection = null;
   state.importPreview = null;
   state.importExpandedGroups.clear();
+  state.importLoginJobId = null;
+  $("#importLoginCompleteButton").hidden = true;
   $("#workbookInput").value = "";
-  $("#downloadWorkbookButton").hidden = !savedSpreadsheetUrl();
   $("#importChoose").hidden = false;
   $("#importConfigure").hidden = true;
   $("#importMapColumns").hidden = true;
@@ -1406,7 +1491,7 @@ function resetImportDialog() {
 }
 
 function setImportStep(step) {
-  [1, 2, 3].forEach((number) => {
+  [1, 2, 3, 4].forEach((number) => {
     const item = $(`#importStep${number}`);
     item.classList.toggle("active", number === step);
     item.classList.toggle("complete", number < step);
@@ -1513,7 +1598,7 @@ function fileToBase64(file, onProgress = () => {}) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result).split(",", 2)[1]);
-    reader.onerror = () => reject(new Error("The workbook could not be read."));
+    reader.onerror = () => reject(new Error("The ALM Workbook could not be read."));
     reader.onprogress = (event) => {
       if (event.lengthComputable) onProgress(event.loaded / event.total);
     };
@@ -1544,54 +1629,83 @@ async function waitForWorkbookImport(jobId, token) {
     const completed = Number(status.processed_rows) || 0;
     const scanProgress = total ? completed / total : .03;
     const detail = total
-      ? `${status.sheet || "Workbook"} · ${completed.toLocaleString()} of ${total.toLocaleString()} rows`
-      : "Opening workbook…";
+      ? `${status.sheet || "ALM Workbook"} · ${completed.toLocaleString()} of ${total.toLocaleString()} rows`
+      : "Opening ALM Workbook…";
+    const downloading = ["downloading", "waiting_for_login"].includes(status.state);
+    state.importLoginJobId = status.needs_login_confirmation ? jobId : null;
+    $("#importLoginCompleteButton").hidden = !status.needs_login_confirmation;
+    $("#importLoginCompleteButton").disabled = false;
     setImportBusy(true, {
-      percent: 28 + scanProgress * 70,
-      title: status.message || "Reading workbook…",
-      detail,
+      percent: downloading ? 18 : 28 + scanProgress * 70,
+      title: downloading ? "Downloading ALM Workbook…" : (status.message || "Reading ALM Workbook…"),
+      detail: status.needs_login_confirmation ? "Sign in in Chrome, then continue." : (downloading ? "" : detail),
     });
     if (status.state === "ready") return status.workbook;
-    if (status.state === "failed") throw new Error(status.error || "The workbook could not be imported.");
+    if (status.state === "failed") throw new Error(status.error || "The ALM Workbook could not be imported.");
     await pause(250);
   }
   return null;
 }
 
+function workbookMappingMatches(workbook, saved) {
+  if (!saved?.username || !saved?.deployment_serial || !saved?.pending_return) return false;
+  const sheet = workbook.sheets.find((item) => item.name === workbook.default_sheet);
+  const headings = new Set(
+    (sheet?.headings || []).map((heading) => String(heading).trim().toLowerCase()),
+  );
+  return [
+    saved.username,
+    saved.deployment_serial,
+    saved.returned_device,
+    saved.pending_return,
+    saved.enabled,
+  ].filter(Boolean).every((heading) => headings.has(String(heading).trim().toLowerCase()));
+}
+
+function openImportColumnMapping() {
+  const workbook = state.workbookInspection;
+  if (!workbook) return;
+  $("#importChoose").hidden = true;
+  $("#importConfigure").hidden = true;
+  $("#importPreview").hidden = true;
+  $("#importMapColumns").hidden = false;
+  $("#importMapFilename").textContent = workbook.filename;
+  const preferredSheet = $("#sheetInput").value || workbook.default_sheet;
+  $("#importMapSheet").innerHTML = workbook.sheets.map((sheet) => (
+    `<option value="${escapeHtml(sheet.name)}" ${sheet.name === preferredSheet ? "selected" : ""}>${escapeHtml(sheet.name)}</option>`
+  )).join("");
+  renderImportColumnMap();
+  $("#backImportButton").hidden = true;
+  $("#prepareImportButton").textContent = "Use columns";
+  setImportStep(2);
+}
+
 function showImportedWorkbook(workbook) {
   if (workbook.needs_mapping) {
     state.workbook = workbook;
+    state.workbookInspection = workbook;
     const saved = importColumns();
-    const defaultSheet = workbook.sheets.find((sheet) => sheet.name === workbook.default_sheet);
-    const headings = new Set((defaultSheet?.headings || []).map((heading) => String(heading).trim().toLowerCase()));
-    const mappingMatches = saved
-      && [saved.username, saved.deployment_serial, saved.pending_return]
-        .every((heading) => headings.has(String(heading || "").trim().toLowerCase()));
-    if (mappingMatches) {
+    if (workbookMappingMatches(workbook, saved)) {
       $("#importMapSheet").innerHTML = `<option value="${escapeHtml(workbook.default_sheet)}">${escapeHtml(workbook.default_sheet)}</option>`;
       renderImportColumnMap();
       mapWorkbookColumns().catch((error) => {
         $("#importError").textContent = error.message;
         $("#importError").hidden = false;
+        openImportColumnMapping();
       });
       return;
     }
-    $("#importChoose").hidden = true;
-    $("#importConfigure").hidden = true;
-    $("#importMapColumns").hidden = false;
-    $("#importMapFilename").textContent = workbook.filename;
-    $("#importMapSheet").innerHTML = workbook.sheets.map((sheet) => `<option value="${escapeHtml(sheet.name)}" ${sheet.name === workbook.default_sheet ? "selected" : ""}>${escapeHtml(sheet.name)}</option>`).join("");
-    renderImportColumnMap();
-    $("#prepareImportButton").disabled = false;
-    $("#prepareImportButton").textContent = "Continue";
-    setImportStep(2);
+    openImportColumnMapping();
     return;
   }
   state.workbook = workbook;
   $("#importChoose").hidden = true;
+  $("#importMapColumns").hidden = true;
   $("#importConfigure").hidden = false;
   $("#importPreview").hidden = true;
-  setImportStep(2);
+  $("#backImportButton").hidden = true;
+  $("#prepareImportButton").textContent = "Review import";
+  setImportStep(3);
   $("#importFilename").textContent = workbook.filename;
   $("#importFileSummary").textContent = `${workbook.sheets.length} dated sheet${workbook.sheets.length === 1 ? "" : "s"}`;
   $("#sheetInput").innerHTML = workbook.sheets.map((sheet) => `<option value="${escapeHtml(sheet.name)}" ${sheet.name === workbook.default_sheet ? "selected" : ""}>${escapeHtml(sheet.name)}</option>`).join("");
@@ -1599,7 +1713,7 @@ function showImportedWorkbook(workbook) {
 }
 
 function renderImportColumnMap() {
-  const sheet = state.workbook?.sheets.find((item) => item.name === $("#importMapSheet").value);
+  const sheet = state.workbookInspection?.sheets.find((item) => item.name === $("#importMapSheet").value);
   const headings = sheet?.headings || [];
   const saved = importColumns() || {};
   const select = (element, selected) => {
@@ -1610,29 +1724,82 @@ function renderImportColumnMap() {
   select($("#importMapDeployment"), saved.deployment_serial || "SN");
   select($("#importMapReturned"), saved.returned_device || "Returned Device SN");
   select($("#importMapPending"), saved.pending_return || "OLD Device SN");
+  select($("#importMapEnabled"), saved.enabled || "");
+  updateImportColumnMapButton();
 }
 
-async function mapWorkbookColumns() {
-  const columns = {
+function selectedImportColumns() {
+  return {
     username: $("#importMapUsername").value,
     deployment_serial: $("#importMapDeployment").value,
     returned_device: $("#importMapReturned").value,
     pending_return: $("#importMapPending").value,
+    enabled: $("#importMapEnabled").value,
   };
+}
+
+function importColumnMapError(columns = selectedImportColumns()) {
   if (!columns.username || !columns.deployment_serial || !columns.pending_return) {
-    throw new Error("Choose username, deployment serial, and pending-return columns.");
+    return "Choose username, deployment serial, and pending-return columns.";
   }
-  // Returned devices are optional; an unmapped column simply produces no location rows.
-  try { localStorage.setItem(IMPORT_COLUMNS_STORAGE_KEY, JSON.stringify(columns)); } catch (_) {}
+  const selected = Object.values(columns).filter(Boolean);
+  if (new Set(selected).size !== selected.length) {
+    return "Use a different workbook column for each field.";
+  }
+  return "";
+}
+
+function updateImportColumnMapButton() {
+  if ($("#importMapColumns").hidden) return;
+  $("#prepareImportButton").disabled = Boolean(importColumnMapError());
+}
+
+async function saveImportColumnPreferences(columns) {
+  const preferences = {
+    concurrency: Number(elements.concurrency.value),
+    validate_bulk_serials: bulkSerialValidationEnabled(),
+    workbook_url: savedSpreadsheetUrl(),
+    workbook_headless: spreadsheetDownloadHeadless(),
+    import_columns: columns,
+  };
+  state.preferences = await api("/api/preferences", {
+    method: "POST",
+    body: JSON.stringify(preferences),
+  });
+  try {
+    localStorage.setItem(IMPORT_COLUMNS_STORAGE_KEY, JSON.stringify(columns));
+  } catch (_) {}
+}
+
+async function mapWorkbookColumns({ persist = true } = {}) {
+  const columns = selectedImportColumns();
+  const mappingError = importColumnMapError(columns);
+  if (mappingError) {
+    throw new Error(mappingError);
+  }
+  const inspection = state.workbookInspection;
+  if (!inspection?.import_id) {
+    throw new Error("Choose the ALM Workbook again.");
+  }
+  $("#importError").hidden = true;
+  $("#importMapColumns").hidden = true;
+  $("#importConfigure").hidden = true;
+  $("#importChoose").hidden = false;
+  setImportBusy(true, { percent: 25, title: "Reading ALM Workbook…", detail: "Matching workbook columns" });
   try {
     const job = await api("/api/import/map", {
       method: "POST",
-      body: JSON.stringify({ import_id: state.workbook.import_id, columns }),
+      body: JSON.stringify({ import_id: inspection.import_id, columns }),
     });
     const token = state.importUploadToken;
-    setImportBusy(true, { percent: 25, title: "Reading workbook…", detail: "Applying column map" });
     const workbook = await waitForWorkbookImport(job.job_id, token);
-    if (workbook) showImportedWorkbook(workbook);
+    if (!workbook) return;
+    if (persist) await saveImportColumnPreferences(columns);
+    showImportedWorkbook(workbook);
+  } catch (error) {
+    $("#importChoose").hidden = true;
+    openImportColumnMapping();
+    throw error;
   } finally {
     setImportBusy(false);
   }
@@ -1645,7 +1812,7 @@ async function uploadWorkbook(file) {
   $("#prepareImportButton").disabled = true;
   setImportBusy(true, {
     percent: 0,
-    title: "Reading workbook…",
+    title: "Reading ALM Workbook…",
     detail: `${file.name} · ${Math.ceil(file.size / 1024 / 1024)} MB`,
   });
   try {
@@ -1653,7 +1820,7 @@ async function uploadWorkbook(file) {
       if (token === state.importUploadToken) {
         setImportBusy(true, {
           percent: progress * 22,
-          title: "Reading workbook…",
+          title: "Reading ALM Workbook…",
           detail: `${file.name} · preparing upload`,
         });
       }
@@ -1661,7 +1828,7 @@ async function uploadWorkbook(file) {
     if (token !== state.importUploadToken) return;
     setImportBusy(true, {
       percent: 25,
-      title: "Sending workbook…",
+      title: "Sending ALM Workbook…",
       detail: "Starting the import",
     });
     const job = await api("/api/import", {
@@ -1682,15 +1849,18 @@ async function uploadWorkbook(file) {
 
 async function downloadSavedWorkbook() {
   const url = savedSpreadsheetUrl();
-  if (!url) return toast("Add a SharePoint or OneDrive workbook link in Settings.", "error");
+  if (!url) return toast("Add an ALM Workbook link in Settings.", "error");
   const token = state.importUploadToken + 1;
   state.importUploadToken = token;
   $("#importError").hidden = true;
   $("#prepareImportButton").disabled = true;
-  $("#downloadWorkbookButton").disabled = true;
-  setImportBusy(true, { percent: 8, title: "Downloading workbook…", detail: "Getting the current SharePoint version" });
+  $("#downloadSheetButton").disabled = true;
+  setImportBusy(true, { percent: 8, title: "Downloading ALM Workbook…", detail: "" });
   try {
-    const job = await api("/api/import/download", { method: "POST", body: JSON.stringify({ url }) });
+    const job = await api("/api/import/download", {
+      method: "POST",
+      body: JSON.stringify({ url, headless: spreadsheetDownloadHeadless() }),
+    });
     const workbook = await waitForWorkbookImport(job.job_id, token);
     if (workbook && token === state.importUploadToken) showImportedWorkbook(workbook);
   } catch (error) {
@@ -1700,10 +1870,26 @@ async function downloadSavedWorkbook() {
     }
   } finally {
     if (token === state.importUploadToken) {
+      state.importLoginJobId = null;
+      $("#importLoginCompleteButton").hidden = true;
       setImportBusy(false);
-      $("#downloadWorkbookButton").disabled = false;
+      $("#downloadSheetButton").disabled = false;
     }
   }
+}
+
+function importReturnDetails(request, isReturnedDevice) {
+  if (!isReturnedDevice) return "";
+  if (request.import_validation === "checking") {
+    return '<div class="import-return-details loading"><strong>Checking returning user…</strong><small>Confirming the details before this request is added.</small></div>';
+  }
+  const info = request.returning_user_info;
+  if (!info?.columns?.length) {
+    return '<div class="import-return-details unknown"><strong>Returning user details unknown</strong><small>Correct the username and retry before adding this request.</small></div>';
+  }
+  return '<div class="import-return-details"><strong>Returning user</strong><small>An email will be sent to this user. Verify the details.</small><span>'
+    + escapeHtml(info.login || request.returning_user)
+    + '</span><em>' + escapeHtml(info.columns.join(" · ")) + '</em></div>';
 }
 
 function renderImportPreview() {
@@ -1759,7 +1945,8 @@ function renderImportPreview() {
         ? '<small class="import-checking">Checking EUDM…</small>'
         : request.import_validation === "failed"
           ? `<small class="import-check-failed">${escapeHtml(request.import_error || "Not found in EUDM")}</small>`
-          : '<small class="import-check-ok">Checked</small>';
+          : "";
+      const returnDetails = importReturnDetails(request, isReturnedDevice);
       const editable = request.import_validation === "failed" ? `<div class="import-inline-edit"><input data-import-serial="${escapeHtml(request.id)}" value="${escapeHtml(request.serials[0])}" aria-label="Serial number"><input data-import-user="${escapeHtml(request.id)}" value="${escapeHtml(request.user || request.returning_user)}" aria-label="Username"><button class="text-button" data-import-retry="${escapeHtml(request.id)}" type="button">Retry</button></div>` : "";
       return `<div class="import-preview-row ${isIncluded ? "" : "excluded"}">
         <label class="include-control" title="${isIncluded ? "Included" : "Do not deploy"}">
@@ -1768,7 +1955,7 @@ function renderImportPreview() {
         </label>
         <div><strong>${escapeHtml(request.serials[0])}</strong><small>${isDeployment ? "Deployment serial" : isReturnedDevice ? "Returned device" : "Pending return"}</small></div>
         <div><strong>${escapeHtml(request.user || request.returning_user || "No user")}</strong><small>${isReturnedDevice ? "Returning user" : "Receiving user"}</small></div>
-        <div>${statusControl}${isIncluded ? validation : "<small>Do not deploy</small>"}${editable}</div>
+        <div>${statusControl}${isIncluded ? validation : "<small>Do not deploy</small>"}${returnDetails}${editable}</div>
       </div>`;
     }).join("");
     return `<section class="import-preview-section">
@@ -1823,19 +2010,26 @@ function renderImportPreview() {
     const serial = $(`[data-import-serial="${button.dataset.importRetry}"]`);
     const user = $(`[data-import-user="${button.dataset.importRetry}"]`);
     request.serials = [serial.value.trim()];
-    if (request.kind === "location") request.returning_user = user.value.trim(); else request.user = user.value.trim();
-    validateImportPreview();
+    if (request.kind === "location") {
+      request.returning_user = user.value.trim();
+      request.returning_user_info = null;
+    } else request.user = user.value.trim();
+    validateImportPreview([request]);
   }));
 
   $("#importIgnored").hidden = !payload.ignored.length;
   $("#importIgnoredList").innerHTML = payload.ignored.map((item) => `<li>${item.count} × ${escapeHtml(item.reason)}</li>`).join("");
 }
 
-async function validateImportPreview() {
+async function validateImportPreview(retryRequests = null) {
   const payload = state.importPreview;
   if (!payload || !["connected", "simulation"].includes(state.connection?.state)) return;
-  const requests = payload.requests.filter((request) => request.included !== false);
-  requests.forEach((request) => { request.import_validation = "checking"; request.import_error = ""; });
+  const requests = (retryRequests || payload.requests).filter((request) => request.included !== false);
+  requests.forEach((request) => {
+    request.import_validation = "checking";
+    request.import_error = "";
+    if (request.kind === "location") request.returning_user_loading = true;
+  });
   renderImportPreview();
   $("#prepareImportButton").disabled = true;
   await runConcurrent(requests, async (request) => {
@@ -1851,18 +2045,20 @@ async function validateImportPreview() {
       if (!asset || !user) throw new Error(!asset ? "Serial number was not found in EUDM." : "Username was not found in EUDM.");
       if (request.kind === "location") {
         request.returning_user_info = { login: bestLogin(user, username), columns: (user.columns || [user.value]).map(String).filter(Boolean) };
-        request.returning_user_loading = false;
       }
       request.import_validation = "valid";
     } catch (error) {
       request.import_validation = "failed";
       request.import_error = error.message || "Could not validate this request.";
+    } finally {
+      request.returning_user_loading = false;
     }
-  });
+  }, 12);
   renderImportPreview();
   const selectable = payload.requests.filter((request) => request.included !== false && request.import_validation === "valid").length;
   $("#prepareImportButton").disabled = selectable === 0;
-  $("#prepareImportButton").textContent = selectable === requests.length ? `Add ${selectable} to queue` : `Add ${selectable} checked to queue`;
+  const totalSelected = payload.requests.filter((request) => request.included !== false).length;
+  $("#prepareImportButton").textContent = selectable === totalSelected ? `Add ${selectable} to queue` : `Add ${selectable} checked to queue`;
 }
 
 function backToImportSelection() {
@@ -1873,7 +2069,7 @@ function backToImportSelection() {
   $("#prepareImportButton").textContent = "Review import";
   $("#prepareImportButton").disabled = false;
   $("#importError").hidden = true;
-  setImportStep(2);
+  setImportStep(3);
 }
 
 async function prepareImport() {
@@ -1902,7 +2098,7 @@ async function prepareImport() {
   }
   button.disabled = true;
   try {
-    if (state.workbook?.needs_mapping) {
+    if (!$("#importMapColumns").hidden) {
       await mapWorkbookColumns();
       return;
     }
@@ -1927,7 +2123,7 @@ async function prepareImport() {
     $("#importPreview").hidden = false;
     $("#backImportButton").hidden = false;
     button.textContent = `Add ${payload.counts.requests} to queue`;
-    setImportStep(3);
+    setImportStep(4);
     renderImportPreview();
     validateImportPreview();
   } catch (error) {
@@ -1942,14 +2138,17 @@ async function prepareImport() {
   }
 }
 
-function openReview() {
+async function openReview() {
   if (!state.queue.length || elements.reviewButton.disabled) return;
+  if (bulkSerialValidationEnabled()) {
+    const bulkOkay = await validateBulkSerials();
+    if (!bulkOkay) {
+      toast("Correct the bulk serial numbers EUDM could not verify.", "error");
+      return;
+    }
+  }
   const validations = queueValidation();
   const invalid = [...validations.values()].filter((errors) => errors.length);
-  const devices = state.queue.reduce((sum, request) => sum + request.serials.length, 0);
-  $("#reviewSummary").innerHTML = `
-    <div class="summary-metric"><strong>${state.queue.length}</strong><span>EUDM requests</span></div>
-    <div class="summary-metric"><strong>${devices}</strong><span>Devices</span></div>`;
   $("#reviewList").innerHTML = state.queue.map((request) => {
     const errors = validations.get(request.id) || [];
     const secondary = request.source
@@ -1979,13 +2178,6 @@ function progressStateLabel(entry) {
   return "Pending";
 }
 
-function progressStep(entry) {
-  const total = entry.step_count || 3;
-  if (entry.state === "succeeded") return { current: total, total, percent: 100 };
-  if (entry.state === "failed") return { current: entry.step || 0, total, percent: 100 };
-  return { current: entry.step || (entry.state === "running" ? 1 : 0), total, percent: entry.progress_percent ?? 0 };
-}
-
 function recordSuccessfulLocations(job) {
   if (job.simulation || job.state !== "finished" || state.recordedLocationJobs.has(job.job_id)) return;
   job.entries
@@ -2011,20 +2203,13 @@ function renderProgress(job) {
   const percentage = job.counts.total ? (done / job.counts.total) * 100 : 0;
   $("#progressBar").style.width = `${percentage}%`;
   $("#progressCounts").textContent = `${done} of ${job.counts.total} complete · ${job.counts.devices} devices`;
-  $("#progressLegend").innerHTML = [
-    ["pending", "Pending", job.counts.queued],
-    ["deploying", "Deploying", job.counts.running],
-    ["deployed", "Deployed", job.counts.succeeded],
-    ["failed", "Failed", job.counts.failed],
-  ].map(([stateName, label, count]) => `<span class="progress-legend-item ${stateName}"><i></i>${label} <strong>${count}</strong></span>`).join("");
+  const spinnerDelay = -(performance.now() % 720);
   $("#progressList").innerHTML = job.entries.map((entry) => {
-    const step = progressStep(entry);
     return `
     <div class="progress-row ${entry.state}">
-      <span class="progress-state" aria-label="${progressStateLabel(entry)}">${entry.state === "running" ? '<i class="activity-spinner"></i>' : progressStateSymbol(entry)}</span>
+      <span class="progress-state" aria-label="${progressStateLabel(entry)}">${entry.state === "running" ? `<i class="activity-spinner" style="animation-delay:${spinnerDelay}ms"></i>` : progressStateSymbol(entry)}</span>
       <div class="progress-device"><strong>${escapeHtml(entry.serials.join(", "))}</strong><small>${escapeHtml(kindLabel(entry.kind))} · ${escapeHtml(entry.status)}</small></div>
       <div class="progress-message"><div class="progress-message-title"><span class="progress-status ${entry.state}">${progressStateLabel(entry)}</span><strong>${escapeHtml(entry.message)}</strong></div><small>${escapeHtml(entry.destination)}${entry.returning_user ? ` · returned by ${escapeHtml(entry.returning_user)}` : ""}</small></div>
-      <div class="progress-step">${entry.state === "queued" ? "Waiting" : `Step ${step.current} of ${step.total}`}<small>${step.percent}%</small></div>
       <div class="request-id">${entry.request_id
         ? requestIdDisplay(entry.request_id, "progress-request-id")
         : entry.state === "queued" ? "Queued" : "Preparing"}</div>
@@ -2090,37 +2275,43 @@ async function openHistory() {
 }
 
 async function pollJob(jobId) {
+  let job;
   try {
-    const job = await api(`/api/jobs/${jobId}`);
-    renderProgress(job);
-    if (job.state !== "finished") {
-      state.pollTimer = setTimeout(() => pollJob(jobId), 650);
-    } else {
-      refreshConnection();
-      const type = job.counts.failed ? "error" : "success";
-      toast(`${job.counts.succeeded} request${job.counts.succeeded === 1 ? "" : "s"} submitted; ${job.counts.failed} failed.`, type);
-    }
+    job = await api(`/api/jobs/${jobId}`);
   } catch (error) {
-    toast(error.message, "error");
+    toast("Could not refresh request status. Trying again…", "error");
     state.pollTimer = setTimeout(() => pollJob(jobId), 1500);
+    return;
+  }
+  try {
+    renderProgress(job);
+  } catch (error) {
+    console.error("Could not render submission status", error);
+    $("#progressCounts").textContent = "Submission is running. Refreshing status…";
+    state.pollTimer = setTimeout(() => pollJob(jobId), 1500);
+    return;
+  }
+  if (job.state !== "finished") {
+    state.pollTimer = setTimeout(() => pollJob(jobId), 650);
+  } else {
+    refreshConnection();
+    const type = job.counts.failed ? "error" : "success";
+    toast(`${job.counts.succeeded} request${job.counts.succeeded === 1 ? "" : "s"} submitted; ${job.counts.failed} failed.`, type);
   }
 }
 
 async function submitQueue() {
   const button = $("#submitQueueButton");
   button.disabled = true;
+  let job;
   try {
-    const job = await api("/api/jobs", {
+    job = await api("/api/jobs", {
       method: "POST",
       body: JSON.stringify({
         requests: state.queue,
         concurrency: Number(elements.concurrency.value),
       }),
     });
-    $("#reviewDialog").close();
-    renderProgress(job);
-    $("#progressDialog").showModal();
-    pollJob(job.job_id);
   } catch (error) {
     if (error.payload?.validation) {
       toast("Some requests need attention. Return to the queue to correct them.", "error");
@@ -2128,7 +2319,18 @@ async function submitQueue() {
       toast(error.message, "error");
     }
     button.disabled = false;
+    return;
   }
+  $("#reviewDialog").close();
+  $("#progressDialog").showModal();
+  try {
+    renderProgress(job);
+  } catch (error) {
+    console.error("Could not render initial submission status", error);
+    $("#progressHeading").textContent = "Submitting requests";
+    $("#progressCounts").textContent = "Request accepted. Loading status…";
+  }
+  pollJob(job.job_id);
 }
 
 function bindEvents() {
@@ -2145,8 +2347,8 @@ function bindEvents() {
     copyRequestId(button);
   });
   $("#themeToggle").addEventListener("click", toggleTheme);
-  $("#newRequestButton").addEventListener("click", openNewRequestTypePicker);
-  $$('[data-new-request-kind]').forEach((button) => button.addEventListener("click", () => startNewRequest(button.dataset.newRequestKind)));
+  $("#shortcutsButton").addEventListener("click", openShortcuts);
+  $("#newRequestButton").addEventListener("click", startNewRequest);
   $("#saveNewRequestButton").addEventListener("click", saveNewRequest);
   $("#cancelNewRequestButton").addEventListener("click", () => $("#newRequestDialog").close());
   $("#discardNewRequestButton").addEventListener("click", () => $("#newRequestDialog").close());
@@ -2154,24 +2356,17 @@ function bindEvents() {
     if (state.newRequest) discardNewRequest();
   });
   $("#pastePairsButton").addEventListener("click", openPasteDialog);
-  $("#reviewPairsButton").addEventListener("click", reviewPairs);
   $("#addPairsButton").addEventListener("click", addPairs);
-  $("#pairsBackButton").addEventListener("click", () => {
-    $("#pairsInput").value = state.pasteEntries
-      .map((entry) => [entry.serial, entry.username].filter(Boolean).join(" "))
-      .join("\n");
-    $("#pairsEntry").hidden = false;
-    $("#pairsReview").hidden = true;
-    $("#pairsBackButton").hidden = true;
-    $("#reviewPairsButton").hidden = false;
-    $("#addPairsButton").hidden = true;
-    $("#pairsError").hidden = true;
-    setTimeout(() => $("#pairsInput").focus(), 0);
-  });
   $("#pairsApplyBulkButton").addEventListener("click", applyQuickImportKind);
-  $("#pairsShowAddButton").addEventListener("click", showQuickImportAdd);
-  $("#pairsCancelAddButton").addEventListener("click", cancelQuickImportAdd);
   $("#pairsConfirmAddButton").addEventListener("click", addQuickImportEntry);
+  $("#pairsAddListButton").addEventListener("click", addQuickImportList);
+  $("#pairsTextModeButton").addEventListener("click", () => {
+    const visible = !$("#pairsTextMode").hidden;
+    $("#pairsTextMode").hidden = visible;
+    $("#pairsEntry .quick-import-add").hidden = !visible;
+    $("#pairsTextModeButton").textContent = visible ? "Add a list instead" : "Use one-at-a-time entry";
+    if (!visible) $("#pairsInput").focus();
+  });
   $("#pairsAddUsername").addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault();
@@ -2181,7 +2376,7 @@ function bindEvents() {
   $("#pairsAddSerial").addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault();
-      $("#pairsAddUsername").focus();
+      addQuickImportEntry();
     }
   });
   $("#pairsAddSerial").addEventListener("input", () => { $("#pairsError").hidden = true; });
@@ -2226,38 +2421,101 @@ function bindEvents() {
     renderPasteLocationFields();
   });
   $("#pairsInput").addEventListener("input", () => { $("#pairsError").hidden = true; });
-  $("#settingsButton").addEventListener("click", () => {
-    $("#spreadsheetUrlInput").value = savedSpreadsheetUrl();
-    $("#settingsDialog").showModal();
-  });
+  $("#settingsButton").addEventListener("click", openSettings);
   $$('[data-settings-tab]').forEach((tab) => tab.addEventListener("click", () => {
     $$('[data-settings-tab]').forEach((item) => item.classList.toggle("active", item === tab));
     $$('[data-settings-panel]').forEach((panel) => { panel.hidden = panel.dataset.settingsPanel !== tab.dataset.settingsTab; });
   }));
-  $("#saveSettingsButton").addEventListener("click", () => {
+  $("#saveSettingsButton").addEventListener("click", async () => {
+    const button = $("#saveSettingsButton");
     const url = $("#spreadsheetUrlInput").value.trim();
-    if (url && !/^https:\/\//i.test(url)) { toast("Use a full https workbook link.", "error"); return; }
+    const columns = {
+      username: $("#spreadsheetUsernameColumnInput").value.trim(),
+      deployment_serial: $("#spreadsheetDeploymentColumnInput").value.trim(),
+      returned_device: $("#spreadsheetReturnedColumnInput").value.trim(),
+      pending_return: $("#spreadsheetPendingColumnInput").value.trim(),
+      enabled: $("#spreadsheetEnabledColumnInput").value.trim(),
+    };
+    if (!columns.username || !columns.deployment_serial || !columns.pending_return) {
+      toast("Set the username, deployment serial, and pending return columns.", "error");
+      return;
+    }
+    if (url && !/^https:\/\//i.test(url)) { toast("Use a full https ALM Workbook link.", "error"); return; }
+    const preferences = {
+      concurrency: Number(elements.concurrency.value),
+      validate_bulk_serials: $("#validateBulkSerialsInput").checked,
+      workbook_url: url,
+      workbook_headless: $("#spreadsheetHeadlessInput").checked,
+      import_columns: columns,
+    };
+    button.disabled = true;
     try {
+      state.preferences = await api("/api/preferences", {
+        method: "POST",
+        body: JSON.stringify(preferences),
+      });
       if (url) localStorage.setItem(SPREADSHEET_URL_STORAGE_KEY, url);
       else localStorage.removeItem(SPREADSHEET_URL_STORAGE_KEY);
-    } catch (_) {}
-    $("#settingsDialog").close();
-    toast("Settings saved.", "success");
+      localStorage.setItem(IMPORT_COLUMNS_STORAGE_KEY, JSON.stringify(columns));
+      localStorage.setItem(BULK_SERIAL_VALIDATION_STORAGE_KEY, String($("#validateBulkSerialsInput").checked));
+      localStorage.setItem(SPREADSHEET_HEADLESS_STORAGE_KEY, String($("#spreadsheetHeadlessInput").checked));
+      localStorage.setItem(CONCURRENCY_STORAGE_KEY, elements.concurrency.value);
+      $("#downloadSheetButton").hidden = !state.config.spreadsheet_import_enabled || !url;
+      $("#settingsDialog").close();
+      toast("Settings saved.", "success");
+    } catch (error) {
+      toast(error.message, "error");
+    } finally {
+      button.disabled = false;
+    }
   });
-  $("#importSheetButton").addEventListener("click", () => {
-    resetImportDialog();
-    $("#importDialog").showModal();
+  $("#importSheetButton").addEventListener("click", openAlmWorkbookImport);
+  $("#downloadSheetButton").addEventListener("click", () => {
+    if (!savedSpreadsheetUrl()) {
+      openSettings();
+      toast("Add the ALM Workbook link in Settings first.", "error");
+      return;
+    }
+    openAlmWorkbookImport();
+    downloadSavedWorkbook();
   });
   $("#importDialog").addEventListener("close", () => {
     state.importUploadToken += 1;
+    state.importLoginJobId = null;
+    $("#importLoginCompleteButton").hidden = true;
+    $("#downloadSheetButton").disabled = false;
     setImportBusy(false);
+  });
+  $("#importLoginCompleteButton").addEventListener("click", async () => {
+    const jobId = state.importLoginJobId;
+    if (!jobId) return;
+    $("#importLoginCompleteButton").disabled = true;
+    try {
+      await api(`/api/imports/${encodeURIComponent(jobId)}/continue`, {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      state.importLoginJobId = null;
+      $("#importLoginCompleteButton").hidden = true;
+    } catch (error) {
+      $("#importLoginCompleteButton").disabled = false;
+      toast(error.message, "error");
+    }
   });
   $("#workbookInput").addEventListener("change", (event) => {
     if (event.target.files[0]) uploadWorkbook(event.target.files[0]);
   });
-  $("#downloadWorkbookButton").addEventListener("click", downloadSavedWorkbook);
   $("#changeFileButton").addEventListener("click", resetImportDialog);
+  $("#changeMappedFileButton").addEventListener("click", resetImportDialog);
+  $("#changeColumnsButton").addEventListener("click", openImportColumnMapping);
   $("#importMapSheet").addEventListener("change", renderImportColumnMap);
+  [
+    "#importMapUsername",
+    "#importMapDeployment",
+    "#importMapReturned",
+    "#importMapPending",
+    "#importMapEnabled",
+  ].forEach((selector) => $(selector).addEventListener("change", updateImportColumnMapButton));
   $("#sheetInput").addEventListener("change", updateImportDates);
   $("#dateInput").addEventListener("change", updateImportCounts);
   $$('input[name="importMode"]').forEach((radio) => radio.addEventListener("change", updateImportCounts));
@@ -2274,6 +2532,7 @@ function bindEvents() {
     rememberImportLocation(state.importLocation);
     renderImportLocationFields();
   });
+  $("#requestSizeInput").addEventListener("change", () => changeRequestSize($("#requestSizeInput").value));
   $("#prepareImportButton").addEventListener("click", prepareImport);
   $("#backImportButton").addEventListener("click", backToImportSelection);
   elements.reviewButton.addEventListener("click", openReview);
@@ -2294,9 +2553,8 @@ function bindEvents() {
   $("#searchUserButton").addEventListener("click", () => searchUsers(false));
   $("#searchReturningButton").addEventListener("click", () => searchUsers(true));
   $("#loadLocationsButton").addEventListener("click", loadLocations);
-  $$('input[name="requestKind"]').forEach((radio) => radio.addEventListener("change", () => changeKind(radio.value)));
-
   elements.serialInput.addEventListener("input", () => {
+    hideSearchResults();
     const request = selectedRequest();
     if (!request) return;
     request.serials = elements.serialInput.value.trim() ? [elements.serialInput.value.trim()] : [];
@@ -2306,16 +2564,19 @@ function bindEvents() {
     const request = selectedRequest();
     if (!request) return;
     request.serials = parseSerials(elements.serialsInput.value);
+    request.bulk_validation = "stale";
+    request.bulk_validation_error = "";
     elements.serialHint.textContent = `${request.serials.length} serial${request.serials.length === 1 ? "" : "s"}`;
     renderQueue();
   });
   elements.statusInput.addEventListener("change", () => {
     const request = selectedRequest();
     if (!request) return;
-    request.status = elements.statusInput.value;
+    applyInferredKind(request, elements.statusInput.value);
     renderAll();
   });
   elements.userInput.addEventListener("input", () => {
+    hideSearchResults();
     const request = selectedRequest();
     if (!request) return;
     request.user = elements.userInput.value.trim();
@@ -2354,6 +2615,7 @@ function bindEvents() {
     renderQueue();
   });
   elements.returningUserInput.addEventListener("input", () => {
+    hideSearchResults();
     const request = selectedRequest();
     if (!request) return;
     request.returning_user = elements.returningUserInput.value.trim();
@@ -2364,15 +2626,75 @@ function bindEvents() {
   elements.serialInput.addEventListener("keydown", (event) => { if (event.key === "Enter") searchAssets(); });
   elements.userInput.addEventListener("keydown", (event) => { if (event.key === "Enter") searchUsers(false); });
   elements.returningUserInput.addEventListener("keydown", (event) => { if (event.key === "Enter") searchUsers(true); });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && [elements.serialResults, elements.userResults, elements.returningResults].some((node) => !node.hidden)) {
+      hideSearchResults();
+    }
+  });
+  document.addEventListener("pointerdown", (event) => {
+    if (!event.target.closest(".search-control, .search-results")) hideSearchResults();
+  });
   $("#doneButton").addEventListener("click", () => $("#progressDialog").close());
   $("#closeProgressButton").addEventListener("click", () => $("#progressDialog").close());
   $("#progressDialog").addEventListener("close", () => {
     if (state.currentJob?.state === "finished") renderAll();
   });
   document.addEventListener("keydown", (event) => {
-    if ((event.metaKey || event.ctrlKey) && event.key === "Enter" && !elements.reviewButton.disabled) {
+    const mac = /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent);
+    const shortcut = mac
+      ? (event.metaKey && event.ctrlKey)
+      : (event.ctrlKey && !event.metaKey);
+    const editable = event.target instanceof Element
+      && Boolean(event.target.closest("input, textarea, select, [contenteditable='true']"));
+    const dialogOpen = Boolean($("dialog[open]"));
+
+    if (!shortcut && !event.altKey && !editable && !dialogOpen && event.key === "?") {
+      event.preventDefault();
+      openShortcuts();
+      return;
+    }
+    if (!shortcut || event.altKey || dialogOpen) return;
+
+    if (event.key === "Enter" && !elements.reviewButton.disabled) {
       event.preventDefault();
       openReview();
+      return;
+    }
+    if (editable) return;
+
+    const key = event.key.toLowerCase();
+    if (event.shiftKey && key === "d" && !$("#downloadSheetButton").hidden && !$("#downloadSheetButton").disabled) {
+      event.preventDefault();
+      $("#downloadSheetButton").click();
+      return;
+    }
+    if (event.shiftKey && key === "h") {
+      event.preventDefault();
+      openHistory();
+      return;
+    }
+    if (event.shiftKey) return;
+
+    if (key === "n") {
+      event.preventDefault();
+      startNewRequest();
+    } else if (key === "i") {
+      event.preventDefault();
+      openPasteDialog();
+    } else if (key === "o") {
+      event.preventDefault();
+      openAlmWorkbookImport();
+    } else if (key === ",") {
+      event.preventDefault();
+      openSettings();
+    }
+  });
+  document.addEventListener("keydown", (event) => {
+    const editable = event.target instanceof Element
+      && Boolean(event.target.closest("input, textarea, select, [contenteditable='true']"));
+    if (!editable && !$("dialog[open]") && !event.metaKey && !event.ctrlKey && !event.altKey && event.key === "/") {
+      event.preventDefault();
+      focusSelectedSerial();
     }
   });
 }
@@ -2388,12 +2710,15 @@ async function init() {
     } else {
       systemTheme.addListener(updateForSystemTheme);
     }
-    state.config = await api("/api/config");
+    [state.config, state.preferences] = await Promise.all([
+      api("/api/config"),
+      api("/api/preferences"),
+    ]);
     const spreadsheetEnabled = Boolean(state.config.spreadsheet_import_enabled);
     $("#importSheetButton").hidden = !spreadsheetEnabled;
+    $("#downloadSheetButton").hidden = !spreadsheetEnabled || !savedSpreadsheetUrl();
     const spreadsheetSettings = $('[data-settings-tab="spreadsheet"]');
     if (spreadsheetSettings) spreadsheetSettings.hidden = !spreadsheetEnabled;
-    elements.requestForValue.textContent = state.config.request_for || "Waiting for EUDM";
     configureConcurrency(state.config.concurrency);
     bindEvents();
     await refreshConnection();

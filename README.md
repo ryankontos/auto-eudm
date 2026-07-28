@@ -178,25 +178,35 @@ EUDM_CONCURRENCY=3
 EUDM_ENABLE_SPREADSHEET_IMPORT=true
 ```
 
-The web app’s spreadsheet importer asks you to map the four columns from the
-uploaded workbook by heading, then remembers that mapping locally for later
-matching workbooks. It never relies on column letters. The deployment
+The web app’s spreadsheet importer maps workbook headings in a dedicated
+Columns step. Saved headings that all exist in the selected sheet skip that
+step; **Change columns** opens it again at any time. Updated mappings are saved
+with the other persistent web settings. The importer never relies on column letters. The deployment
 serial goes to the user, the returned-device serial goes to one shared import
 location as Used Stock or Pending Decom, and the pending-return serial is sent
 as Deployed - Pending Return.
 
-In **Settings → Spreadsheet import**, you can also save a SharePoint or
-OneDrive workbook link. **Download saved workbook** fetches the current
-version directly into the importer. The workbook stays in memory while it is
-being mapped and read; it is never copied to Downloads or kept as a permanent
-local file. Public links download directly. Private work links automatically
-retry headlessly through the saved Chrome profile, so sign in to Microsoft once
-in that profile if SharePoint asks for authentication.
+In **Settings → ALM Workbook**, you can save a SharePoint or OneDrive workbook
+link. With **Try a headless download first** enabled, AutoEUDM starts the
+download in the background and automatically opens Chrome only when that
+attempt needs attention. If sign-in is required, it pauses until you confirm
+that login is complete. Chrome closes as soon as the completed workbook has
+been verified. The workbook stays in memory while it is mapped and read; it is
+never copied to Downloads or kept as a permanent local file.
+
+The same settings tab lets you set the headings for username, deployment
+serial, returned device, pending return, and the optional TRUE/FALSE column.
+Web settings are stored in `results/web-settings.json`, so they survive browser
+and AutoEUDM restarts.
 
 The web workspace verifies the authenticated EUDM session every 30 seconds
 with a read-only API request. If SSO has expired, it immediately switches to a
 reconnect prompt. **Refresh connection** is also always available while EUDM
 is connected for an on-demand check.
+
+Completed web request runs remain available in **Request history** after the
+web app is restarted. They are stored locally in the git-ignored `results`
+folder.
 
 Do not put `EUDM_COOKIE` in `.env`; export short-lived cookies in the current shell or use the dedicated Chrome profile.
 
@@ -393,7 +403,7 @@ python3 eudm_inventory_import.py --cookie-mode
 
 The importer lists the dates from column A, then asks whether to process new devices from column J, old devices from column L, or both. Column D supplies the target username; column F is never used.
 
-A row is excluded before authentication when column G is explicitly `false`, any cell in columns A-L uses red font, or no username is present in column D. New and old serials are evaluated independently, so a missing serial in one column does not discard a valid serial in the other. An old serial from column L becomes a separate `Deployed - Pending Return` request for the same user. Obvious non-serial sheet markers, such as the single digits `1`-`5`, are not treated as serial numbers.
+A row is excluded before authentication when its mapped TRUE/FALSE column is explicitly `false`, any cell in the row uses red font, or no username is present in the mapped username column. New and old serials are evaluated independently, so a missing serial in one column does not discard a valid serial in the other. An old serial becomes a separate `Deployed - Pending Return` request for the same user. Obvious non-serial sheet markers, such as the single digits `1`-`5`, are not treated as serial numbers.
 
 New devices default to `Deployed - New Stock`. Before the preview, enter one or more displayed numbers such as `2,4-6` to change those devices to `Deployed - Existing Stock`. The final preview includes every serial, username, source row, and status. The CLI asks once more before authentication and submission.
 

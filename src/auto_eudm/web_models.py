@@ -431,7 +431,7 @@ class WorkbookImport:
                     header_row, indexes, date_index = inventory.find_column_indexes(sheet, selected_columns)
                 except eudm.EUDMError:
                     continue
-                max_column = max(sheet.max_column or 1, date_index, 7, *indexes.values())
+                max_column = max(sheet.max_column or 1, date_index, *indexes.values())
                 for values in sheet.iter_rows(min_row=header_row + 1, min_col=1, max_col=max_column):
                     processed_rows += 1
                     if on_progress and (
@@ -454,7 +454,9 @@ class WorkbookImport:
                             marked_red=any(
                                 inventory.cell_is_red(cell) for cell in values
                             ),
-                            enabled=inventory.column_g_allows(values[6].value),
+                            enabled=inventory.enabled_column_allows(
+                                values[indexes["enabled"] - 1].value
+                            ) if indexes["enabled"] else True,
                         )
                     )
                 if rows:
