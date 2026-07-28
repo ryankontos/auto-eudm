@@ -403,7 +403,7 @@ function validateRequest(request) {
     // checks or editor rerenders. `pending` means it will be checked during
     // Review & submit (or when the optional recheck setting is enabled).
     if (request.bulk_validation === "checking") {
-      errors.push("Checking serial numbers in EUDM.");
+      errors.push("Verifying each serial number against EUDM. Please wait.");
     } else if (request.bulk_validation === "failed") {
       errors.push(request.bulk_validation_error || "One or more serial numbers could not be verified in EUDM.");
     }
@@ -503,7 +503,7 @@ async function validateBulkSerials({ force = false, requests = null } = {}) {
   });
   renderAll();
   const missing = new Map(bulkRequests.map((request) => [request.id, []]));
-  await runConcurrent(items, async ({ request, serial }) => {
+  await Promise.all(items.map(async ({ request, serial }) => {
     try {
       const payload = await api("/api/search/assets", {
         method: "POST",
@@ -514,7 +514,7 @@ async function validateBulkSerials({ force = false, requests = null } = {}) {
     } catch (_) {
       missing.get(request.id).push(serial);
     }
-  }, 12);
+  }));
   bulkRequests.forEach((request) => {
     if (snapshots.get(request.id) !== request.serials.join("\u0000")) return;
     const invalid = missing.get(request.id);
@@ -549,7 +549,7 @@ function renderReturningUserInfo(request) {
   const info = request.returning_user_info;
   if (request.returning_user_loading) {
     panel.className = "return-user-info loading";
-    panel.innerHTML = "<strong>Checking returning user…</strong><span>Fetching EUDM details before this request can be submitted.</span>";
+    panel.innerHTML = "<strong>Verifying returning user details…</strong><span>Fetching the user details EUDM will use before this request can be submitted.</span>";
     return;
   }
   const values = info?.columns || [];
@@ -1284,7 +1284,7 @@ function renderQuickImportReview() {
     const returnInfo = entry.kind === "location" && entry.username
       ? `<div class="quick-import-return ${entry.returningUserInfo ? "" : "unknown"}"><strong>Returning user</strong><span>${escapeHtml(entry.returningUserInfo?.login || entry.username)}</span><small>${entry.returningUserInfo?.columns?.length ? escapeHtml(entry.returningUserInfo.columns.join(" · ")) : "Details unknown — search and verify before submitting. An email will be sent to this user."}</small></div>`
       : "";
-    const checking = entry.validationState === "checking" ? '<small class="import-checking">Checking EUDM…</small>' : entry.validationState === "failed" ? `<small class="import-check-failed">${escapeHtml(entry.validationError || "Not found in EUDM")}</small>` : "";
+    const checking = entry.validationState === "checking" ? '<small class="import-checking">Verifying the serial and user in EUDM…</small>' : entry.validationState === "failed" ? `<small class="import-check-failed">${escapeHtml(entry.validationError || "Not found in EUDM")}</small>` : "";
     return `<div class="quick-import-row">
       <div><strong>${escapeHtml(entry.serial)}</strong><small>${username}</small>${returnInfo}${checking}</div>
       <div class="quick-import-row-actions">
@@ -1336,7 +1336,7 @@ async function resolveQuickImportReturningUsers() {
   if (!entries.length || !["connected", "simulation"].includes(state.connection?.state)) return;
   entries.forEach((entry) => { entry.validationChecked = true; entry.validationState = "checking"; });
   renderQuickImportReview();
-  await runConcurrent(entries, async (entry) => {
+  await Promise.all(entries.map(async (entry) => {
     try {
       const [assets, users] = await Promise.all([
         api("/api/search/assets", { method: "POST", body: JSON.stringify({ query: entry.serial, fresh: true }) }),
@@ -1352,7 +1352,7 @@ async function resolveQuickImportReturningUsers() {
       entry.validationState = "failed";
       entry.validationError = error.message || "Could not validate this entry.";
     }
-  });
+  }));
   renderQuickImportReview();
 }
 
@@ -1361,7 +1361,7 @@ async function resolveQueueReturningUsers(requests) {
   if (!entries.length || !["connected", "simulation"].includes(state.connection?.state)) return;
   entries.forEach((request) => { request.returning_user_loading = true; });
   renderAll();
-  await runConcurrent(entries, async (request) => {
+  await Promise.all(entries.map(async (request) => {
     try {
       const payload = await api("/api/search/users", { method: "POST", body: JSON.stringify({ query: request.returning_user, returning: true }) });
       const result = (payload.results || []).find((item) => bestLogin(item, request.returning_user).toLowerCase() === request.returning_user.toLowerCase());
@@ -1371,7 +1371,7 @@ async function resolveQueueReturningUsers(requests) {
     } finally {
       request.returning_user_loading = false;
     }
-  });
+  }));
   renderAll();
 }
 
@@ -1900,7 +1900,7 @@ async function downloadSavedWorkbook() {
 function importReturnDetails(request, isReturnedDevice) {
   if (!isReturnedDevice) return "";
   if (request.import_validation === "checking") {
-    return '<div class="import-return-details loading"><strong>Checking returning user…</strong><small>Confirming the details before this request is added.</small></div>';
+    return '<div class="import-return-details loading"><strong>Verifying returning user details…</strong><small>Confirming the user before this request is added.</small></div>';
   }
   const info = request.returning_user_info;
   if (!info?.columns?.length) {
@@ -1961,7 +1961,7 @@ function renderImportPreview() {
              </select>`
           : `<span class="fixed-status">Deployed - Pending Return</span>`;
       const validation = request.import_validation === "checking"
-        ? '<small class="import-checking">Checking EUDM…</small>'
+        ? '<small class="import-checking">Verifying serial and user details in EUDM…</small>'
         : request.import_validation === "failed"
           ? `<small class="import-check-failed">${escapeHtml(request.import_error || "Not found in EUDM")}</small>`
           : "";
@@ -1973,7 +1973,7 @@ function renderImportPreview() {
           <span>${index + 1}</span>
         </label>
         <div><strong>${escapeHtml(request.serials[0])}</strong><small>${isDeployment ? "Deployment serial" : isReturnedDevice ? "Returned device" : "Pending return"}</small></div>
-        <div><strong>${escapeHtml(request.user || request.returning_user || "No user")}</strong><small>${isReturnedDevice ? "Returning user" : "Receiving user"}</small></div>
+        <div><strong>${escapeHtml(request.user || request.returning_user || "No user")}</strong><small>${isReturnedDevice ? "Returning user" : "User"}</small></div>
         <div>${statusControl}${isIncluded ? validation : "<small>Do not deploy</small>"}${returnDetails}${editable}</div>
       </div>`;
     }).join("");
@@ -2051,7 +2051,7 @@ async function validateImportPreview(retryRequests = null) {
   });
   renderImportPreview();
   $("#prepareImportButton").disabled = true;
-  await runConcurrent(requests, async (request) => {
+  await Promise.all(requests.map(async (request) => {
     const serial = request.serials[0];
     const username = request.user || request.returning_user;
     try {
@@ -2072,7 +2072,7 @@ async function validateImportPreview(retryRequests = null) {
     } finally {
       request.returning_user_loading = false;
     }
-  }, 12);
+  }));
   renderImportPreview();
   const selectable = payload.requests.filter((request) => request.included !== false && request.import_validation === "valid").length;
   $("#prepareImportButton").disabled = selectable === 0;

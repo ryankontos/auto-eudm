@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import re
 import threading
+import tempfile
 import time
 import traceback
 from typing import Any
@@ -143,6 +144,7 @@ def download_workbook_with_browser(
     playwright = None
     context = None
     page = None
+    download_dir = tempfile.TemporaryDirectory(prefix="autoeudm-workbook-")
     try:
         if diagnostics:
             diagnostics.event(
@@ -158,6 +160,7 @@ def download_workbook_with_browser(
             channel="chrome",
             headless=False,
             accept_downloads=True,
+            downloads_path=download_dir.name,
         )
         page = context.pages[0] if context.pages else context.new_page()
 
@@ -253,17 +256,65 @@ def download_workbook_with_browser(
             raise eudm.EUDMError("Excel Online did not show Download a Copy.")
 
         update_job("Downloading workbook…")
-        with page.expect_download(timeout=120_000) as pending:
-            download_control.click(timeout=15_000)
-        download = pending.value
-        failure = download.failure()
-        if failure:
-            raise eudm.EUDMError(f"Excel Online could not download a copy: {failure}")
-        downloaded_path = Path(download.path())
+        if diagnostics:
+            diagnostics.event("browser.download_click", directory=download_dir.name)
+        download = None
+        try:
+            with page.expect_download(timeout=15_000) as pending:
+                download_control.click(timeout=15_000)
+            download = pending.value
+        except Exception as exc:
+            # Excel can hand the download to Chrome without emitting a
+            # Playwright download event. Watch the isolated directory too.
+            if diagnostics:
+                diagnostics.event("browser.download_event_unobserved", error=repr(exc))
+            update_job("Waiting for Excel to finish the workbook download…")
+
+        downloaded_path: Path | None = None
+        suggested_filename = ""
+        if download is not None:
+            failure = download.failure()
+            if failure:
+                raise eudm.EUDMError(f"Excel Online could not download a copy: {failure}")
+            downloaded_path = Path(download.path())
+            suggested_filename = download.suggested_filename or ""
+        else:
+            deadline = time.monotonic() + 120
+            last_size = -1
+            stable_reads = 0
+            while time.monotonic() < deadline:
+                candidates = sorted(
+                    (path for path in Path(download_dir.name).iterdir()
+                     if path.is_file() and path.suffix.casefold() in {".xlsx", ".xlsm"}),
+                    key=lambda path: path.stat().st_mtime,
+                    reverse=True,
+                )
+                if candidates:
+                    candidate = candidates[0]
+                    size = candidate.stat().st_size
+                    if size > 0 and size == last_size:
+                        stable_reads += 1
+                    else:
+                        stable_reads = 0
+                    last_size = size
+                    if stable_reads >= 2:
+                        downloaded_path = candidate
+                        suggested_filename = candidate.name
+                        break
+                page.wait_for_timeout(500)
+            if downloaded_path is None:
+                if diagnostics:
+                    diagnostics.event(
+                        "browser.download_file_missing",
+                        directory=download_dir.name,
+                        files=[path.name for path in Path(download_dir.name).iterdir()],
+                    )
+                raise eudm.EUDMError("Excel Online did not finish downloading the workbook within two minutes.")
+
         data = downloaded_path.read_bytes()
         if len(data) > MAX_WORKBOOK_DOWNLOAD or not data.startswith(b"PK\x03\x04"):
             raise eudm.EUDMError("Excel Online did not return an Excel workbook.")
-        suggested_filename = download.suggested_filename or workbook_filename_from_url(url)
+        suggested_filename = suggested_filename or workbook_filename_from_url(url)
         filename = Path(suggested_filename).name
         if not filename.lower().endswith((".xlsx", ".xlsm")):
             filename = workbook_filename_from_url(url)
@@ -298,5 +349,6 @@ def download_workbook_with_browser(
                 playwright.stop()
             except Exception:
                 pass
+        download_dir.cleanup()
         if diagnostics:
             diagnostics.event("browser.stopped")
