@@ -244,6 +244,18 @@ def download_workbook_with_browser(
         download_pattern = r"download\s+(?:a\s+)?copy"
         download_control = find_control(download_pattern)
         if download_control is None:
+            # Some Excel Online tenants put the workbook download behind a
+            # second popover: File -> Create a Copy -> Download a Copy.
+            create_copy = find_control(r"create\s+a\s+copy")
+            if create_copy is not None:
+                update_job("Opening Excel's copy options…")
+                create_copy.click(timeout=15_000)
+                copy_deadline = time.monotonic() + 15
+                while time.monotonic() < copy_deadline and download_control is None:
+                    page.wait_for_timeout(300)
+                    download_control = find_control(download_pattern)
+
+        if download_control is None:
             save_as = find_control(r"^save as$")
             if save_as is None:
                 if diagnostics:
