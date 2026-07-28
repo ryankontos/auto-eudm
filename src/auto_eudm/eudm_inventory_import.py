@@ -44,12 +44,23 @@ FILE_PREFIX = "Inventory Tracking - Sydney"
 
 
 @dataclass(frozen=True)
+class ImportColumns:
+    """Header titles used by the tracking workbook, independent of column order."""
+
+    username: str = "Username"
+    deployment_serial: str = "SN"
+    returned_device: str = "Returned Device SN"
+    pending_return: str = "OLD Device SN"
+
+
+@dataclass(frozen=True)
 class SheetRow:
     row_number: int
     deployment_date: date
     username: str | None
-    new_serial: str | None
-    old_serial: str | None
+    deployment_serial: str | None
+    returned_device_serial: str | None
+    pending_return_serial: str | None
     marked_red: bool
     enabled: bool
 
@@ -61,6 +72,48 @@ class Action:
     username: str
     serial: str
     status: str
+    kind: str = "user"
+
+
+def normalized_header(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip()).casefold()
+
+
+def columns_from_mapping(raw: dict[str, Any] | None = None) -> ImportColumns:
+    raw = raw or {}
+    return ImportColumns(
+        username=clean_text(raw.get("username")) or "Username",
+        deployment_serial=clean_text(raw.get("deployment_serial")) or "SN",
+        returned_device=clean_text(raw.get("returned_device")) or "",
+        pending_return=clean_text(raw.get("pending_return")) or "OLD Device SN",
+    )
+
+
+def find_column_indexes(sheet: Any, columns: ImportColumns) -> tuple[int, dict[str, int], int]:
+    """Find a header row by title, allowing the workbook's columns to move."""
+    desired = {
+        "username": columns.username,
+        "deployment_serial": columns.deployment_serial,
+        "returned_device": columns.returned_device,
+        "pending_return": columns.pending_return,
+    }
+    targets = {key: normalized_header(value) for key, value in desired.items()}
+    date_titles = {"date", "deployment date", "booking date"}
+    max_column = int(sheet.max_column or 1)
+    for row in sheet.iter_rows(min_row=1, max_row=min(25, int(sheet.max_row or 25)), max_col=max_column):
+        found = {normalized_header(cell.value): cell.column for cell in row if normalized_header(cell.value)}
+        indexes = {key: found.get(title) for key, title in targets.items()}
+        if not indexes["username"] or not indexes["deployment_serial"] or not indexes["pending_return"]:
+            continue
+        date_index = next((found[title] for title in date_titles if title in found), None)
+        if not date_index:
+            continue
+        # The returned-device column is intentionally optional until a team adds it.
+        return row[0].row, {key: value or 0 for key, value in indexes.items()}, date_index
+    missing = ", ".join(f"{name!r}" for name in desired.values())
+    raise eudm.EUDMError(
+        "Could not find the spreadsheet headers. Check Spreadsheet import settings: " + missing
+    )
 
 
 def clean_text(value: Any) -> str | None:
@@ -147,9 +200,9 @@ def normalize_date(value: Any, epoch: datetime) -> date | None:
     return None
 
 
-def username_for(row: tuple[Any, ...]) -> str | None:
-    """Read the EUDM username from column D only; column F is never a fallback."""
-    return clean_text(row[3].value)
+def username_for(row: tuple[Any, ...], index: int = 4) -> str | None:
+    """Read the configured username column only; email is never a fallback."""
+    return clean_text(row[index - 1].value) if index else None
 
 
 def select_workbook_sheet(workbook: Any) -> Any:
@@ -162,7 +215,7 @@ def select_workbook_sheet(workbook: Any) -> Any:
     return workbook[workbook.sheetnames[selected]]
 
 
-def load_sheet(path: Path) -> tuple[str, list[SheetRow]]:
+def load_sheet(path: Path, columns: ImportColumns | None = None) -> tuple[str, list[SheetRow]]:
     try:
         from openpyxl import load_workbook
     except ImportError as exc:
@@ -180,9 +233,11 @@ def load_sheet(path: Path) -> tuple[str, list[SheetRow]]:
         ) from exc
     try:
         sheet = select_workbook_sheet(workbook)
+        header_row, indexes, date_index = find_column_indexes(sheet, columns or ImportColumns())
+        max_column = max(sheet.max_column or 1, date_index, 7, *indexes.values())
         rows: list[SheetRow] = []
-        for values in sheet.iter_rows(min_row=2, min_col=1, max_col=12):
-            deployment_date = normalize_date(values[0].value, workbook.epoch)
+        for values in sheet.iter_rows(min_row=header_row + 1, min_col=1, max_col=max_column):
+            deployment_date = normalize_date(values[date_index - 1].value, workbook.epoch)
             if deployment_date is None:
                 continue
             username = username_for(values)
@@ -190,9 +245,10 @@ def load_sheet(path: Path) -> tuple[str, list[SheetRow]]:
                 SheetRow(
                     row_number=values[0].row,
                     deployment_date=deployment_date,
-                    username=username,
-                    new_serial=clean_text(values[9].value),
-                    old_serial=clean_text(values[11].value),
+                    username=username_for(values, indexes["username"]),
+                    deployment_serial=clean_text(values[indexes["deployment_serial"] - 1].value) if indexes["deployment_serial"] else None,
+                    returned_device_serial=clean_text(values[indexes["returned_device"] - 1].value) if indexes["returned_device"] else None,
+                    pending_return_serial=clean_text(values[indexes["pending_return"] - 1].value) if indexes["pending_return"] else None,
                     marked_red=any(cell_is_red(cell) for cell in values),
                     enabled=column_g_allows(values[6].value),
                 )
@@ -257,11 +313,12 @@ def parse_number_selection(raw: str, maximum: int) -> set[int]:
     return selected
 
 
-def eligible_counts(rows: Iterable[SheetRow]) -> tuple[int, int]:
+def eligible_counts(rows: Iterable[SheetRow]) -> tuple[int, int, int]:
     eligible = [row for row in rows if row.enabled and not row.marked_red and row.username]
     return (
-        sum(looks_like_serial(row.new_serial) for row in eligible),
-        sum(looks_like_serial(row.old_serial) for row in eligible),
+        sum(looks_like_serial(row.deployment_serial) for row in eligible),
+        sum(looks_like_serial(row.returned_device_serial) for row in eligible),
+        sum(looks_like_serial(row.pending_return_serial) for row in eligible),
     )
 
 
@@ -280,31 +337,27 @@ def build_actions(
             ignored["marked red"] += 1
             continue
         if not row.username:
-            if mode in ("new", "both") and looks_like_serial(row.new_serial):
-                ignored["new serial has no username in column D"] += 1
-            if mode in ("returns", "both") and looks_like_serial(row.old_serial):
-                ignored["return serial has no username in column D"] += 1
-            if (
-                not looks_like_serial(row.new_serial)
-                and not looks_like_serial(row.old_serial)
-            ):
-                ignored["no username in column D"] += 1
+            if any(looks_like_serial(value) for value in (row.deployment_serial, row.returned_device_serial, row.pending_return_serial)):
+                ignored["serial has no username"] += 1
             continue
         if not looks_like_username(row.username):
-            if mode in ("new", "both") and looks_like_serial(row.new_serial):
-                ignored["new serial has an invalid username in column D"] += 1
-            if mode in ("returns", "both") and looks_like_serial(row.old_serial):
-                ignored["return serial has an invalid username in column D"] += 1
+            ignored["serial has an invalid username"] += 1
             continue
-        if mode in ("new", "both"):
-            if looks_like_serial(row.new_serial):
-                actions.append(Action("New deployments", row.row_number, row.username, row.new_serial, NEW_STOCK))
+        if mode in ("deployments", "all"):
+            if looks_like_serial(row.deployment_serial):
+                actions.append(Action("Deployments", row.row_number, row.username, row.deployment_serial, NEW_STOCK))
             else:
-                ignored["no usable new serial in column J"] += 1
-        if mode in ("returns", "both") and looks_like_serial(row.old_serial):
-            actions.append(Action("Pending returns", row.row_number, row.username, row.old_serial, PENDING_RETURN))
-        elif mode in ("returns", "both"):
-            ignored["no usable old serial in column L"] += 1
+                ignored["no usable deployment serial"] += 1
+        if mode in ("returned_devices", "all"):
+            if looks_like_serial(row.returned_device_serial):
+                actions.append(Action("Returned devices", row.row_number, row.username, row.returned_device_serial, "Used Stock", "location"))
+            else:
+                ignored["no usable returned-device serial"] += 1
+        if mode in ("pending_returns", "all"):
+            if looks_like_serial(row.pending_return_serial):
+                actions.append(Action("Pending returns", row.row_number, row.username, row.pending_return_serial, PENDING_RETURN))
+            else:
+                ignored["no usable pending-return serial"] += 1
 
     serial_spellings: dict[str, str] = {}
     counts: Counter[str] = Counter()

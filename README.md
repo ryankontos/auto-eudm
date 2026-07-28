@@ -175,7 +175,15 @@ EUDM_ROOM="Store Room"
 EUDM_DEFAULT_USER_STATUS="Deployed - Existing Stock"
 EUDM_LOGGING=true
 EUDM_CONCURRENCY=3
+EUDM_ENABLE_SPREADSHEET_IMPORT=true
 ```
+
+The web app’s spreadsheet importer asks you to map the four columns from the
+uploaded workbook by heading, then remembers that mapping locally for later
+matching workbooks. It never relies on column letters. The deployment
+serial goes to the user, the returned-device serial goes to one shared import
+location as Used Stock or Pending Decom, and the pending-return serial is sent
+as Deployed - Pending Return.
 
 Do not put `EUDM_COOKIE` in `.env`; export short-lived cookies in the current shell or use the dedicated Chrome profile.
 

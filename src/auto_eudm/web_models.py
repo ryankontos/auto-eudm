@@ -345,12 +345,43 @@ class WorkbookImport:
     filename: str
     sheets: dict[str, list[inventory.SheetRow]]
 
+    @staticmethod
+    def inspect_upload(filename: str, encoded: str) -> dict[str, Any]:
+        """Return selectable headings before committing to a column mapping."""
+        if not filename.lower().endswith((".xlsx", ".xlsm")):
+            raise eudm.EUDMError("Choose an .xlsx or .xlsm workbook.")
+        try:
+            payload = base64.b64decode(encoded, validate=True)
+            from openpyxl import load_workbook
+            workbook = load_workbook(BytesIO(payload), data_only=True, read_only=True)
+        except Exception as exc:
+            raise eudm.EUDMError("Could not read the workbook. Use an unencrypted .xlsx or .xlsm file.") from exc
+        try:
+            sheets = []
+            for sheet in workbook.worksheets:
+                headings: list[str] = []
+                for row in sheet.iter_rows(min_row=1, max_row=min(25, int(sheet.max_row or 25))):
+                    values = [inventory.clean_text(cell.value) for cell in row]
+                    # Tracking headers always include Date; only offer header-like rows.
+                    if any(inventory.normalized_header(value) in {"date", "deployment date", "booking date"} for value in values):
+                        headings = [value for value in values if value]
+                        break
+                if headings:
+                    sheets.append({"name": sheet.title, "headings": headings})
+            if not sheets:
+                raise eudm.EUDMError("No sheet with a Date heading was found.")
+            default_sheet = "Bookings 2026" if any(item["name"] == "Bookings 2026" for item in sheets) else sheets[0]["name"]
+            return {"filename": filename, "default_sheet": default_sheet, "sheets": sheets, "needs_mapping": True}
+        finally:
+            workbook.close()
+
     @classmethod
     def from_upload(
         cls,
         filename: str,
         encoded: str,
         *,
+        columns: inventory.ImportColumns | None = None,
         on_progress: Callable[[str, int, int], None] | None = None,
     ) -> "WorkbookImport":
         if not filename.lower().endswith((".xlsx", ".xlsm")):
@@ -393,18 +424,22 @@ class WorkbookImport:
                     sheet.calculate_dimension(force=True)
                 total_rows += max(0, int(sheet.max_row or 1) - 1)
             processed_rows = 0
+            selected_columns = columns or inventory.ImportColumns()
             for sheet in source_sheets:
                 rows: list[inventory.SheetRow] = []
-                for values in sheet.iter_rows(
-                    min_row=2, min_col=1, max_col=12
-                ):
+                try:
+                    header_row, indexes, date_index = inventory.find_column_indexes(sheet, selected_columns)
+                except eudm.EUDMError:
+                    continue
+                max_column = max(sheet.max_column or 1, date_index, 7, *indexes.values())
+                for values in sheet.iter_rows(min_row=header_row + 1, min_col=1, max_col=max_column):
                     processed_rows += 1
                     if on_progress and (
                         processed_rows == total_rows or processed_rows % 150 == 0
                     ):
                         on_progress(sheet.title, processed_rows, total_rows)
                     deployment_date = inventory.normalize_date(
-                        values[0].value, workbook.epoch
+                        values[date_index - 1].value, workbook.epoch
                     )
                     if deployment_date is None:
                         continue
@@ -412,9 +447,10 @@ class WorkbookImport:
                         inventory.SheetRow(
                             row_number=values[0].row,
                             deployment_date=deployment_date,
-                            username=inventory.username_for(values),
-                            new_serial=inventory.clean_text(values[9].value),
-                            old_serial=inventory.clean_text(values[11].value),
+                            username=inventory.username_for(values, indexes["username"]),
+                            deployment_serial=inventory.clean_text(values[indexes["deployment_serial"] - 1].value) if indexes["deployment_serial"] else None,
+                            returned_device_serial=inventory.clean_text(values[indexes["returned_device"] - 1].value) if indexes["returned_device"] else None,
+                            pending_return_serial=inventory.clean_text(values[indexes["pending_return"] - 1].value) if indexes["pending_return"] else None,
                             marked_red=any(
                                 inventory.cell_is_red(cell) for cell in values
                             ),
@@ -433,7 +469,7 @@ class WorkbookImport:
             workbook.close()
         if not sheets:
             raise eudm.EUDMError(
-                "No dated data rows were found in columns A-L of any sheet."
+                "No dated rows were found with the configured spreadsheet headers."
             )
         return cls(uuid.uuid4().hex, filename, sheets)
 
@@ -444,15 +480,16 @@ class WorkbookImport:
             for selected in sorted(
                 {row.deployment_date for row in rows}, reverse=True
             ):
-                new_count, return_count = inventory.eligible_counts(
+                deployment_count, returned_device_count, pending_return_count = inventory.eligible_counts(
                     row for row in rows if row.deployment_date == selected
                 )
                 dates.append(
                     {
                         "value": selected.isoformat(),
                         "label": selected.strftime("%A %-d %B %Y"),
-                        "new_count": new_count,
-                        "return_count": return_count,
+                        "deployment_count": deployment_count,
+                        "returned_device_count": returned_device_count,
+                        "pending_return_count": pending_return_count,
                     }
                 )
             sheet_summaries.append({"name": name, "dates": dates})
@@ -473,11 +510,12 @@ class WorkbookImport:
         sheet_name: str,
         selected_date: str,
         mode: str,
+        location: Location | None = None,
     ) -> dict[str, Any]:
         if sheet_name not in self.sheets:
             raise eudm.EUDMError("Choose one of the workbook's available sheets.")
-        if mode not in {"new", "returns", "both"}:
-            raise eudm.EUDMError("Choose new devices, returns, or both.")
+        if mode not in {"deployments", "returned_devices", "pending_returns", "all"}:
+            raise eudm.EUDMError("Choose what to import.")
         try:
             chosen_date = date.fromisoformat(selected_date)
         except ValueError as exc:
@@ -491,24 +529,25 @@ class WorkbookImport:
             )
         requests = []
         for action in actions:
+            if action.kind == "location" and not location:
+                raise eudm.EUDMError("Choose one location for returned devices.")
             requests.append(RequestSpec(
                 client_id=uuid.uuid4().hex,
-                kind="user",
+                kind=action.kind,
                 serials=(action.serial,),
                 status=action.status,
-                user=action.username,
-                returning_requested=False,
-                returning_user=None,
-                return_confirmed=True,
+                user=action.username if action.kind == "user" else None,
+                returning_requested=action.kind == "location",
+                returning_user=action.username if action.kind == "location" else None,
+                return_confirmed=action.kind != "location",
                 returning_user_info=None,
-                location=None,
+                location=location if action.kind == "location" else None,
                 group=action.group,
                 source=f"{self.filename} · {sheet_name}",
             ).to_json())
         requests.sort(
             key=lambda request: 0
-            if request["group"] == "New deployments"
-            else 1
+            if request["group"] == "Deployments" else 1 if request["group"] == "Returned devices" else 2
         )
         return {
             "requests": requests,
@@ -518,11 +557,15 @@ class WorkbookImport:
             ],
             "counts": {
                 "requests": len(requests),
-                "new": sum(
-                    request["group"] == "New deployments"
+                "deployments": sum(
+                    request["group"] == "Deployments"
                     for request in requests
                 ),
-                "returns": sum(
+                "returned_devices": sum(
+                    request["group"] == "Returned devices"
+                    for request in requests
+                ),
+                "pending_returns": sum(
                     request["group"] == "Pending returns"
                     for request in requests
                 ),

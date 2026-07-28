@@ -1048,6 +1048,21 @@ fieldset { margin: 0; padding: 0; border: 0; }
 .toast.error { border-left-color: var(--red); }
 .toast.success { border-left-color: var(--green); }
 
+.settings-card { width: min(520px, calc(100vw - 32px)); }
+.settings-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin: 2px 0 18px; }
+.settings-tab { appearance: none; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); padding: 9px 12px; font: inherit; font-weight: 700; cursor: pointer; }
+.settings-tab.active { color: var(--ink); border-bottom-color: var(--blue); }
+.settings-card section { display: grid; gap: 13px; }
+.settings-card label { display: grid; gap: 6px; color: var(--ink); font-weight: 650; }
+.settings-help { margin: 0 0 3px; color: var(--muted); }
+.import-checking, .import-check-ok, .import-check-failed { display: block; margin-top: 5px; font-size: 11px; }
+.import-checking { color: var(--muted); }
+.import-checking::before { content: ""; display: inline-block; width: 9px; height: 9px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; margin-right: 5px; animation: activity-spin .75s linear infinite; vertical-align: -1px; }
+.import-check-ok { color: var(--green); }
+.import-check-failed { color: var(--red); }
+.import-inline-edit { display: grid; grid-template-columns: minmax(90px, 1fr) minmax(90px, 1fr) auto; gap: 5px; margin-top: 7px; }
+.import-inline-edit input { min-width: 0; padding: 5px 6px; font-size: 12px; }
+
 @media (max-width: 1120px) {
   .workspace { grid-template-columns: 200px minmax(0, 1fr) 350px; }
   .tool-rail { padding-inline: 9px; }

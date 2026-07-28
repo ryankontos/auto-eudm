@@ -31,10 +31,12 @@ from .web_models import (
     CITIES,
     LOCATION_STATUSES,
     USER_STATUSES,
+    Location,
     RequestSpec,
     WorkbookImport,
     validate_queue,
 )
+from . import eudm_inventory_import as inventory
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -478,6 +480,11 @@ class ClientManager:
                 )
             return self.probe
 
+    def fresh_search(self) -> SearchProbe:
+        """An independent draft used by concurrent import preflight checks."""
+        client = self.require().parallel_clients(1)[0]
+        return SearchProbe(client, self.request_for)
+
 
 @dataclass
 class JobEntry:
@@ -820,6 +827,7 @@ class Application:
         self.clients = ClientManager(config)
         self.jobs = JobStore(self.clients)
         self.imports: dict[str, WorkbookImport] = {}
+        self.pending_imports: dict[str, tuple[str, str]] = {}
         self.import_jobs: dict[str, ImportJob] = {}
         self.import_lock = threading.Lock()
         self.allowed_user_statuses = {value for _, value in USER_STATUSES}
@@ -844,6 +852,7 @@ class Application:
             "default_user_status": self.config.default_user_status,
             "default_location_status": self.config.default_location_status,
             "default_location": default_location,
+            "spreadsheet_import_enabled": self.config.spreadsheet_import_enabled,
             "user_statuses": [
                 {"label": label, "value": value}
                 for label, value in USER_STATUSES
@@ -878,13 +887,39 @@ class Application:
                 if finished != job.job_id:
                     self.import_jobs.pop(finished, None)
         threading.Thread(
-            target=self._read_import,
+            target=self._inspect_import,
             args=(job, encoded),
             daemon=True,
         ).start()
         return job
 
-    def _read_import(self, job: ImportJob, encoded: str) -> None:
+    def start_mapped_import(self, import_id: str, columns: dict[str, Any]) -> ImportJob:
+        with self.import_lock:
+            pending = self.pending_imports.get(import_id)
+        if not pending:
+            raise eudm.EUDMError("That workbook import expired. Choose the file again.")
+        filename, encoded = pending
+        job = ImportJob(job_id=uuid.uuid4().hex, filename=filename)
+        with self.import_lock:
+            self.import_jobs[job.job_id] = job
+        threading.Thread(target=self._read_import, args=(job, encoded, inventory.columns_from_mapping(columns)), daemon=True).start()
+        return job
+
+    def _inspect_import(self, job: ImportJob, encoded: str) -> None:
+        job.update(state="reading", message="Reading workbook headings…")
+        try:
+            inspected = WorkbookImport.inspect_upload(job.filename, encoded)
+            import_id = uuid.uuid4().hex
+            inspected["import_id"] = import_id
+            with self.import_lock:
+                self.pending_imports[import_id] = (job.filename, encoded)
+                while len(self.pending_imports) > 8:
+                    self.pending_imports.pop(next(iter(self.pending_imports)))
+            job.finish(inspected)
+        except eudm.EUDMError as exc:
+            job.fail(str(exc))
+
+    def _read_import(self, job: ImportJob, encoded: str, columns: inventory.ImportColumns) -> None:
         job.update(state="reading", message="Opening the workbook…")
 
         def progress(sheet: str, completed: int, total: int) -> None:
@@ -898,7 +933,7 @@ class Application:
 
         try:
             workbook = WorkbookImport.from_upload(
-                job.filename, encoded, on_progress=progress
+                job.filename, encoded, columns=columns, on_progress=progress
             )
             self.add_import(workbook)
             job.finish(workbook.summary())
@@ -1101,7 +1136,8 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
             query = str(payload.get("query", "")).strip()
             if len(query) < 2:
                 raise eudm.EUDMError("Enter at least two serial characters.")
-            self._json({"results": self.app.clients.search().assets(query)})
+            probe = self.app.clients.fresh_search() if payload.get("fresh") else self.app.clients.search()
+            self._json({"results": probe.assets(query)})
             return
         if path == "/api/search/users":
             query = str(payload.get("query", "")).strip()
@@ -1109,7 +1145,7 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
                 raise eudm.EUDMError("Enter at least two username characters.")
             self._json(
                 {
-                    "results": self.app.clients.search().users(
+                    "results": (self.app.clients.fresh_search() if payload.get("fresh") else self.app.clients.search()).users(
                         query, bool(payload.get("returning"))
                     )
                 }
@@ -1124,10 +1160,21 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
             )
             return
         if path == "/api/import":
+            if not self.app.config.spreadsheet_import_enabled:
+                raise eudm.EUDMError("Spreadsheet import is disabled by this AutoEUDM environment.")
             job = self.app.start_import(
                 str(payload.get("filename", "")),
                 str(payload.get("data", "")),
             )
+            self._json(job.to_json(), 202)
+            return
+        if path == "/api/import/map":
+            if not self.app.config.spreadsheet_import_enabled:
+                raise eudm.EUDMError("Spreadsheet import is disabled by this AutoEUDM environment.")
+            columns = payload.get("columns")
+            if not isinstance(columns, dict):
+                raise eudm.EUDMError("Choose all spreadsheet columns.")
+            job = self.app.start_mapped_import(str(payload.get("import_id", "")), columns)
             self._json(job.to_json(), 202)
             return
         if path == "/api/import/prepare":
@@ -1137,6 +1184,7 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
                     str(payload.get("sheet", "")),
                     str(payload.get("date", "")),
                     str(payload.get("mode", "")),
+                    Location.from_json(payload.get("location")) if payload.get("location") else None,
                 )
             )
             return

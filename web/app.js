@@ -13,6 +13,8 @@ const state = {
   pasteLocation: null,
   pasteLocationResults: [],
   pasteEntries: [],
+  importLocation: null,
+  importLocationResults: [],
   locationCache: new Map(),
   locationLoading: new Map(),
   recordedLocationJobs: new Set(),
@@ -22,6 +24,8 @@ const state = {
 const THEME_STORAGE_KEY = "auto-eudm-theme";
 const RECENT_LOCATIONS_STORAGE_KEY = "auto-eudm-recent-locations";
 const CONCURRENCY_STORAGE_KEY = "auto-eudm-concurrency";
+const IMPORT_COLUMNS_STORAGE_KEY = "auto-eudm-import-columns";
+const IMPORT_LOCATION_STORAGE_KEY = "auto-eudm-import-location";
 const MAX_RECENT_LOCATIONS = 8;
 const IMPORT_PREVIEW_ROW_LIMIT = 80;
 const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
@@ -233,6 +237,26 @@ function preferredLocation() {
   );
 }
 
+function importColumns() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(IMPORT_COLUMNS_STORAGE_KEY) || "{}");
+    return saved && typeof saved === "object" && Object.keys(saved).length ? saved : null;
+  } catch (_) { return null; }
+}
+
+function preferredImportLocation() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(IMPORT_LOCATION_STORAGE_KEY) || "null");
+    if (hasCompleteLocation(saved)) return saved;
+  } catch (_) {}
+  return preferredLocation();
+}
+
+function rememberImportLocation(location) {
+  if (!hasCompleteLocation(location)) return;
+  try { localStorage.setItem(IMPORT_LOCATION_STORAGE_KEY, JSON.stringify(location)); } catch (_) {}
+}
+
 function rememberLocation(location) {
   if (!hasCompleteLocation(location)) return;
   const key = locationDisplay(location).toLowerCase();
@@ -342,7 +366,7 @@ function validateRequest(request) {
     if (request.returning_user && !/^[A-Za-z][A-Za-z0-9._-]*$/.test(request.returning_user.trim())) {
       errors.push("The returning username is not in a valid login ID format.");
     }
-    if (request.returning_user && !request.returning_user_info) {
+    if (request.returning_user && !request.returning_user_info && !request.returning_user_loading) {
       errors.push("Search and verify the returning user's details before submitting; an email will be sent to them.");
     }
     if (request.kind === "bulk_location" && request.returning) {
@@ -392,6 +416,11 @@ function renderReturningUserInfo(request) {
   const panel = $("#returnUserInfo");
   if (!panel || !request?.returning) return;
   const info = request.returning_user_info;
+  if (request.returning_user_loading) {
+    panel.className = "return-user-info loading";
+    panel.innerHTML = "<strong>Checking returning user…</strong><span>Fetching EUDM details before this request can be submitted.</span>";
+    return;
+  }
   const values = info?.columns || [];
   if (!request.returning_user || !info || !values.length) {
     panel.className = "return-user-info unknown";
@@ -1098,8 +1127,9 @@ function renderQuickImportReview() {
     const returnInfo = entry.kind === "location" && entry.username
       ? `<div class="quick-import-return ${entry.returningUserInfo ? "" : "unknown"}"><strong>Returning user</strong><span>${escapeHtml(entry.returningUserInfo?.login || entry.username)}</span><small>${entry.returningUserInfo?.columns?.length ? escapeHtml(entry.returningUserInfo.columns.join(" · ")) : "Details unknown — search and verify before submitting. An email will be sent to this user."}</small></div>`
       : "";
+    const checking = entry.validationState === "checking" ? '<small class="import-checking">Checking EUDM…</small>' : entry.validationState === "failed" ? `<small class="import-check-failed">${escapeHtml(entry.validationError || "Not found in EUDM")}</small>` : entry.validationState === "valid" ? '<small class="import-check-ok">Checked</small>' : "";
     return `<div class="quick-import-row">
-      <div><strong>${escapeHtml(entry.serial)}</strong><small>${username}</small>${returnInfo}</div>
+      <div><strong>${escapeHtml(entry.serial)}</strong><small>${username}</small>${returnInfo}${checking}</div>
       <div class="quick-import-row-actions">
         ${deploymentStatus}
         ${selector}
@@ -1171,16 +1201,25 @@ function reviewPairs() {
 }
 
 async function resolveQuickImportReturningUsers() {
-  const entries = state.pasteEntries.filter((entry) => entry.kind === "location" && entry.username && !entry.returningUserChecked);
+  const entries = state.pasteEntries.filter((entry) => !entry.validationChecked);
   if (!entries.length || !["connected", "simulation"].includes(state.connection?.state)) return;
+  entries.forEach((entry) => { entry.validationChecked = true; entry.validationState = "checking"; });
+  renderQuickImportReview();
   await Promise.all(entries.map(async (entry) => {
-    entry.returningUserChecked = true;
     try {
-      const payload = await api("/api/search/users", { method: "POST", body: JSON.stringify({ query: entry.username, returning: true }) });
-      const result = (payload.results || []).find((item) => bestLogin(item, entry.username).toLowerCase() === entry.username.toLowerCase());
+      const [assets, users] = await Promise.all([
+        api("/api/search/assets", { method: "POST", body: JSON.stringify({ query: entry.serial, fresh: true }) }),
+        entry.username ? api("/api/search/users", { method: "POST", body: JSON.stringify({ query: entry.username, returning: entry.kind === "location", fresh: true }) }) : Promise.resolve({ results: [] }),
+      ]);
+      const asset = (assets.results || []).find((item) => bestSerial(item, entry.serial).toLowerCase() === entry.serial.toLowerCase());
+      const result = entry.username ? (users.results || []).find((item) => bestLogin(item, entry.username).toLowerCase() === entry.username.toLowerCase()) : null;
+      if (!asset || (entry.username && !result)) throw new Error(!asset ? "Serial number was not found in EUDM." : "Username was not found in EUDM.");
       entry.returningUserInfo = result ? { login: bestLogin(result, entry.username), columns: (result.columns || [result.value]).map(String).filter(Boolean) } : null;
-    } catch (_) {
+      entry.validationState = "valid";
+    } catch (error) {
       entry.returningUserInfo = null;
+      entry.validationState = "failed";
+      entry.validationError = error.message || "Could not validate this entry.";
     }
   }));
   renderQuickImportReview();
@@ -1189,6 +1228,8 @@ async function resolveQuickImportReturningUsers() {
 async function resolveQueueReturningUsers(requests) {
   const entries = requests.filter((request) => request.kind === "location" && request.returning_user);
   if (!entries.length || !["connected", "simulation"].includes(state.connection?.state)) return;
+  entries.forEach((request) => { request.returning_user_loading = true; });
+  renderAll();
   await Promise.all(entries.map(async (request) => {
     try {
       const payload = await api("/api/search/users", { method: "POST", body: JSON.stringify({ query: request.returning_user, returning: true }) });
@@ -1196,6 +1237,8 @@ async function resolveQueueReturningUsers(requests) {
       request.returning_user_info = result ? { login: bestLogin(result, request.returning_user), columns: (result.columns || [result.value]).map(String).filter(Boolean) } : null;
     } catch (_) {
       request.returning_user_info = null;
+    } finally {
+      request.returning_user_loading = false;
     }
   }));
   renderAll();
@@ -1276,6 +1319,8 @@ function addPairs() {
       errors.push("Choose a complete city and location before adding these requests.");
     }
   }
+  if (state.pasteEntries.some((entry) => entry.validationState === "checking")) errors.push("Wait for EUDM validation to finish.");
+  if (state.pasteEntries.some((entry) => entry.validationState === "failed")) errors.push("Correct the entries EUDM could not validate.");
   if (errors.length) {
     $("#pairsError").textContent = errors.join(" ");
     $("#pairsError").hidden = false;
@@ -1321,13 +1366,16 @@ function resetImportDialog() {
   $("#workbookInput").value = "";
   $("#importChoose").hidden = false;
   $("#importConfigure").hidden = true;
+  $("#importMapColumns").hidden = true;
   $("#importPreview").hidden = true;
   $("#backImportButton").hidden = true;
   $("#prepareImportButton").disabled = true;
   $("#prepareImportButton").textContent = "Review import";
   $("#importError").hidden = true;
   setImportBusy(false);
-  const defaultMode = $('input[name="importMode"][value="new"]');
+  state.importLocation = preferredImportLocation();
+  state.importLocationResults = [];
+  const defaultMode = $('input[name="importMode"][value="deployments"]');
   if (defaultMode) defaultMode.checked = true;
   setImportStep(1);
 }
@@ -1376,25 +1424,52 @@ function relativeDateLabel(value) {
 function updateImportDates() {
   const sheet = workbookSheet($("#sheetInput").value);
   const dates = sheet?.dates || [];
-  $("#dateInput").innerHTML = dates.map((entry) => `<option value="${escapeHtml(entry.value)}">${escapeHtml(entry.label)} [${escapeHtml(relativeDateLabel(entry.value))}]</option>`).join("");
+  const previous = $("#dateInput").value;
+  const today = new Date();
+  const todayValue = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+  const selected = dates.some((entry) => entry.value === todayValue) ? todayValue : dates.some((entry) => entry.value === previous) ? previous : dates[0]?.value;
+  $("#dateInput").innerHTML = dates.map((entry) => `<option value="${escapeHtml(entry.value)}" ${entry.value === selected ? "selected" : ""}>${escapeHtml(entry.label)} [${escapeHtml(relativeDateLabel(entry.value))}]</option>`).join("");
   updateImportCounts();
 }
 
 function updateImportCounts() {
   const sheet = workbookSheet($("#sheetInput").value);
   const selected = sheet?.dates.find((entry) => entry.value === $("#dateInput").value);
-  const newCount = selected?.new_count || 0;
-  const returnCount = selected?.return_count || 0;
-  $("#newImportCount").textContent = `${newCount} request${newCount === 1 ? "" : "s"}`;
-  $("#returnImportCount").textContent = `${returnCount} request${returnCount === 1 ? "" : "s"}`;
-  $("#bothImportCount").textContent = `${newCount + returnCount} requests`;
-  const mode = $('input[name="importMode"]:checked')?.value || "new";
-  const selectedCount = mode === "new"
-    ? newCount
-    : mode === "returns"
-      ? returnCount
-      : newCount + returnCount;
+  const deploymentCount = selected?.deployment_count || 0;
+  const returnedDeviceCount = selected?.returned_device_count || 0;
+  const pendingReturnCount = selected?.pending_return_count || 0;
+  $("#deploymentImportCount").textContent = `${deploymentCount} request${deploymentCount === 1 ? "" : "s"}`;
+  $("#returnedDeviceImportCount").textContent = `${returnedDeviceCount} request${returnedDeviceCount === 1 ? "" : "s"}`;
+  $("#pendingReturnImportCount").textContent = `${pendingReturnCount} request${pendingReturnCount === 1 ? "" : "s"}`;
+  $("#allImportCount").textContent = `${deploymentCount + returnedDeviceCount + pendingReturnCount} requests`;
+  const mode = $('input[name="importMode"]:checked')?.value || "deployments";
+  const selectedCount = mode === "deployments" ? deploymentCount : mode === "returned_devices" ? returnedDeviceCount : mode === "pending_returns" ? pendingReturnCount : deploymentCount + returnedDeviceCount + pendingReturnCount;
+  const needsLocation = mode === "returned_devices" || mode === "all";
+  $("#importLocationFields").hidden = !needsLocation;
+  if (needsLocation) renderImportLocationFields();
   $("#prepareImportButton").disabled = !selected || selectedCount === 0;
+}
+
+function renderImportLocationFields() {
+  const location = state.importLocation || preferredImportLocation();
+  fillSelect($("#importCityInput"), locationCities(location), location.city, "Choose a city");
+  state.importLocationResults = locationResults(location.city).map((result) => ({ ...result, city: location.city }));
+  populateLocationPicker($("#importLocationInput"), location, state.importLocationResults, locationEmptyText(location.city));
+  if (location.city && !hasLoadedLocations(location.city) && ["connected", "simulation"].includes(state.connection?.state)) {
+    fetchImportLocations(location.city);
+  }
+}
+
+async function fetchImportLocations(city, force = false) {
+  if (!city) return;
+  $("#importLocationInput").innerHTML = '<option>Loading locations…</option>';
+  try {
+    const results = await fetchLocationResults(city, { force });
+    state.importLocationResults = results.map((result) => ({ ...result, city }));
+    renderImportLocationFields();
+  } catch (error) {
+    $("#importLocationInput").innerHTML = '<option value="">Could not load locations</option>';
+  }
 }
 
 function setImportBusy(visible, { percent = 0, title = "", detail = "" } = {}) {
@@ -1425,6 +1500,18 @@ function pause(milliseconds) {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 }
 
+async function runConcurrent(items, worker, limit = 8) {
+  let next = 0;
+  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      await worker(items[index]);
+    }
+  });
+  await Promise.all(runners);
+}
+
 async function waitForWorkbookImport(jobId, token) {
   while (token === state.importUploadToken) {
     const status = await api(`/api/imports/${encodeURIComponent(jobId)}`);
@@ -1447,6 +1534,19 @@ async function waitForWorkbookImport(jobId, token) {
 }
 
 function showImportedWorkbook(workbook) {
+  if (workbook.needs_mapping) {
+    state.workbook = workbook;
+    $("#importChoose").hidden = true;
+    $("#importConfigure").hidden = true;
+    $("#importMapColumns").hidden = false;
+    $("#importMapFilename").textContent = workbook.filename;
+    $("#importMapSheet").innerHTML = workbook.sheets.map((sheet) => `<option value="${escapeHtml(sheet.name)}" ${sheet.name === workbook.default_sheet ? "selected" : ""}>${escapeHtml(sheet.name)}</option>`).join("");
+    renderImportColumnMap();
+    $("#prepareImportButton").disabled = false;
+    $("#prepareImportButton").textContent = "Continue";
+    setImportStep(2);
+    return;
+  }
   state.workbook = workbook;
   $("#importChoose").hidden = true;
   $("#importConfigure").hidden = false;
@@ -1456,6 +1556,46 @@ function showImportedWorkbook(workbook) {
   $("#importFileSummary").textContent = `${workbook.sheets.length} dated sheet${workbook.sheets.length === 1 ? "" : "s"}`;
   $("#sheetInput").innerHTML = workbook.sheets.map((sheet) => `<option value="${escapeHtml(sheet.name)}" ${sheet.name === workbook.default_sheet ? "selected" : ""}>${escapeHtml(sheet.name)}</option>`).join("");
   updateImportDates();
+}
+
+function renderImportColumnMap() {
+  const sheet = state.workbook?.sheets.find((item) => item.name === $("#importMapSheet").value);
+  const headings = sheet?.headings || [];
+  const saved = importColumns() || {};
+  const select = (element, selected) => {
+    const matching = headings.find((heading) => String(heading).trim().toLowerCase() === String(selected || "").trim().toLowerCase());
+    element.innerHTML = `<option value="">Choose a column</option>${headings.map((heading) => `<option value="${escapeHtml(heading)}" ${heading === matching ? "selected" : ""}>${escapeHtml(heading)}</option>`).join("")}`;
+  };
+  select($("#importMapUsername"), saved.username || "Username");
+  select($("#importMapDeployment"), saved.deployment_serial || "SN");
+  select($("#importMapReturned"), saved.returned_device || "Returned Device SN");
+  select($("#importMapPending"), saved.pending_return || "OLD Device SN");
+}
+
+async function mapWorkbookColumns() {
+  const columns = {
+    username: $("#importMapUsername").value,
+    deployment_serial: $("#importMapDeployment").value,
+    returned_device: $("#importMapReturned").value,
+    pending_return: $("#importMapPending").value,
+  };
+  if (!columns.username || !columns.deployment_serial || !columns.pending_return) {
+    throw new Error("Choose username, deployment serial, and pending-return columns.");
+  }
+  // Returned devices are optional; an unmapped column simply produces no location rows.
+  try { localStorage.setItem(IMPORT_COLUMNS_STORAGE_KEY, JSON.stringify(columns)); } catch (_) {}
+  try {
+    const job = await api("/api/import/map", {
+      method: "POST",
+      body: JSON.stringify({ import_id: state.workbook.import_id, columns }),
+    });
+    const token = state.importUploadToken;
+    setImportBusy(true, { percent: 25, title: "Reading workbook…", detail: "Applying column map" });
+    const workbook = await waitForWorkbookImport(job.job_id, token);
+    if (workbook) showImportedWorkbook(workbook);
+  } finally {
+    setImportBusy(false);
+  }
 }
 
 async function uploadWorkbook(file) {
@@ -1504,22 +1644,28 @@ function renderImportPreview() {
   const payload = state.importPreview;
   if (!payload) return;
   const included = payload.requests.filter((request) => request.included !== false);
-  const newCount = included.filter((request) => request.group === "New deployments").length;
-  const returnCount = included.filter((request) => request.group === "Pending returns").length;
-  $("#importPreviewTitle").textContent = `${newCount} new deployment${newCount === 1 ? "" : "s"} · ${returnCount} return${returnCount === 1 ? "" : "s"}`;
+  const deploymentCount = included.filter((request) => request.group === "Deployments").length;
+  const returnedDeviceCount = included.filter((request) => request.group === "Returned devices").length;
+  const pendingReturnCount = included.filter((request) => request.group === "Pending returns").length;
+  $("#importPreviewTitle").textContent = `${deploymentCount} deployments · ${returnedDeviceCount} returned devices · ${pendingReturnCount} pending returns`;
   $("#importPreviewSubtitle").textContent = `${$("#sheetInput").value} · ${$("#dateInput option:checked").textContent}`;
   $("#importPreviewCount").textContent = `${included.length} selected`;
 
   const groups = [
     {
-      key: "New deployments",
-      title: "New deployments",
-      detail: "Column J",
+      key: "Deployments",
+      title: "Deploy to user",
+      detail: "Deployment serials",
+    },
+    {
+      key: "Returned devices",
+      title: "Add returned devices to location",
+      detail: "Shared location",
     },
     {
       key: "Pending returns",
       title: "Pending returns",
-      detail: "Column L",
+      detail: "Pending return serials",
     },
   ];
   $("#importPreviewList").innerHTML = groups.map((group) => {
@@ -1529,22 +1675,34 @@ function renderImportPreview() {
     const expanded = state.importExpandedGroups.has(group.key);
     const visibleRequests = expanded ? requests : requests.slice(0, IMPORT_PREVIEW_ROW_LIMIT);
     const rows = visibleRequests.map((request, index) => {
-      const isNew = request.group === "New deployments";
+      const isDeployment = request.group === "Deployments";
+      const isReturnedDevice = request.group === "Returned devices";
       const isIncluded = request.included !== false;
-      const statusControl = isNew
+      const statusControl = isDeployment
         ? `<select data-import-status="${escapeHtml(request.id)}" aria-label="Status for ${escapeHtml(request.serials[0])}">
             <option value="Deployed - New Stock" ${request.status === "Deployed - New Stock" ? "selected" : ""}>Deployed - New Stock</option>
             <option value="Deployed - Existing Stock" ${request.status === "Deployed - Existing Stock" ? "selected" : ""}>Deployed - Existing Stock</option>
           </select>`
-        : `<span class="fixed-status">Deployed - Pending Return</span>`;
+        : isReturnedDevice
+          ? `<select data-import-status="${escapeHtml(request.id)}" aria-label="Status for ${escapeHtml(request.serials[0])}">
+               <option value="Used Stock" ${request.status === "Used Stock" ? "selected" : ""}>Used Stock</option>
+               <option value="Pending Decom" ${request.status === "Pending Decom" ? "selected" : ""}>Pending Decom</option>
+             </select>`
+          : `<span class="fixed-status">Deployed - Pending Return</span>`;
+      const validation = request.import_validation === "checking"
+        ? '<small class="import-checking">Checking EUDM…</small>'
+        : request.import_validation === "failed"
+          ? `<small class="import-check-failed">${escapeHtml(request.import_error || "Not found in EUDM")}</small>`
+          : '<small class="import-check-ok">Checked</small>';
+      const editable = request.import_validation === "failed" ? `<div class="import-inline-edit"><input data-import-serial="${escapeHtml(request.id)}" value="${escapeHtml(request.serials[0])}" aria-label="Serial number"><input data-import-user="${escapeHtml(request.id)}" value="${escapeHtml(request.user || request.returning_user)}" aria-label="Username"><button class="text-button" data-import-retry="${escapeHtml(request.id)}" type="button">Retry</button></div>` : "";
       return `<div class="import-preview-row ${isIncluded ? "" : "excluded"}">
         <label class="include-control" title="${isIncluded ? "Included" : "Do not deploy"}">
           <input type="checkbox" data-import-include="${escapeHtml(request.id)}" ${isIncluded ? "checked" : ""}>
           <span>${index + 1}</span>
         </label>
-        <div><strong>${escapeHtml(request.serials[0])}</strong><small>${isNew ? "New serial" : "Old serial"}</small></div>
-        <div><strong>${escapeHtml(request.user || "No user")}</strong><small>Receiving user</small></div>
-        <div>${statusControl}<small>${isIncluded ? "" : "Do not deploy"}</small></div>
+        <div><strong>${escapeHtml(request.serials[0])}</strong><small>${isDeployment ? "Deployment serial" : isReturnedDevice ? "Returned device" : "Pending return"}</small></div>
+        <div><strong>${escapeHtml(request.user || request.returning_user || "No user")}</strong><small>${isReturnedDevice ? "Returning user" : "Receiving user"}</small></div>
+        <div>${statusControl}${isIncluded ? validation : "<small>Do not deploy</small>"}${editable}</div>
       </div>`;
     }).join("");
     return `<section class="import-preview-section">
@@ -1593,9 +1751,52 @@ function renderImportPreview() {
       renderImportPreview();
     });
   });
+  $("#importPreviewList").querySelectorAll("[data-import-retry]").forEach((button) => button.addEventListener("click", () => {
+    const request = payload.requests.find((item) => item.id === button.dataset.importRetry);
+    if (!request) return;
+    const serial = $(`[data-import-serial="${button.dataset.importRetry}"]`);
+    const user = $(`[data-import-user="${button.dataset.importRetry}"]`);
+    request.serials = [serial.value.trim()];
+    if (request.kind === "location") request.returning_user = user.value.trim(); else request.user = user.value.trim();
+    validateImportPreview();
+  }));
 
   $("#importIgnored").hidden = !payload.ignored.length;
   $("#importIgnoredList").innerHTML = payload.ignored.map((item) => `<li>${item.count} × ${escapeHtml(item.reason)}</li>`).join("");
+}
+
+async function validateImportPreview() {
+  const payload = state.importPreview;
+  if (!payload || !["connected", "simulation"].includes(state.connection?.state)) return;
+  const requests = payload.requests.filter((request) => request.included !== false);
+  requests.forEach((request) => { request.import_validation = "checking"; request.import_error = ""; });
+  renderImportPreview();
+  $("#prepareImportButton").disabled = true;
+  await runConcurrent(requests, async (request) => {
+    const serial = request.serials[0];
+    const username = request.user || request.returning_user;
+    try {
+      const [assets, users] = await Promise.all([
+        api("/api/search/assets", { method: "POST", body: JSON.stringify({ query: serial, fresh: true }) }),
+        api("/api/search/users", { method: "POST", body: JSON.stringify({ query: username, returning: request.kind === "location", fresh: true }) }),
+      ]);
+      const asset = (assets.results || []).find((item) => bestSerial(item, serial).toLowerCase() === serial.toLowerCase());
+      const user = (users.results || []).find((item) => bestLogin(item, username).toLowerCase() === username.toLowerCase());
+      if (!asset || !user) throw new Error(!asset ? "Serial number was not found in EUDM." : "Username was not found in EUDM.");
+      if (request.kind === "location") {
+        request.returning_user_info = { login: bestLogin(user, username), columns: (user.columns || [user.value]).map(String).filter(Boolean) };
+        request.returning_user_loading = false;
+      }
+      request.import_validation = "valid";
+    } catch (error) {
+      request.import_validation = "failed";
+      request.import_error = error.message || "Could not validate this request.";
+    }
+  });
+  renderImportPreview();
+  const selectable = payload.requests.filter((request) => request.included !== false && request.import_validation === "valid").length;
+  $("#prepareImportButton").disabled = selectable === 0;
+  $("#prepareImportButton").textContent = selectable === requests.length ? `Add ${selectable} to queue` : `Add ${selectable} checked to queue`;
 }
 
 function backToImportSelection() {
@@ -1613,7 +1814,7 @@ async function prepareImport() {
   const button = $("#prepareImportButton");
   if (state.importPreview) {
     const requests = state.importPreview.requests
-      .filter((request) => request.included !== false)
+      .filter((request) => request.included !== false && request.import_validation === "valid")
       .map((request) => {
         const cleanRequest = { ...request };
         delete cleanRequest.included;
@@ -1635,7 +1836,11 @@ async function prepareImport() {
   }
   button.disabled = true;
   try {
-    const mode = $('input[name="importMode"]:checked')?.value || "new";
+    if (state.workbook?.needs_mapping) {
+      await mapWorkbookColumns();
+      return;
+    }
+    const mode = $('input[name="importMode"]:checked')?.value || "deployments";
     const payload = await api("/api/import/prepare", {
       method: "POST",
       body: JSON.stringify({
@@ -1643,6 +1848,7 @@ async function prepareImport() {
         sheet: $("#sheetInput").value,
         date: $("#dateInput").value,
         mode,
+        location: state.importLocation,
       }),
     });
     payload.requests.forEach((request) => {
@@ -1657,6 +1863,7 @@ async function prepareImport() {
     button.textContent = `Add ${payload.counts.requests} to queue`;
     setImportStep(3);
     renderImportPreview();
+    validateImportPreview();
   } catch (error) {
     $("#importError").textContent = error.message;
     $("#importError").hidden = false;
@@ -1953,6 +2160,17 @@ function bindEvents() {
     renderPasteLocationFields();
   });
   $("#pairsInput").addEventListener("input", () => { $("#pairsError").hidden = true; });
+  $("#settingsButton").addEventListener("click", () => {
+    $("#settingsDialog").showModal();
+  });
+  $$('[data-settings-tab]').forEach((tab) => tab.addEventListener("click", () => {
+    $$('[data-settings-tab]').forEach((item) => item.classList.toggle("active", item === tab));
+    $$('[data-settings-panel]').forEach((panel) => { panel.hidden = panel.dataset.settingsPanel !== tab.dataset.settingsTab; });
+  }));
+  $("#saveSettingsButton").addEventListener("click", () => {
+    $("#settingsDialog").close();
+    toast("Settings saved.", "success");
+  });
   $("#importSheetButton").addEventListener("click", () => {
     resetImportDialog();
     $("#importDialog").showModal();
@@ -1965,9 +2183,23 @@ function bindEvents() {
     if (event.target.files[0]) uploadWorkbook(event.target.files[0]);
   });
   $("#changeFileButton").addEventListener("click", resetImportDialog);
+  $("#importMapSheet").addEventListener("change", renderImportColumnMap);
   $("#sheetInput").addEventListener("change", updateImportDates);
   $("#dateInput").addEventListener("change", updateImportCounts);
   $$('input[name="importMode"]').forEach((radio) => radio.addEventListener("change", updateImportCounts));
+  $("#importCityInput").addEventListener("change", () => {
+    state.importLocation = { city: $("#importCityInput").value, building: "", floor: "", room: "", cabinet: "" };
+    state.importLocationResults = [];
+    fetchImportLocations(state.importLocation.city);
+  });
+  $("#importLocationInput").addEventListener("change", () => {
+    const result = state.importLocationResults[Number($("#importLocationInput").value)];
+    if (!result) return;
+    const [building = "", floor = "", room = "", cabinet = ""] = result.columns;
+    state.importLocation = { city: $("#importCityInput").value, building, floor, room, cabinet };
+    rememberImportLocation(state.importLocation);
+    renderImportLocationFields();
+  });
   $("#prepareImportButton").addEventListener("click", prepareImport);
   $("#backImportButton").addEventListener("click", backToImportSelection);
   elements.reviewButton.addEventListener("click", openReview);
@@ -2083,6 +2315,10 @@ async function init() {
       systemTheme.addListener(updateForSystemTheme);
     }
     state.config = await api("/api/config");
+    const spreadsheetEnabled = Boolean(state.config.spreadsheet_import_enabled);
+    $("#importSheetButton").hidden = !spreadsheetEnabled;
+    const spreadsheetSettings = $('[data-settings-tab="spreadsheet"]');
+    if (spreadsheetSettings) spreadsheetSettings.hidden = !spreadsheetEnabled;
     elements.requestForValue.textContent = state.config.request_for || "Waiting for EUDM";
     configureConcurrency(state.config.concurrency);
     bindEvents();

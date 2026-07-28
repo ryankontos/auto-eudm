@@ -71,6 +71,7 @@ class AppConfig:
     logging: bool
     concurrency: int
     manual_review: bool
+    spreadsheet_import_enabled: bool
 
     @classmethod
     def load(cls) -> "AppConfig":
@@ -106,4 +107,5 @@ class AppConfig:
             logging=env_bool("EUDM_LOGGING"),
             concurrency=int(raw_concurrency),
             manual_review=env_bool("EUDM_MANUAL_REVIEW"),
+            spreadsheet_import_enabled=env_bool("EUDM_ENABLE_SPREADSHEET_IMPORT"),
         )

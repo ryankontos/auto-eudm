@@ -27,6 +27,7 @@
         <span id="themeLabel">Appearance</span>
       </button>
       <button id="historyButton" class="button secondary compact" type="button">Request history</button>
+      <button id="settingsButton" class="button secondary compact" type="button">Settings</button>
       <div id="connectionBadge" class="connection-badge" aria-live="polite">
         <span class="status-dot"></span>
         <span>Loading</span>
@@ -50,67 +51,11 @@
       </div>
 
       <div class="rail-section settings-summary">
-        <h2>Run settings</h2>
         <div class="requester-summary">
           <span>Requesting as</span>
           <strong id="requestForValue">Waiting for EUDM</strong>
           <small id="requestForSource" hidden>Resolved automatically after connection</small>
         </div>
-        <label>
-          <span>Parallel requests</span>
-          <select id="concurrencyInput">
-            <option value="1">1</option>
-            <option value="2">2</option>
-            <option value="3">3</option>
-            <option value="4">4</option>
-            <option value="5">5</option>
-            <option value="6">6</option>
-            <option value="7">7</option>
-            <option value="8">8</option>
-            <option value="9">9</option>
-            <option value="10">10</option>
-            <option value="11">11</option>
-            <option value="12">12</option>
-            <option value="13">13</option>
-            <option value="14">14</option>
-            <option value="15">15</option>
-            <option value="16">16</option>
-            <option value="17">17</option>
-            <option value="18">18</option>
-            <option value="19">19</option>
-            <option value="20">20</option>
-            <option value="21">21</option>
-            <option value="22">22</option>
-            <option value="23">23</option>
-            <option value="24">24</option>
-            <option value="25">25</option>
-            <option value="26">26</option>
-            <option value="27">27</option>
-            <option value="28">28</option>
-            <option value="29">29</option>
-            <option value="30">30</option>
-            <option value="31">31</option>
-            <option value="32">32</option>
-            <option value="33">33</option>
-            <option value="34">34</option>
-            <option value="35">35</option>
-            <option value="36">36</option>
-            <option value="37">37</option>
-            <option value="38">38</option>
-            <option value="39">39</option>
-            <option value="40">40</option>
-            <option value="41">41</option>
-            <option value="42">42</option>
-            <option value="43">43</option>
-            <option value="44">44</option>
-            <option value="45">45</option>
-            <option value="46">46</option>
-            <option value="47">47</option>
-            <option value="48">48</option>
-            <option value="49">49</option>
-            <option value="50">50</option>
-          </select>
-        </label>
       </div>
     </aside>
 
@@ -387,11 +332,32 @@
         </div>
         <fieldset class="choice-cards">
           <legend>What should be added?</legend>
-          <label><input type="radio" name="importMode" value="new" checked><span><strong>New devices</strong><small id="newImportCount">0 requests</small></span></label>
-          <label><input type="radio" name="importMode" value="returns"><span><strong>Returns</strong><small id="returnImportCount">0 requests</small></span></label>
-          <label><input type="radio" name="importMode" value="both"><span><strong>Both</strong><small id="bothImportCount">0 requests</small></span></label>
+          <label><input type="radio" name="importMode" value="deployments" checked><span><strong>Deploy to user</strong><small id="deploymentImportCount">0 requests</small></span></label>
+          <label><input type="radio" name="importMode" value="returned_devices"><span><strong>Add returned devices to location</strong><small id="returnedDeviceImportCount">0 requests</small></span></label>
+          <label><input type="radio" name="importMode" value="pending_returns"><span><strong>Pending returns</strong><small id="pendingReturnImportCount">0 requests</small></span></label>
+          <label><input type="radio" name="importMode" value="all"><span><strong>All</strong><small id="allImportCount">0 requests</small></span></label>
         </fieldset>
+        <div id="importLocationFields" hidden>
+          <div class="two-column-form">
+            <label>City
+              <select id="importCityInput"></select>
+            </label>
+            <label>Location
+              <select id="importLocationInput"></select>
+            </label>
+          </div>
+        </div>
         <div class="notice">Rows marked red, disabled in column G, or without a usable serial are skipped.</div>
+      </div>
+      <div id="importMapColumns" hidden>
+        <div class="import-file-row"><div><strong id="importMapFilename"></strong><small>Match the headings from this workbook</small></div></div>
+        <label>Sheet<select id="importMapSheet"></select></label>
+        <div class="two-column-form">
+          <label>Username<select id="importMapUsername"></select></label>
+          <label>Deployment serial<select id="importMapDeployment"></select></label>
+          <label>Returned-device serial<select id="importMapReturned"></select></label>
+          <label>Pending-return serial<select id="importMapPending"></select></label>
+        </div>
       </div>
       <div id="importPreview" hidden>
         <div class="import-preview-heading">
@@ -413,6 +379,27 @@
         <button id="backImportButton" class="button quiet" type="button" hidden>Back</button>
         <button id="prepareImportButton" class="button primary" value="default" type="button" disabled>Review import</button>
       </div>
+    </form>
+  </dialog>
+
+  <dialog id="settingsDialog" class="modal">
+    <form method="dialog" class="modal-card settings-card">
+      <div class="modal-header"><h2>Settings</h2><button class="icon-button" value="cancel" aria-label="Close">×</button></div>
+      <div class="settings-tabs" role="tablist">
+        <button class="settings-tab active" data-settings-tab="run" type="button">Run</button>
+        <button class="settings-tab" data-settings-tab="spreadsheet" type="button">Spreadsheet import</button>
+      </div>
+      <section data-settings-panel="run">
+        <label>Parallel requests
+          <select id="concurrencyInput">
+            <option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option><option value="15">15</option><option value="20">20</option><option value="25">25</option><option value="30">30</option><option value="40">40</option><option value="50">50</option>
+          </select>
+        </label>
+      </section>
+      <section data-settings-panel="spreadsheet" hidden>
+        <p class="settings-help">Columns are mapped from the headings in each uploaded workbook. AutoEUDM remembers a matching map locally.</p>
+      </section>
+      <div class="modal-actions"><button class="button secondary" value="cancel">Cancel</button><button id="saveSettingsButton" class="button primary" value="default" type="button">Save settings</button></div>
     </form>
   </dialog>
 
