@@ -1284,7 +1284,13 @@ function renderQuickImportReview() {
     const returnInfo = entry.kind === "location" && entry.username
       ? `<div class="quick-import-return ${entry.returningUserInfo ? "" : "unknown"}"><strong>Returning user</strong><span>${escapeHtml(entry.returningUserInfo?.login || entry.username)}</span><small>${entry.returningUserInfo?.columns?.length ? escapeHtml(entry.returningUserInfo.columns.join(" · ")) : "Details unknown — search and verify before submitting. An email will be sent to this user."}</small></div>`
       : "";
-    const checking = entry.validationState === "checking" ? '<small class="import-checking">Verifying the serial and user in EUDM…</small>' : entry.validationState === "failed" ? `<small class="import-check-failed">${escapeHtml(entry.validationError || "Not found in EUDM")}</small>` : "";
+    const checking = entry.validationState === "checking"
+      ? '<small class="import-checking">Verifying the serial and user in EUDM…</small>'
+      : entry.validationState === "failed"
+        ? `<small class="import-check-failed">${escapeHtml(entry.validationError || "Not found in EUDM")}</small>`
+        : entry.validationState === "valid"
+          ? `<small class="import-check-ok">✓ Serial verified${entry.username ? " · User verified" : ""}</small>`
+          : "";
     return `<div class="quick-import-row">
       <div><strong>${escapeHtml(entry.serial)}</strong><small>${username}</small>${returnInfo}${checking}</div>
       <div class="quick-import-row-actions">
@@ -1506,8 +1512,7 @@ function resetImportDialog() {
   setImportBusy(false);
   state.importLocation = preferredImportLocation();
   state.importLocationResults = [];
-  const defaultMode = $('input[name="importMode"][value="deployments"]');
-  if (defaultMode) defaultMode.checked = true;
+  $$('input[name="importMode"]').forEach((input) => { input.checked = true; });
   setImportStep(1);
 }
 
@@ -1563,6 +1568,15 @@ function updateImportDates() {
   updateImportCounts();
 }
 
+function selectedImportModes() {
+  return $$('input[name="importMode"]:checked').map((input) => input.value);
+}
+
+function importModeValue() {
+  const modes = selectedImportModes();
+  return modes.length === 3 ? "all" : modes.join(",");
+}
+
 function updateImportCounts() {
   const sheet = workbookSheet($("#sheetInput").value);
   const selected = sheet?.dates.find((entry) => entry.value === $("#dateInput").value);
@@ -1572,10 +1586,11 @@ function updateImportCounts() {
   $("#deploymentImportCount").textContent = `${deploymentCount} request${deploymentCount === 1 ? "" : "s"}`;
   $("#returnedDeviceImportCount").textContent = `${returnedDeviceCount} request${returnedDeviceCount === 1 ? "" : "s"}`;
   $("#pendingReturnImportCount").textContent = `${pendingReturnCount} request${pendingReturnCount === 1 ? "" : "s"}`;
-  $("#allImportCount").textContent = `${deploymentCount + returnedDeviceCount + pendingReturnCount} requests`;
-  const mode = $('input[name="importMode"]:checked')?.value || "deployments";
-  const selectedCount = mode === "deployments" ? deploymentCount : mode === "returned_devices" ? returnedDeviceCount : mode === "pending_returns" ? pendingReturnCount : deploymentCount + returnedDeviceCount + pendingReturnCount;
-  const needsLocation = mode === "returned_devices" || mode === "all";
+  const modes = selectedImportModes();
+  const selectedCount = (modes.includes("deployments") ? deploymentCount : 0)
+    + (modes.includes("returned_devices") ? returnedDeviceCount : 0)
+    + (modes.includes("pending_returns") ? pendingReturnCount : 0);
+  const needsLocation = modes.includes("returned_devices");
   $("#importLocationFields").hidden = !needsLocation;
   if (needsLocation) renderImportLocationFields();
   $("#prepareImportButton").disabled = !selected || selectedCount === 0;
@@ -1899,16 +1914,29 @@ async function downloadSavedWorkbook() {
 
 function importReturnDetails(request, isReturnedDevice) {
   if (!isReturnedDevice) return "";
-  if (request.import_validation === "checking") {
-    return '<div class="import-return-details loading"><strong>Verifying returning user details…</strong><small>Confirming the user before this request is added.</small></div>';
-  }
+  // Do not display user details until both the serial and username have been
+  // verified successfully. A bad serial must not make a valid-looking user
+  // card appear beside the failed row.
+  if (request.import_validation !== "valid") return "";
   const info = request.returning_user_info;
-  if (!info?.columns?.length) {
-    return '<div class="import-return-details unknown"><strong>Returning user details unknown</strong><small>Correct the username and retry before adding this request.</small></div>';
-  }
+  if (!info?.columns?.length) return "";
   return '<div class="import-return-details"><strong>Returning user</strong><small>An email will be sent to this user. Verify the details.</small><span>'
     + escapeHtml(info.login || request.returning_user)
     + '</span><em>' + escapeHtml(info.columns.join(" · ")) + '</em></div>';
+}
+
+function updateImportPrepareButton(payload = state.importPreview) {
+  if (!payload) return;
+  const selected = payload.requests.filter((request) => request.included !== false);
+  const checking = selected.some((request) => request.import_validation === "checking" || !request.import_validation);
+  const valid = selected.filter((request) => request.import_validation === "valid").length;
+  const button = $("#prepareImportButton");
+  button.disabled = checking || valid === 0;
+  button.textContent = checking
+    ? "Verifying selections…"
+    : valid === selected.length
+      ? `Add ${valid} to queue`
+      : `Add ${valid} verified to queue`;
 }
 
 function renderImportPreview() {
@@ -1964,7 +1992,9 @@ function renderImportPreview() {
         ? '<small class="import-checking">Verifying serial and user details in EUDM…</small>'
         : request.import_validation === "failed"
           ? `<small class="import-check-failed">${escapeHtml(request.import_error || "Not found in EUDM")}</small>`
-          : "";
+          : request.import_validation === "valid"
+            ? '<small class="import-check-ok">✓ Serial and user verified</small>'
+            : "";
       const returnDetails = importReturnDetails(request, isReturnedDevice);
       const editable = request.import_validation === "failed" ? `<div class="import-inline-edit"><input data-import-serial="${escapeHtml(request.id)}" value="${escapeHtml(request.serials[0])}" aria-label="Serial number"><input data-import-user="${escapeHtml(request.id)}" value="${escapeHtml(request.user || request.returning_user)}" aria-label="Username"><button class="text-button" data-import-retry="${escapeHtml(request.id)}" type="button">Retry</button></div>` : "";
       return `<div class="import-preview-row ${isIncluded ? "" : "excluded"}">
@@ -2000,9 +2030,7 @@ function renderImportPreview() {
       const request = payload.requests.find((item) => item.id === checkbox.dataset.importInclude);
       if (request) request.included = checkbox.checked;
       renderImportPreview();
-      const selected = payload.requests.filter((item) => item.included !== false).length;
-      $("#prepareImportButton").disabled = selected === 0;
-      $("#prepareImportButton").textContent = `Add ${selected} to queue`;
+      updateImportPrepareButton(payload);
     });
   });
   $("#importPreviewList").querySelectorAll("[data-import-group]").forEach((button) => {
@@ -2012,9 +2040,7 @@ function renderImportPreview() {
         .filter((request) => request.group === button.dataset.importGroup)
         .forEach((request) => { request.included = included; });
       renderImportPreview();
-      const selected = payload.requests.filter((request) => request.included !== false).length;
-      $("#prepareImportButton").disabled = selected === 0;
-      $("#prepareImportButton").textContent = `Add ${selected} to queue`;
+      updateImportPrepareButton(payload);
     });
   });
   $("#importPreviewList").querySelectorAll("[data-import-expand]").forEach((button) => {
@@ -2074,10 +2100,7 @@ async function validateImportPreview(retryRequests = null) {
     }
   }));
   renderImportPreview();
-  const selectable = payload.requests.filter((request) => request.included !== false && request.import_validation === "valid").length;
-  $("#prepareImportButton").disabled = selectable === 0;
-  const totalSelected = payload.requests.filter((request) => request.included !== false).length;
-  $("#prepareImportButton").textContent = selectable === totalSelected ? `Add ${selectable} to queue` : `Add ${selectable} checked to queue`;
+  updateImportPrepareButton(payload);
 }
 
 function backToImportSelection() {
@@ -2094,6 +2117,12 @@ function backToImportSelection() {
 async function prepareImport() {
   const button = $("#prepareImportButton");
   if (state.importPreview) {
+    const selected = state.importPreview.requests.filter((request) => request.included !== false);
+    if (selected.some((request) => request.import_validation === "checking" || !request.import_validation)) {
+      toast("Wait for all serial and user verifications to finish.", "error");
+      updateImportPrepareButton(state.importPreview);
+      return;
+    }
     const requests = state.importPreview.requests
       .filter((request) => request.included !== false && request.import_validation === "valid")
       .map((request) => {
@@ -2122,7 +2151,8 @@ async function prepareImport() {
       await mapWorkbookColumns();
       return;
     }
-    const mode = $('input[name="importMode"]:checked')?.value || "deployments";
+    const mode = importModeValue();
+    if (!mode) throw new Error("Select at least one type of deployment to import.");
     const payload = await api("/api/import/prepare", {
       method: "POST",
       body: JSON.stringify({

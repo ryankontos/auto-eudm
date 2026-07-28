@@ -17,7 +17,7 @@ from . import eudm_request as eudm
 
 
 ROOT = Path(__file__).resolve().parents[2]
-MAX_WORKBOOK_DOWNLOAD = 30 * 1024 * 1024
+MAX_WORKBOOK_DOWNLOAD = 100 * 1024 * 1024
 WORKBOOK_DIAGNOSTIC_HTML_LIMIT = 350_000
 
 class WorkbookDownloadDiagnostics:
@@ -238,7 +238,11 @@ def download_workbook_with_browser(
         file_menu.click(timeout=15_000)
         page.wait_for_timeout(600)
 
-        download_control = find_control(r"^download (a )?copy$")
+        # Office varies the accessible label between "Download a copy",
+        # "Download a Copy", and labels containing a line break/shortcut.
+        # Match the command text rather than requiring an exact whole label.
+        download_pattern = r"download\s+(?:a\s+)?copy"
+        download_control = find_control(download_pattern)
         if download_control is None:
             save_as = find_control(r"^save as$")
             if save_as is None:
@@ -249,10 +253,25 @@ def download_workbook_with_browser(
                 )
             save_as.click(timeout=15_000)
             page.wait_for_timeout(600)
-            download_control = find_control(r"^download (a )?copy$")
+            download_control = find_control(download_pattern)
         if download_control is None:
             if diagnostics:
                 diagnostics.page_snapshot("excel_download_copy_missing", page)
+                visible_commands: list[str] = []
+                for frame in page.frames:
+                    for role in ("button", "menuitem", "link"):
+                        try:
+                            visible_commands.extend(
+                                text.strip()
+                                for text in frame.get_by_role(role).all_text_contents()
+                                if text.strip()
+                            )
+                        except Exception:
+                            continue
+                diagnostics.event(
+                    "browser.visible_file_menu_commands",
+                    commands=visible_commands,
+                )
             raise eudm.EUDMError("Excel Online did not show Download a Copy.")
 
         update_job("Downloading workbook…")

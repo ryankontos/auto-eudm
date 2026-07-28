@@ -16,7 +16,9 @@ from .web_models import Location, RequestSpec, validate_queue
 
 ROOT = Path(__file__).resolve().parents[2]
 WEB_ROOT = ROOT / "web"
-MAX_BODY = 42 * 1024 * 1024
+# Workbook uploads are base64 encoded in JSON, so allow headroom for the
+# roughly 4/3 expansion of a 100 MB workbook plus the surrounding payload.
+MAX_BODY = 140 * 1024 * 1024
 
 
 class AutoEUDMHandler(BaseHTTPRequestHandler):

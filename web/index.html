@@ -282,7 +282,7 @@
           <label class="file-drop" for="workbookInput">
             <span class="file-symbol" aria-hidden="true">↓</span>
             <strong>Choose an ALM Workbook</strong>
-            <small>.xlsx or .xlsm, up to 30 MB</small>
+            <small>.xlsx or .xlsm, up to 100 MB</small>
             <input id="workbookInput" type="file" accept=".xlsx,.xlsm">
           </label>
         </div>
@@ -330,10 +330,9 @@
         </div>
         <fieldset class="choice-cards">
           <legend>What should be added?</legend>
-          <label><input type="radio" name="importMode" value="deployments" checked><span><strong>Deploy to users</strong><small id="deploymentImportCount">0 requests</small></span></label>
-          <label><input type="radio" name="importMode" value="returned_devices"><span><strong>Returned devices</strong><small id="returnedDeviceImportCount">0 requests</small></span></label>
-          <label><input type="radio" name="importMode" value="pending_returns"><span><strong>Pending returns</strong><small id="pendingReturnImportCount">0 requests</small></span></label>
-          <label><input type="radio" name="importMode" value="all"><span><strong>Everything</strong><small id="allImportCount">0 requests</small></span></label>
+          <label><input type="checkbox" name="importMode" value="deployments" checked><span><strong>Deploy to users</strong><small id="deploymentImportCount">0 requests</small></span></label>
+          <label><input type="checkbox" name="importMode" value="returned_devices" checked><span><strong>Returned devices</strong><small id="returnedDeviceImportCount">0 requests</small></span></label>
+          <label><input type="checkbox" name="importMode" value="pending_returns" checked><span><strong>Pending returns</strong><small id="pendingReturnImportCount">0 requests</small></span></label>
         </fieldset>
         <div id="importLocationFields" hidden>
           <div class="two-column-form">

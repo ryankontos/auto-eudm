@@ -330,6 +330,9 @@ def eligible_counts(rows: Iterable[SheetRow]) -> tuple[int, int, int]:
 def build_actions(
     rows: list[SheetRow], selected_date: date, mode: str
 ) -> tuple[list[Action], Counter[str]]:
+    selected_modes = {part.strip() for part in mode.split(",") if part.strip()}
+    if "all" in selected_modes:
+        selected_modes.update({"deployments", "returned_devices", "pending_returns"})
     actions: list[Action] = []
     ignored: Counter[str] = Counter()
     for row in rows:
@@ -348,17 +351,17 @@ def build_actions(
         if not looks_like_username(row.username):
             ignored["serial has an invalid username"] += 1
             continue
-        if mode in ("deployments", "all"):
+        if "deployments" in selected_modes:
             if looks_like_serial(row.deployment_serial):
                 actions.append(Action("Deployments", row.row_number, row.username, row.deployment_serial, NEW_STOCK))
             else:
                 ignored["no usable deployment serial"] += 1
-        if mode in ("returned_devices", "all"):
+        if "returned_devices" in selected_modes:
             if looks_like_serial(row.returned_device_serial):
                 actions.append(Action("Returned devices", row.row_number, row.username, row.returned_device_serial, "Used Stock", "location"))
             else:
                 ignored["no usable returned-device serial"] += 1
-        if mode in ("pending_returns", "all"):
+        if "pending_returns" in selected_modes:
             if looks_like_serial(row.pending_return_serial):
                 actions.append(Action("Pending returns", row.row_number, row.username, row.pending_return_serial, PENDING_RETURN))
             else:

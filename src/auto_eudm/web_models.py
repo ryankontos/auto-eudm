@@ -392,8 +392,8 @@ class WorkbookImport:
             raise eudm.EUDMError("The uploaded workbook data was invalid.") from exc
         if not payload:
             raise eudm.EUDMError("The uploaded workbook was empty.")
-        if len(payload) > 30 * 1024 * 1024:
-            raise eudm.EUDMError("The workbook is larger than the 30 MB local limit.")
+        if len(payload) > 100 * 1024 * 1024:
+            raise eudm.EUDMError("The workbook is larger than the 100 MB local limit.")
         try:
             from openpyxl import load_workbook
             workbook = load_workbook(
@@ -516,14 +516,18 @@ class WorkbookImport:
     ) -> dict[str, Any]:
         if sheet_name not in self.sheets:
             raise eudm.EUDMError("Choose one of the workbook's available sheets.")
-        if mode not in {"deployments", "returned_devices", "pending_returns", "all"}:
+        selected_modes = {part.strip() for part in mode.split(",") if part.strip()}
+        allowed_modes = {"deployments", "returned_devices", "pending_returns"}
+        if not selected_modes or not selected_modes.issubset(allowed_modes | {"all"}):
             raise eudm.EUDMError("Choose what to import.")
+        if "all" in selected_modes:
+            selected_modes = allowed_modes
         try:
             chosen_date = date.fromisoformat(selected_date)
         except ValueError as exc:
             raise eudm.EUDMError("Choose a valid deployment date.") from exc
         actions, ignored = inventory.build_actions(
-            self.sheets[sheet_name], chosen_date, mode
+            self.sheets[sheet_name], chosen_date, ",".join(sorted(selected_modes))
         )
         if not actions:
             raise eudm.EUDMError(
