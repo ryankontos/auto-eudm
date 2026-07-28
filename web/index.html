@@ -306,6 +306,7 @@
           <small>.xlsx or .xlsm, up to 30 MB</small>
           <input id="workbookInput" type="file" accept=".xlsx,.xlsm">
         </label>
+        <button id="downloadWorkbookButton" class="button secondary" type="button" hidden>Download saved workbook</button>
         <div id="importBusy" class="import-busy" role="status" aria-live="polite" hidden>
           <span class="import-spinner" aria-hidden="true"></span>
           <div>
@@ -398,6 +399,8 @@
       </section>
       <section data-settings-panel="spreadsheet" hidden>
         <p class="settings-help">Columns are mapped from the headings in each uploaded workbook. AutoEUDM remembers a matching map locally.</p>
+        <label>SharePoint or OneDrive workbook link<input id="spreadsheetUrlInput" type="url" placeholder="https://…"></label>
+        <small class="settings-help">The current workbook is downloaded temporarily and is not saved to Downloads.</small>
       </section>
       <div class="modal-actions"><button class="button secondary" value="cancel">Cancel</button><button id="saveSettingsButton" class="button primary" value="default" type="button">Save settings</button></div>
     </form>

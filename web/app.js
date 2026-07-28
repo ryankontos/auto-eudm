@@ -26,6 +26,7 @@ const RECENT_LOCATIONS_STORAGE_KEY = "auto-eudm-recent-locations";
 const CONCURRENCY_STORAGE_KEY = "auto-eudm-concurrency";
 const IMPORT_COLUMNS_STORAGE_KEY = "auto-eudm-import-columns";
 const IMPORT_LOCATION_STORAGE_KEY = "auto-eudm-import-location";
+const SPREADSHEET_URL_STORAGE_KEY = "auto-eudm-spreadsheet-url";
 const MAX_RECENT_LOCATIONS = 8;
 const IMPORT_PREVIEW_ROW_LIMIT = 80;
 const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
@@ -250,6 +251,10 @@ function preferredImportLocation() {
     if (hasCompleteLocation(saved)) return saved;
   } catch (_) {}
   return preferredLocation();
+}
+
+function savedSpreadsheetUrl() {
+  try { return String(localStorage.getItem(SPREADSHEET_URL_STORAGE_KEY) || "").trim(); } catch (_) { return ""; }
 }
 
 function rememberImportLocation(location) {
@@ -1364,6 +1369,7 @@ function resetImportDialog() {
   state.importPreview = null;
   state.importExpandedGroups.clear();
   $("#workbookInput").value = "";
+  $("#downloadWorkbookButton").hidden = !savedSpreadsheetUrl();
   $("#importChoose").hidden = false;
   $("#importConfigure").hidden = true;
   $("#importMapColumns").hidden = true;
@@ -1536,6 +1542,21 @@ async function waitForWorkbookImport(jobId, token) {
 function showImportedWorkbook(workbook) {
   if (workbook.needs_mapping) {
     state.workbook = workbook;
+    const saved = importColumns();
+    const defaultSheet = workbook.sheets.find((sheet) => sheet.name === workbook.default_sheet);
+    const headings = new Set((defaultSheet?.headings || []).map((heading) => String(heading).trim().toLowerCase()));
+    const mappingMatches = saved
+      && [saved.username, saved.deployment_serial, saved.pending_return]
+        .every((heading) => headings.has(String(heading || "").trim().toLowerCase()));
+    if (mappingMatches) {
+      $("#importMapSheet").innerHTML = `<option value="${escapeHtml(workbook.default_sheet)}">${escapeHtml(workbook.default_sheet)}</option>`;
+      renderImportColumnMap();
+      mapWorkbookColumns().catch((error) => {
+        $("#importError").textContent = error.message;
+        $("#importError").hidden = false;
+      });
+      return;
+    }
     $("#importChoose").hidden = true;
     $("#importConfigure").hidden = true;
     $("#importMapColumns").hidden = false;
@@ -1637,6 +1658,32 @@ async function uploadWorkbook(file) {
     }
   } finally {
     if (token === state.importUploadToken) setImportBusy(false);
+  }
+}
+
+async function downloadSavedWorkbook() {
+  const url = savedSpreadsheetUrl();
+  if (!url) return toast("Add a SharePoint or OneDrive workbook link in Settings.", "error");
+  const token = state.importUploadToken + 1;
+  state.importUploadToken = token;
+  $("#importError").hidden = true;
+  $("#prepareImportButton").disabled = true;
+  $("#downloadWorkbookButton").disabled = true;
+  setImportBusy(true, { percent: 8, title: "Downloading workbook…", detail: "Getting the current SharePoint version" });
+  try {
+    const job = await api("/api/import/download", { method: "POST", body: JSON.stringify({ url }) });
+    const workbook = await waitForWorkbookImport(job.job_id, token);
+    if (workbook && token === state.importUploadToken) showImportedWorkbook(workbook);
+  } catch (error) {
+    if (token === state.importUploadToken) {
+      $("#importError").textContent = error.message;
+      $("#importError").hidden = false;
+    }
+  } finally {
+    if (token === state.importUploadToken) {
+      setImportBusy(false);
+      $("#downloadWorkbookButton").disabled = false;
+    }
   }
 }
 
@@ -2161,6 +2208,7 @@ function bindEvents() {
   });
   $("#pairsInput").addEventListener("input", () => { $("#pairsError").hidden = true; });
   $("#settingsButton").addEventListener("click", () => {
+    $("#spreadsheetUrlInput").value = savedSpreadsheetUrl();
     $("#settingsDialog").showModal();
   });
   $$('[data-settings-tab]').forEach((tab) => tab.addEventListener("click", () => {
@@ -2168,6 +2216,12 @@ function bindEvents() {
     $$('[data-settings-panel]').forEach((panel) => { panel.hidden = panel.dataset.settingsPanel !== tab.dataset.settingsTab; });
   }));
   $("#saveSettingsButton").addEventListener("click", () => {
+    const url = $("#spreadsheetUrlInput").value.trim();
+    if (url && !/^https:\/\//i.test(url)) { toast("Use a full https workbook link.", "error"); return; }
+    try {
+      if (url) localStorage.setItem(SPREADSHEET_URL_STORAGE_KEY, url);
+      else localStorage.removeItem(SPREADSHEET_URL_STORAGE_KEY);
+    } catch (_) {}
     $("#settingsDialog").close();
     toast("Settings saved.", "success");
   });
@@ -2182,6 +2236,7 @@ function bindEvents() {
   $("#workbookInput").addEventListener("change", (event) => {
     if (event.target.files[0]) uploadWorkbook(event.target.files[0]);
   });
+  $("#downloadWorkbookButton").addEventListener("click", downloadSavedWorkbook);
   $("#changeFileButton").addEventListener("click", resetImportDialog);
   $("#importMapSheet").addEventListener("change", renderImportColumnMap);
   $("#sheetInput").addEventListener("change", updateImportDates);

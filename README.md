@@ -185,6 +185,14 @@ serial goes to the user, the returned-device serial goes to one shared import
 location as Used Stock or Pending Decom, and the pending-return serial is sent
 as Deployed - Pending Return.
 
+In **Settings → Spreadsheet import**, you can also save a SharePoint or
+OneDrive workbook link. **Download saved workbook** fetches the current
+version directly into the importer. The workbook stays in memory while it is
+being mapped and read; it is never copied to Downloads or kept as a permanent
+local file. Public links download directly. Private work links automatically
+retry headlessly through the saved Chrome profile, so sign in to Microsoft once
+in that profile if SharePoint asks for authentication.
+
 Do not put `EUDM_COOKIE` in `.env`; export short-lived cookies in the current shell or use the dedicated Chrome profile.
 
 When SSO is already automatic in the dedicated profile, set

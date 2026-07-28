@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -13,6 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import mimetypes
 from pathlib import Path
+import re
 import socket
 import threading
 import time
@@ -42,6 +44,95 @@ from . import eudm_inventory_import as inventory
 ROOT = Path(__file__).resolve().parents[2]
 WEB_ROOT = ROOT / "web"
 MAX_BODY = 42 * 1024 * 1024
+MAX_WORKBOOK_DOWNLOAD = 30 * 1024 * 1024
+
+
+def sharepoint_download_url(raw_url: str) -> str:
+    """Request a file download instead of the OneDrive/SharePoint web viewer."""
+    parsed = urllib.parse.urlsplit(raw_url.strip())
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise eudm.EUDMError("Enter a valid https SharePoint or OneDrive workbook link.")
+    host = parsed.hostname or ""
+    allowed = host == "1drv.ms" or host.endswith((".sharepoint.com", ".onedrive.com", ".office.com", ".live.com"))
+    if not allowed:
+        raise eudm.EUDMError("Use a SharePoint, OneDrive, or Office workbook link.")
+    query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+    if not any(key.casefold() == "download" for key, _ in query):
+        query.append(("download", "1"))
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urllib.parse.urlencode(query), ""))
+
+
+def filename_from_headers(headers: Any, fallback: str = "sharepoint-workbook.xlsx") -> str:
+    disposition = str(headers.get("Content-Disposition", "")) if headers else ""
+    match = re.search(r"filename\*?=(?:UTF-8''|\")?([^;\"]+)", disposition, flags=re.I)
+    candidate = urllib.parse.unquote(match.group(1)).strip() if match else fallback
+    candidate = Path(candidate).name or fallback
+    return candidate if candidate.lower().endswith((".xlsx", ".xlsm")) else fallback
+
+
+def read_workbook_response(response: Any) -> bytes:
+    size = response.headers.get("Content-Length")
+    if size and int(size) > MAX_WORKBOOK_DOWNLOAD:
+        raise eudm.EUDMError("The linked workbook is larger than the 30 MB local limit.")
+    data = response.read(MAX_WORKBOOK_DOWNLOAD + 1)
+    if len(data) > MAX_WORKBOOK_DOWNLOAD:
+        raise eudm.EUDMError("The linked workbook is larger than the 30 MB local limit.")
+    if not data.startswith(b"PK\x03\x04"):
+        raise eudm.EUDMError("The link did not return an Excel workbook.")
+    return data
+
+
+def download_workbook_direct(url: str) -> tuple[str, bytes]:
+    request = urllib.request.Request(
+        sharepoint_download_url(url),
+        headers={"User-Agent": "AutoEUDM/1.0", "Accept": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,*/*"},
+    )
+    with urllib.request.urlopen(request, timeout=35) as response:
+        return filename_from_headers(response.headers), read_workbook_response(response)
+
+
+def download_workbook_with_browser(url: str, profile: str | None) -> tuple[str, bytes]:
+    """Use saved Microsoft SSO headlessly when a private SharePoint link needs it."""
+    if not profile:
+        raise eudm.EUDMError("A saved browser profile is required for this private SharePoint workbook.")
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as exc:
+        raise eudm.EUDMError("Playwright could not be installed for SharePoint download.") from exc
+    playwright = None
+    context = None
+    temporary_path: Path | None = None
+    try:
+        playwright = sync_playwright().start()
+        context = playwright.chromium.launch_persistent_context(
+            user_data_dir=str(Path(profile).expanduser()), channel="chrome", headless=True,
+        )
+        page = context.pages[0] if context.pages else context.new_page()
+        with page.expect_download(timeout=45_000) as pending:
+            page.goto(sharepoint_download_url(url), wait_until="domcontentloaded", timeout=45_000)
+        download = pending.value
+        temporary_path = Path(download.path())
+        data = temporary_path.read_bytes()
+        if len(data) > MAX_WORKBOOK_DOWNLOAD or not data.startswith(b"PK\x03\x04"):
+            raise eudm.EUDMError("SharePoint did not return an Excel workbook.")
+        suggested = download.suggested_filename or "sharepoint-workbook.xlsx"
+        return filename_from_headers({}, suggested), data
+    except eudm.EUDMError:
+        raise
+    except Exception as exc:
+        raise eudm.EUDMError(
+            "SharePoint needs a signed-in Microsoft session. Open the saved Chrome profile once, sign in to SharePoint, then try Download and import again."
+        ) from exc
+    finally:
+        if temporary_path:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        if context:
+            context.close()
+        if playwright:
+            playwright.stop()
 
 
 def populate_spec(
@@ -893,6 +984,29 @@ class Application:
         ).start()
         return job
 
+    def start_remote_import(self, url: str) -> ImportJob:
+        job = ImportJob(job_id=uuid.uuid4().hex, filename="sharepoint-workbook.xlsx")
+        with self.import_lock:
+            self.import_jobs[job.job_id] = job
+        threading.Thread(target=self._download_import, args=(job, url), daemon=True).start()
+        return job
+
+    def _download_import(self, job: ImportJob, url: str) -> None:
+        job.update(state="downloading", message="Downloading the current workbook…")
+        try:
+            try:
+                filename, data = download_workbook_direct(url)
+            except (urllib.error.URLError, urllib.error.HTTPError, eudm.EUDMError):
+                job.update(message="Using saved Microsoft sign-in…")
+                filename, data = download_workbook_with_browser(url, self.config.browser_profile)
+            job.filename = filename
+            encoded = base64.b64encode(data).decode("ascii")
+            self._inspect_import(job, encoded)
+        except eudm.EUDMError as exc:
+            job.fail(str(exc))
+        except Exception:
+            job.fail("Could not download the workbook from SharePoint.")
+
     def start_mapped_import(self, import_id: str, columns: dict[str, Any]) -> ImportJob:
         with self.import_lock:
             pending = self.pending_imports.get(import_id)
@@ -1168,6 +1282,12 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
             )
             self._json(job.to_json(), 202)
             return
+        if path == "/api/import/download":
+            if not self.app.config.spreadsheet_import_enabled:
+                raise eudm.EUDMError("Spreadsheet import is disabled by this AutoEUDM environment.")
+            job = self.app.start_remote_import(str(payload.get("url", "")))
+            self._json(job.to_json(), 202)
+            return
         if path == "/api/import/map":
             if not self.app.config.spreadsheet_import_enabled:
                 raise eudm.EUDMError("Spreadsheet import is disabled by this AutoEUDM environment.")
@@ -1240,7 +1360,7 @@ def main() -> int:
         raise eudm.EUDMError(
             f"Could not load shared configuration: {exc}"
         ) from exc
-    if not config.simulate:
+    if not config.simulate or config.spreadsheet_import_enabled:
         ensure_runtime(
             requirement_file="requirements-browser.txt",
             import_name="playwright",
