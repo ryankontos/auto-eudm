@@ -22,6 +22,7 @@ const state = {
   locationLoading: new Map(),
   recordedLocationJobs: new Set(),
   newRequest: null,
+  validationTimers: new Map(),
 };
 
 const THEME_STORAGE_KEY = "auto-eudm-theme";
@@ -31,6 +32,7 @@ const IMPORT_COLUMNS_STORAGE_KEY = "auto-eudm-import-columns";
 const IMPORT_LOCATION_STORAGE_KEY = "auto-eudm-import-location";
 const SPREADSHEET_URL_STORAGE_KEY = "auto-eudm-spreadsheet-url";
 const BULK_SERIAL_VALIDATION_STORAGE_KEY = "auto-eudm-validate-bulk-serials";
+const VALIDATION_DEBOUNCE_MS = 1500;
 const MAX_RECENT_LOCATIONS = 8;
 const IMPORT_PREVIEW_ROW_LIMIT = 80;
 const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
@@ -278,11 +280,21 @@ function workbookHeadlessEnabled() {
     : false;
 }
 
-function bulkSerialValidationEnabled() {
-  if (state.preferences?._saved && typeof state.preferences?.validate_bulk_serials === "boolean") {
-    return state.preferences.validate_bulk_serials;
+function validationEnabled(key, fallback = true) {
+  if (state.preferences?._saved && typeof state.preferences?.[key] === "boolean") {
+    return state.preferences[key];
   }
-  try { return localStorage.getItem(BULK_SERIAL_VALIDATION_STORAGE_KEY) === "true"; } catch (_) { return false; }
+  if (key === "validate_bulk_serials") {
+    try {
+      const legacy = localStorage.getItem(BULK_SERIAL_VALIDATION_STORAGE_KEY);
+      if (legacy !== null) return legacy === "true";
+    } catch (_) {}
+  }
+  return fallback;
+}
+
+function bulkSerialValidationEnabled() {
+  return validationEnabled("validate_bulk_serials");
 }
 
 function rememberImportLocation(location) {
@@ -338,6 +350,10 @@ function makeRequest(kind) {
     serials: [],
     serial_validation: "empty",
     serial_validation_error: "",
+    user_validation: "empty",
+    user_validation_error: "",
+    returning_user_validation: "empty",
+    returning_user_validation_error: "",
     bulk_validation: "empty",
     bulk_validation_error: "",
     status: "",
@@ -385,15 +401,21 @@ function applyInferredKind(request, status, bulk = request.kind === "bulk_locati
     request.returning = false;
     request.returning_user = "";
     request.returning_user_info = null;
+    request.returning_user_validation = "empty";
+    request.returning_user_validation_error = "";
     request.serials = request.serials.slice(0, 1);
   } else if (changed) {
     request.user = "";
+    request.user_validation = "empty";
+    request.user_validation_error = "";
     request.location = wasUser || !request.location ? preferredLocation() : request.location;
     if (kind === "location") request.serials = request.serials.slice(0, 1);
     if (kind === "bulk_location") {
       request.returning = false;
       request.returning_user = "";
       request.returning_user_info = null;
+      request.returning_user_validation = "empty";
+      request.returning_user_validation_error = "";
     }
   }
 }
@@ -404,18 +426,10 @@ function validateRequest(request) {
     return ["Choose Deploy to user, Add to location stock, or Bulk add to location stock."];
   }
   if (!request.serials.length) errors.push("Enter at least one serial number.");
-  if (request.kind === "bulk_location" && request.serials.length) {
-    // Typing a bulk list is deliberately local and must not trigger network
-    // checks or editor rerenders. `pending` means it will be checked during
-    // Review & submit (or when the optional recheck setting is enabled).
-    if (request.bulk_validation === "checking") {
-      errors.push("Verifying each serial number against EUDM. Please wait.");
-    } else if (request.bulk_validation === "failed") {
-      errors.push(request.bulk_validation_error || "One or more serial numbers could not be verified in EUDM.");
-    }
-  }
-  if (request.kind !== "bulk_location" && request.serials.length && request.serial_validation !== "valid") {
-    errors.push(request.serial_validation_error || "Search EUDM and select the serial number from the results.");
+  if (request.kind !== "bulk_location" && request.serials.length && validationEnabled("validate_editor_serials") && request.serial_validation !== "valid") {
+    errors.push(request.serial_validation === "checking" || request.serial_validation === "pending"
+      ? "Verifying the serial number in EUDM. Please wait."
+      : request.serial_validation_error || "Search EUDM and select the serial number from the results.");
   }
   if (request.kind !== "bulk_location" && request.serials.length !== 1) {
     errors.push("This request must contain exactly one serial number.");
@@ -439,6 +453,11 @@ function validateRequest(request) {
     if (request.user && !/^[A-Za-z][A-Za-z0-9._-]*$/.test(request.user.trim())) {
       errors.push("The receiving username is not in a valid login ID format.");
     }
+    if (request.user && /^[A-Za-z][A-Za-z0-9._-]*$/.test(request.user.trim()) && validationEnabled("validate_editor_users") && request.user_validation !== "valid") {
+      errors.push(request.user_validation === "checking"
+        ? "Verifying the user in EUDM. Please wait."
+        : request.user_validation_error || "Search EUDM and select the verified user.");
+    }
     if (request.returning || request.returning_user) errors.push("Deploy to user cannot include a returning user.");
     if (request.location) errors.push("Deploy to user cannot include a location.");
   } else {
@@ -454,8 +473,10 @@ function validateRequest(request) {
     if (request.returning_user && !/^[A-Za-z][A-Za-z0-9._-]*$/.test(request.returning_user.trim())) {
       errors.push("The returning username is not in a valid login ID format.");
     }
-    if (request.returning_user && !request.returning_user_info && !request.returning_user_loading) {
-      errors.push("Search and verify the returning user's details before submitting; an email will be sent to them.");
+    if (request.returning_user && validationEnabled("validate_editor_users") && request.returning_user_validation === "checking") {
+      errors.push("Verifying the returning user in EUDM. Please wait.");
+    } else if (request.returning_user && validationEnabled("validate_editor_users") && !request.returning_user_info && !request.returning_user_loading) {
+      errors.push(request.returning_user_validation_error || "Search and verify the returning user's details before submitting; an email will be sent to them.");
     }
     if (request.kind === "bulk_location" && request.returning) {
       errors.push("Bulk add to location stock cannot include a returning user.");
@@ -491,8 +512,15 @@ function serialResultMatches(result, serial) {
     .includes(wanted);
 }
 
-async function validateBulkSerials({ force = false, requests = null } = {}) {
-  if (!force && !bulkSerialValidationEnabled()) return true;
+function userResultMatches(result, username) {
+  const wanted = String(username || "").toLowerCase();
+  return [result?.value, ...(result?.columns || [])]
+    .map((value) => String(value || "").toLowerCase())
+    .includes(wanted);
+}
+
+async function validateBulkSerials({ force = false, requests = null, render = true } = {}) {
+  if (!validationEnabled("validate_bulk_serials")) return true;
   const candidates = requests || [
     ...state.queue,
     ...(state.newRequest ? [state.newRequest] : []),
@@ -506,8 +534,9 @@ async function validateBulkSerials({ force = false, requests = null } = {}) {
   bulkRequests.forEach((request) => {
     request.bulk_validation = "checking";
     request.bulk_validation_error = "";
+    if (request === selectedRequest()) refreshBulkValidationButton(request);
   });
-  renderAll();
+  if (render) renderAll();
   const missing = new Map(bulkRequests.map((request) => [request.id, []]));
   await Promise.all(items.map(async ({ request, serial }) => {
     try {
@@ -528,8 +557,13 @@ async function validateBulkSerials({ force = false, requests = null } = {}) {
     request.bulk_validation_error = invalid.length
       ? `Could not verify: ${invalid.slice(0, 3).join(", ")}${invalid.length > 3 ? ` and ${invalid.length - 3} more` : ""}.`
       : "";
+    if (request === selectedRequest()) refreshBulkValidationButton(request);
   });
-  renderAll();
+  if (render) renderAll();
+  else {
+    refreshSelectedValidation();
+    renderQueue();
+  }
   return !bulkRequests.some((request) => snapshots.get(request.id) === request.serials.join("\u0000") && request.bulk_validation === "failed");
 }
 
@@ -611,9 +645,7 @@ function renderQueue() {
       : request.result_state === "failed" ? "Failed" : "";
     const readinessMarkup = request.result_state === "failed"
       ? '<span class="failed-mark" title="Request failed">!</span><span class="cell-secondary">Failed</span>'
-      : request.bulk_validation === "checking"
-        ? '<span class="checking-mark" title="Checking serial numbers"></span><span class="cell-secondary">Checking</span>'
-        : errors.length
+      : errors.length
           ? '<span class="invalid-mark">!</span>'
           : request.request_id
             ? `<span class="ready-mark">✓</span><span class="cell-secondary">${resultState}</span>`
@@ -690,6 +722,12 @@ function renderInspector() {
   elements.serialInput.hidden = bulk;
   elements.serialsInput.hidden = !bulk;
   $("#searchSerialButton").hidden = bulk;
+  const bulkValidateButton = $("#validateBulkSerialButton");
+  bulkValidateButton.hidden = !bulk || !validationEnabled("validate_bulk_serials");
+  bulkValidateButton.disabled = !request.serials.length || request.bulk_validation === "checking";
+  bulkValidateButton.textContent = request.bulk_validation === "checking"
+    ? "Validating…"
+    : request.bulk_validation === "valid" ? "Validated" : "Validate";
   elements.serialLabel.textContent = bulk ? "Serial numbers" : "Serial number";
   elements.serialInput.value = bulk ? "" : (request.serials[0] || "");
   elements.serialsInput.value = bulk ? request.serials.join("\n") : "";
@@ -723,6 +761,17 @@ function renderInspector() {
   refreshSelectedValidation();
 }
 
+function refreshBulkValidationButton(request = selectedRequest()) {
+  const button = $("#validateBulkSerialButton");
+  if (!button || !request) return;
+  const bulk = request.kind === "bulk_location";
+  button.hidden = !bulk || !validationEnabled("validate_bulk_serials");
+  button.disabled = !request.serials.length || request.bulk_validation === "checking";
+  button.textContent = request.bulk_validation === "checking"
+    ? "Validating…"
+    : request.bulk_validation === "valid" ? "Validated" : "Validate";
+}
+
 function renderAll() {
   renderQueue();
   renderInspector();
@@ -745,12 +794,24 @@ function changeRequestSize(size) {
     request.kind = "bulk_location";
     request.group = "Bulk add to location stock";
     request.user = "";
+    request.user_validation = "empty";
+    request.user_validation_error = "";
     request.returning = false;
     request.returning_user = "";
     request.returning_user_info = null;
+    request.returning_user_validation = "empty";
+    request.returning_user_validation_error = "";
     request.location = request.location || preferredLocation();
+    request.bulk_validation = request.serials.length
+      ? validationEnabled("validate_bulk_serials") ? "pending" : "valid"
+      : "empty";
+    request.bulk_validation_error = "";
   } else if (request.kind === "bulk_location") {
     request.serials = request.serials.slice(0, 1);
+    request.serial_validation = request.serials.length
+      ? validationEnabled("validate_editor_serials") ? "pending" : "valid"
+      : "empty";
+    request.serial_validation_error = "";
     applyInferredKind(request, request.status, false);
   }
   renderAll();
@@ -925,28 +986,154 @@ function bestSerial(result, query) {
     || query;
 }
 
+function scheduleValidation(request, field, work) {
+  const key = request.id + ":" + field;
+  const existing = state.validationTimers.get(key);
+  if (existing) clearTimeout(existing);
+  const epochKey = field + "_validation_epoch";
+  const epoch = Number(request[epochKey] || 0) + 1;
+  request[epochKey] = epoch;
+  const timer = setTimeout(() => {
+    state.validationTimers.delete(key);
+    work(epoch).catch(() => {});
+  }, VALIDATION_DEBOUNCE_MS);
+  state.validationTimers.set(key, timer);
+}
+
+function validationStillCurrent(request, field, epoch, value) {
+  if (!request || request[field + "_validation_epoch"] !== epoch) return false;
+  if (field === "serial") return request.serials[0] === value;
+  if (field === "bulk") return request.serials.join("\u0000") === value;
+  if (field === "user") return request.user === value;
+  if (field === "returning_user") return request.returning_user === value;
+  return true;
+}
+
+async function loadSerialSuggestions(request, query, { requireSelection = true } = {}) {
+  const value = query.trim();
+  if (!value || value.length < 2) return;
+  const epoch = Number(request.serial_validation_epoch || 0);
+  request.serial_validation = "checking";
+  request.serial_validation_error = "";
+  refreshSelectedValidation();
+  renderQueue();
+  try {
+    const payload = await api("/api/search/assets", {
+      method: "POST",
+      body: JSON.stringify({ query: value, fresh: true }),
+    });
+    if (!validationStillCurrent(request, "serial", epoch, value)) return;
+    const results = payload.results || [];
+    if (selectedRequest() === request) renderSearchResults(elements.serialResults, results, (result) => {
+      if (!validationStillCurrent(request, "serial", epoch, value)) return;
+      request.serials = [bestSerial(result, value)];
+      elements.serialInput.value = request.serials[0];
+      request.serial_validation = "valid";
+      request.serial_validation_error = "";
+      refreshSelectedValidation();
+      renderQueue();
+    }, 1);
+    const exact = results.some((item) => serialResultMatches(item, value));
+    if (!exact) {
+      request.serial_validation = "failed";
+      request.serial_validation_error = "Serial number was not found in EUDM.";
+    } else if (requireSelection) {
+      request.serial_validation = "unselected";
+      request.serial_validation_error = "Choose the verified serial number from the suggestions.";
+    } else {
+      request.serial_validation = "valid";
+    }
+    refreshSelectedValidation();
+    renderQueue();
+  } catch (error) {
+    if (!validationStillCurrent(request, "serial", epoch, value)) return;
+    request.serial_validation = "failed";
+    request.serial_validation_error = error.message || "Could not verify the serial number in EUDM.";
+    refreshSelectedValidation();
+    renderQueue();
+  }
+}
+
+async function validateUserAfterPause(request, returning = false) {
+  const field = returning ? "returning_user" : "user";
+  const value = (returning ? request.returning_user : request.user).trim();
+  if (!value || value.length < 2) return;
+  const epoch = Number(request[field + "_validation_epoch"] || 0);
+  if (returning) {
+    request.returning_user_validation = "checking";
+    request.returning_user_validation_error = "";
+    request.returning_user_loading = true;
+  } else {
+    request.user_validation = "checking";
+    request.user_validation_error = "";
+  }
+  refreshSelectedValidation();
+  renderQueue();
+  try {
+    const payload = await api("/api/search/users", {
+      method: "POST",
+      body: JSON.stringify({ query: value, returning, fresh: true }),
+    });
+    if (!validationStillCurrent(request, field, epoch, value)) return;
+    const results = payload.results || [];
+    const container = returning ? elements.returningResults : elements.userResults;
+    if (selectedRequest() === request) renderSearchResults(container, results, (result) => {
+      if (!validationStillCurrent(request, field, epoch, value)) return;
+      const login = bestLogin(result, value);
+      const info = { login, columns: (result.columns || [result.value]).map(String).filter(Boolean) };
+      if (returning) {
+        request.returning_user = login;
+        elements.returningUserInput.value = login;
+        request.returning_user_info = info;
+        request.returning_user_validation = "valid";
+        request.returning_user_validation_error = "";
+        request.returning_user_loading = false;
+      } else {
+        request.user = login;
+        elements.userInput.value = login;
+        request.user_info = info;
+        request.user_validation = "valid";
+        request.user_validation_error = "";
+      }
+      refreshSelectedValidation();
+      renderQueue();
+    }, 0);
+    const exact = results.some((item) => userResultMatches(item, value));
+    if (returning) {
+      request.returning_user_loading = false;
+      request.returning_user_validation = exact ? "suggested" : "failed";
+      request.returning_user_validation_error = exact ? "Choose the verified user from the suggestions." : "User was not found in EUDM.";
+    } else {
+      request.user_validation = exact ? "suggested" : "failed";
+      request.user_validation_error = exact ? "Choose the verified user from the suggestions." : "User was not found in EUDM.";
+    }
+    refreshSelectedValidation();
+    renderQueue();
+  } catch (error) {
+    if (!validationStillCurrent(request, field, epoch, value)) return;
+    if (returning) {
+      request.returning_user_loading = false;
+      request.returning_user_validation = "failed";
+      request.returning_user_validation_error = error.message || "Could not verify the user in EUDM.";
+    } else {
+      request.user_validation = "failed";
+      request.user_validation_error = error.message || "Could not verify the user in EUDM.";
+    }
+    refreshSelectedValidation();
+    renderQueue();
+  }
+}
+
 async function searchAssets() {
   const request = selectedRequest();
   if (!request || request.kind === "bulk_location") return;
   const query = elements.serialInput.value.trim();
   if (query.length < 2) return toast("Enter at least two serial characters.", "error");
   $("#searchSerialButton").disabled = true;
-  try {
-    // Asset search changes form state in EUDM. Use a fresh draft so a prior
-    // location or user lookup cannot leave the shared search draft in a mode
-    // where its device list no longer refreshes.
-    const payload = await api("/api/search/assets", { method: "POST", body: JSON.stringify({ query, fresh: true }) });
-    renderSearchResults(elements.serialResults, payload.results, (result) => {
-      request.serials = [bestSerial(result, query)];
-      request.serial_validation = "valid";
-      request.serial_validation_error = "";
-      renderAll();
-    }, 1);
-  } catch (error) {
-    toast(error.message, "error");
-  } finally {
-    $("#searchSerialButton").disabled = false;
-  }
+  request.serial_validation_epoch = Number(request.serial_validation_epoch || 0) + 1;
+  try { await loadSerialSuggestions(request, query, { requireSelection: true }); }
+  catch (error) { toast(error.message, "error"); }
+  finally { $("#searchSerialButton").disabled = false; }
 }
 
 async function searchUsers(returning = false) {
@@ -967,13 +1154,26 @@ async function searchUsers(returning = false) {
       const login = bestLogin(result, query);
       if (returning) {
         request.returning_user = login;
+        input.value = login;
         request.returning_user_info = {
           login,
           columns: (Array.isArray(result.columns) ? result.columns : [result.value]).map(String).filter(Boolean),
         };
+        request.returning_user_validation = "valid";
+        request.returning_user_validation_error = "";
+        request.returning_user_loading = false;
+      } else {
+        request.user = login;
+        input.value = login;
+        request.user_info = {
+          login,
+          columns: (Array.isArray(result.columns) ? result.columns : [result.value]).map(String).filter(Boolean),
+        };
+        request.user_validation = "valid";
+        request.user_validation_error = "";
       }
-      else request.user = login;
-      renderAll();
+      refreshSelectedValidation();
+      renderQueue();
     }, 0);
   } catch (error) {
     toast(error.message, "error");
@@ -1154,7 +1354,11 @@ function openSettings() {
   $("#spreadsheetPendingColumnInput").value = columns.pending_return || "OLD Device SN";
   $("#spreadsheetEnabledColumnInput").value = columns.enabled || "";
   $("#workbookHeadlessInput").checked = workbookHeadlessEnabled();
-  $("#validateBulkSerialsInput").checked = bulkSerialValidationEnabled();
+  $("#validateEditorSerialsInput").checked = validationEnabled("validate_editor_serials");
+  $("#validateEditorUsersInput").checked = validationEnabled("validate_editor_users");
+  $("#validateBulkSerialsInput").checked = validationEnabled("validate_bulk_serials");
+  $("#validateQuickImportInput").checked = validationEnabled("validate_quick_import");
+  $("#validateWorkbookImportInput").checked = validationEnabled("validate_workbook_import");
   $("#settingsDialog").showModal();
 }
 
@@ -1346,6 +1550,15 @@ function populateQuickImportBulkOptions() {
 
 async function resolveQuickImportReturningUsers() {
   const entries = state.pasteEntries.filter((entry) => !entry.validationChecked);
+  if (!validationEnabled("validate_quick_import")) {
+    entries.forEach((entry) => {
+      entry.validationChecked = true;
+      entry.validationState = "valid";
+      entry.validationError = "";
+    });
+    renderQuickImportReview();
+    return;
+  }
   if (!entries.length || !["connected", "simulation"].includes(state.connection?.state)) return;
   entries.forEach((entry) => { entry.validationChecked = true; entry.validationState = "checking"; });
   renderQuickImportReview();
@@ -1379,8 +1592,12 @@ async function resolveQueueReturningUsers(requests) {
       const payload = await api("/api/search/users", { method: "POST", body: JSON.stringify({ query: request.returning_user, returning: true }) });
       const result = (payload.results || []).find((item) => bestLogin(item, request.returning_user).toLowerCase() === request.returning_user.toLowerCase());
       request.returning_user_info = result ? { login: bestLogin(result, request.returning_user), columns: (result.columns || [result.value]).map(String).filter(Boolean) } : null;
+      request.returning_user_validation = result ? "valid" : "failed";
+      request.returning_user_validation_error = result ? "" : "User was not found in EUDM.";
     } catch (_) {
       request.returning_user_info = null;
+      request.returning_user_validation = "failed";
+      request.returning_user_validation_error = "Could not verify the returning user in EUDM.";
     } finally {
       request.returning_user_loading = false;
     }
@@ -1459,8 +1676,8 @@ function addPairs() {
       errors.push("Choose a complete city and location before adding these requests.");
     }
   }
-  if (state.pasteEntries.some((entry) => entry.validationState === "checking")) errors.push("Wait for EUDM validation to finish.");
-  if (state.pasteEntries.some((entry) => entry.validationState === "failed")) errors.push("Correct the entries EUDM could not validate.");
+  if (validationEnabled("validate_quick_import") && state.pasteEntries.some((entry) => entry.validationState === "checking")) errors.push("Wait for EUDM validation to finish.");
+  if (validationEnabled("validate_quick_import") && state.pasteEntries.some((entry) => entry.validationState === "failed")) errors.push("Correct the entries EUDM could not validate.");
   if (state.pasteEntries.some((entry) => entry.kind === "user" && !entry.username)) errors.push("A username is required for a deployed status.");
   if (errors.length) {
     $("#pairsError").textContent = errors.join(" ");
@@ -1485,9 +1702,11 @@ function addPairs() {
       request.returning = Boolean(username);
       request.returning_user = username;
       request.returning_user_info = returningUserInfo || null;
+      request.returning_user_validation = username ? "valid" : "empty";
       request.group = "Quick import · Add to location stock";
     } else {
       request.user = username;
+      request.user_validation = "valid";
       request.group = "Quick import · Deploy to user";
     }
     return request;
@@ -1799,7 +2018,11 @@ function updateImportColumnMapButton() {
 async function saveImportColumnPreferences(columns) {
   const preferences = {
     concurrency: Number(elements.concurrency.value),
+    validate_editor_serials: validationEnabled("validate_editor_serials"),
+    validate_editor_users: validationEnabled("validate_editor_users"),
     validate_bulk_serials: bulkSerialValidationEnabled(),
+    validate_quick_import: validationEnabled("validate_quick_import"),
+    validate_workbook_import: validationEnabled("validate_workbook_import"),
     workbook_headless: workbookHeadlessEnabled(),
     workbook_url: savedSpreadsheetUrl(),
     import_columns: columns,
@@ -2078,6 +2301,16 @@ async function validateImportPreview(retryRequests = null) {
   const payload = state.importPreview;
   if (!payload || !["connected", "simulation"].includes(state.connection?.state)) return;
   const requests = (retryRequests || payload.requests).filter((request) => request.included !== false);
+  if (!validationEnabled("validate_workbook_import")) {
+    requests.forEach((request) => {
+      request.import_validation = "valid";
+      request.import_error = "";
+      request.returning_user_loading = false;
+    });
+    renderImportPreview();
+    updateImportPrepareButton(payload);
+    return;
+  }
   requests.forEach((request) => {
     request.import_validation = "checking";
     request.import_error = "";
@@ -2098,6 +2331,10 @@ async function validateImportPreview(retryRequests = null) {
       if (!asset || !user) throw new Error(!asset ? "Serial number was not found in EUDM." : "Username was not found in EUDM.");
       if (request.kind === "location") {
         request.returning_user_info = { login: bestLogin(user, username), columns: (user.columns || [user.value]).map(String).filter(Boolean) };
+        request.returning_user_validation = "valid";
+      } else {
+        request.user_info = { login: bestLogin(user, username), columns: (user.columns || [user.value]).map(String).filter(Boolean) };
+        request.user_validation = "valid";
       }
       request.import_validation = "valid";
     } catch (error) {
@@ -2136,6 +2373,8 @@ async function prepareImport() {
       .map((request) => {
         const cleanRequest = { ...request };
         cleanRequest.serial_validation = "valid";
+        if (cleanRequest.kind === "user") cleanRequest.user_validation = "valid";
+        if (cleanRequest.kind === "location" && cleanRequest.returning_user) cleanRequest.returning_user_validation = "valid";
         delete cleanRequest.included;
         return cleanRequest;
       });
@@ -2201,13 +2440,6 @@ async function prepareImport() {
 
 async function openReview() {
   if (!state.queue.length || elements.reviewButton.disabled) return;
-  if (bulkSerialValidationEnabled()) {
-    const bulkOkay = await validateBulkSerials();
-    if (!bulkOkay) {
-      toast("Correct the bulk serial numbers EUDM could not verify.", "error");
-      return;
-    }
-  }
   const validations = queueValidation();
   const invalid = [...validations.values()].filter((errors) => errors.length);
   $("#reviewList").innerHTML = state.queue.map((request) => {
@@ -2519,7 +2751,11 @@ function bindEvents() {
     if (url && !/^https:\/\//i.test(url)) { toast("Use a full https ALM Workbook link.", "error"); return; }
     const preferences = {
       concurrency: Number(elements.concurrency.value),
+      validate_editor_serials: $("#validateEditorSerialsInput").checked,
+      validate_editor_users: $("#validateEditorUsersInput").checked,
       validate_bulk_serials: $("#validateBulkSerialsInput").checked,
+      validate_quick_import: $("#validateQuickImportInput").checked,
+      validate_workbook_import: $("#validateWorkbookImportInput").checked,
       workbook_headless: $("#workbookHeadlessInput").checked,
       workbook_url: url,
       import_columns: columns,
@@ -2607,6 +2843,13 @@ function bindEvents() {
   $("#duplicateButton").addEventListener("click", duplicateSelected);
   $("#removeButton").addEventListener("click", () => removeRequest(state.selectedId));
   $("#searchSerialButton").addEventListener("click", searchAssets);
+  $("#validateBulkSerialButton").addEventListener("click", async () => {
+    const request = selectedRequest();
+    if (!request || request.kind !== "bulk_location" || !request.serials.length) return;
+    await validateBulkSerials({ force: true, requests: [request], render: false });
+    refreshSelectedValidation();
+    renderQueue();
+  });
   $("#searchUserButton").addEventListener("click", () => searchUsers(false));
   $("#searchReturningButton").addEventListener("click", () => searchUsers(true));
   $("#loadLocationsButton").addEventListener("click", loadLocations);
@@ -2614,9 +2857,14 @@ function bindEvents() {
     hideSearchResults();
     const request = selectedRequest();
     if (!request) return;
-    request.serials = elements.serialInput.value.trim() ? [elements.serialInput.value.trim()] : [];
-    request.serial_validation = request.serials.length ? "pending" : "empty";
+    const value = elements.serialInput.value.trim();
+    request.serial_validation_epoch = Number(request.serial_validation_epoch || 0) + 1;
+    request.serials = value ? [value] : [];
+    request.serial_validation = request.serials.length
+      ? validationEnabled("validate_editor_serials") ? "pending" : "valid"
+      : "empty";
     request.serial_validation_error = "";
+    if (request.serials.length && validationEnabled("validate_editor_serials")) scheduleValidation(request, "serial", () => loadSerialSuggestions(request, value, { requireSelection: true }));
     refreshSelectedValidation();
     renderQueue();
   });
@@ -2624,9 +2872,13 @@ function bindEvents() {
     const request = selectedRequest();
     if (!request) return;
     request.serials = parseSerials(elements.serialsInput.value);
-    request.bulk_validation = request.serials.length ? "pending" : "empty";
+    request.bulk_validation_epoch = Number(request.bulk_validation_epoch || 0) + 1;
+    request.bulk_validation = request.serials.length
+      ? "pending"
+      : "empty";
     request.bulk_validation_error = "";
-    elements.serialHint.textContent = `${request.serials.length} serial${request.serials.length === 1 ? "" : "s"}`;
+    elements.serialHint.textContent = request.serials.length + " serial" + (request.serials.length === 1 ? "" : "s");
+    refreshBulkValidationButton(request);
     refreshSelectedValidation();
     renderQueue();
   });
@@ -2641,6 +2893,13 @@ function bindEvents() {
     const request = selectedRequest();
     if (!request) return;
     request.user = elements.userInput.value.trim();
+    request.user_validation_epoch = Number(request.user_validation_epoch || 0) + 1;
+    request.user_validation = request.user
+      ? validationEnabled("validate_editor_users") ? "pending" : "valid"
+      : "empty";
+    request.user_validation_error = "";
+    if (request.user && validationEnabled("validate_editor_users")) scheduleValidation(request, "user", () => validateUserAfterPause(request, false));
+    refreshSelectedValidation();
     renderQueue();
   });
   elements.cityInput.addEventListener("change", () => {
@@ -2670,6 +2929,9 @@ function bindEvents() {
     if (!request.returning) {
       request.returning_user = "";
       request.returning_user_info = null;
+      request.returning_user_validation = "empty";
+      request.returning_user_validation_error = "";
+      request.returning_user_loading = false;
     }
     elements.returningSearch.hidden = !elements.returningToggle.checked;
     elements.returnConfirmation.hidden = !elements.returningToggle.checked;
@@ -2681,7 +2943,15 @@ function bindEvents() {
     if (!request) return;
     request.returning_user = elements.returningUserInput.value.trim();
     request.returning_user_info = null;
+    request.returning_user_validation_epoch = Number(request.returning_user_validation_epoch || 0) + 1;
+    request.returning_user_validation = request.returning_user
+      ? validationEnabled("validate_editor_users") ? "pending" : "valid"
+      : "empty";
+    request.returning_user_validation_error = "";
+    request.returning_user_loading = Boolean(request.returning_user) && validationEnabled("validate_editor_users");
+    if (request.returning_user && validationEnabled("validate_editor_users")) scheduleValidation(request, "returning_user", () => validateUserAfterPause(request, true));
     renderReturningUserInfo(request);
+    refreshSelectedValidation();
     renderQueue();
   });
   elements.serialInput.addEventListener("keydown", (event) => { if (event.key === "Enter") searchAssets(); });

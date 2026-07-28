@@ -1093,6 +1093,7 @@ fieldset { margin: 0; padding: 0; border: 0; }
 .settings-tab { appearance: none; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); padding: 8px 1px; font-size: 13px; font-weight: 650; cursor: pointer; }
 .settings-tab.active { color: var(--ink); border-bottom-color: var(--blue); }
 .settings-card section { display: grid; gap: 16px; min-height: 112px; }
+.settings-help { margin: 0; color: var(--muted); line-height: 1.45; font-size: 13px; }
 .settings-card label { display: grid; gap: 7px; color: var(--ink); font-size: 13px; font-weight: 650; }
 .settings-card input, .settings-card select { width: 100%; font-size: 14px; }
 .settings-column-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
@@ -1100,7 +1101,6 @@ fieldset { margin: 0; padding: 0; border: 0; }
 .settings-checkbox { grid-template-columns: 18px minmax(0, 1fr); align-items: center; gap: 8px !important; min-height: 36px; padding: 8px 0; border-top: 1px solid var(--line); }
 .settings-checkbox input { width: 16px !important; min-height: 16px; margin: 0; accent-color: var(--primary-blue); }
 .settings-checkbox span { line-height: 1.35; }
-.settings-help { margin: 0; color: var(--muted); font-size: 13px; }
 .import-checking, .import-check-ok, .import-check-failed { display: block; margin-top: 5px; font-size: 11px; }
 .import-checking { color: var(--muted); }
 .import-checking::before { content: ""; display: inline-block; width: 9px; height: 9px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; margin-right: 5px; animation: activity-spin .75s linear infinite; vertical-align: -1px; }

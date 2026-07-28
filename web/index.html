@@ -129,6 +129,7 @@
           <div class="field-actions">
             <span id="serialHint" class="hint"></span>
             <button id="searchSerialButton" class="text-button" type="button">Search EUDM</button>
+            <button id="validateBulkSerialButton" class="text-button" type="button" hidden>Validate</button>
           </div>
           <div id="serialResults" class="search-results" hidden></div>
         </div>
@@ -374,6 +375,7 @@
       <div class="modal-header"><h2>Settings</h2><button class="icon-button" value="cancel" aria-label="Close">×</button></div>
       <div class="settings-tabs" role="tablist">
         <button class="settings-tab active" data-settings-tab="run" type="button">General</button>
+        <button class="settings-tab" data-settings-tab="validation" type="button">Validation</button>
         <button class="settings-tab" data-settings-tab="spreadsheet" type="button">ALM Workbook</button>
       </div>
       <section data-settings-panel="run">
@@ -388,7 +390,14 @@
             <option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option><option value="15">15</option><option value="20">20</option><option value="25">25</option><option value="30">30</option><option value="40">40</option><option value="50">50</option>
           </select>
         </label>
-        <label class="settings-checkbox"><input id="validateBulkSerialsInput" type="checkbox"><span>Recheck bulk serials before submission</span></label>
+      </section>
+      <section data-settings-panel="validation" hidden>
+        <p class="settings-help">Turn off checks only when EUDM lookups are unavailable. Format checks and required fields still apply.</p>
+        <label class="settings-checkbox"><input id="validateEditorSerialsInput" type="checkbox"><span>Verify serials in request editors</span></label>
+        <label class="settings-checkbox"><input id="validateEditorUsersInput" type="checkbox"><span>Verify users in request editors</span></label>
+        <label class="settings-checkbox"><input id="validateBulkSerialsInput" type="checkbox"><span>Verify every serial in bulk requests</span></label>
+        <label class="settings-checkbox"><input id="validateQuickImportInput" type="checkbox"><span>Verify serials and users in Quick import</span></label>
+        <label class="settings-checkbox"><input id="validateWorkbookImportInput" type="checkbox"><span>Verify serials and users in ALM Workbook imports</span></label>
       </section>
       <section data-settings-panel="spreadsheet" hidden>
         <label>ALM Workbook link<input id="spreadsheetUrlInput" type="url" placeholder="SharePoint or OneDrive link"></label>

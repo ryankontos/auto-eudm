@@ -936,7 +936,11 @@ class Application:
     def _preference_defaults(self) -> dict[str, Any]:
         return {
             "concurrency": max(1, min(50, int(self.config.concurrency or 1))),
-            "validate_bulk_serials": False,
+            "validate_editor_serials": True,
+            "validate_editor_users": True,
+            "validate_bulk_serials": True,
+            "validate_quick_import": True,
+            "validate_workbook_import": True,
             "workbook_headless": False,
             "workbook_url": "",
             "import_columns": {
@@ -968,7 +972,14 @@ class Application:
             raise eudm.EUDMError("Parallel requests must be between 1 and 50.")
         values["concurrency"] = concurrency
 
-        for key in ("validate_bulk_serials", "workbook_headless"):
+        for key in (
+            "validate_editor_serials",
+            "validate_editor_users",
+            "validate_bulk_serials",
+            "validate_quick_import",
+            "validate_workbook_import",
+            "workbook_headless",
+        ):
             if key in raw and not isinstance(raw[key], bool):
                 raise eudm.EUDMError("A settings toggle had an invalid value.")
             if key in raw:
