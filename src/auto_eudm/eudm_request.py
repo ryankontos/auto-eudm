@@ -249,6 +249,11 @@ class BrowserClient:
 class SimulationClient:
     """Small in-memory implementation of the EUDM paths used by these CLIs."""
 
+    # The real EUDM directory/device searches typically take a few seconds.
+    # Keeping that latency in the simulator makes the UI's loading states and
+    # debounce behaviour useful to exercise on a laptop without EUDM access.
+    SIMULATED_LOOKUP_DELAY_SECONDS = 3.5
+
     def __init__(self, verbose: bool = False) -> None:
         self.verbose = verbose
         self.request_number = 0
@@ -375,9 +380,29 @@ class SimulationClient:
         ]
 
     def request(self, method: str, path: str, payload: Any | None = None) -> Any:
+        started = time.monotonic()
+        is_lookup_request = (
+            method == "POST"
+            and (
+                path.endswith("/lookup")
+                or (
+                    path.endswith("/questionnaire/answers")
+                    and str((payload or {}).get("questionId", ""))
+                    in {"serial-search", "dropoff-search"}
+                )
+            )
+        )
+        if is_lookup_request:
+            time.sleep(self.SIMULATED_LOOKUP_DELAY_SECONDS)
         if self.verbose:
             print(f"SIMULATE {method} {path}", file=sys.stderr)
-        run_reporting.network(method, path, status=200, duration_ms=0, transport="simulation")
+        run_reporting.network(
+            method,
+            path,
+            status=200,
+            duration_ms=round((time.monotonic() - started) * 1000),
+            transport="simulation",
+        )
         if method == "POST" and path == "v2/sbe/services/requests":
             with self._lock:
                 self.request_number += 1

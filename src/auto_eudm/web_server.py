@@ -193,7 +193,7 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
         if path == "/api/search/users":
             query = str(payload.get("query", "")).strip()
             if len(query) < 2:
-                raise eudm.EUDMError("Enter at least two username characters.")
+                raise eudm.EUDMError("Enter at least two name or username characters.")
             self._json(
                 {
                     "results": (self.app.clients.fresh_search() if payload.get("fresh") else self.app.clients.search()).users(
@@ -222,7 +222,10 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
         if path == "/api/import/download":
             if not self.app.config.spreadsheet_import_enabled:
                 raise eudm.EUDMError("Spreadsheet import is disabled by this AutoEUDM environment.")
-            job = self.app.start_remote_import(str(payload.get("url", "")))
+            job = self.app.start_remote_import(
+                str(payload.get("url", "")),
+                delete_after_use=bool(payload.get("delete_after_use", True)),
+            )
             self._json(job.to_json(), 202)
             return
         if path == "/api/import/map":
@@ -231,7 +234,11 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
             columns = payload.get("columns")
             if not isinstance(columns, dict):
                 raise eudm.EUDMError("Choose all spreadsheet columns.")
-            job = self.app.start_mapped_import(str(payload.get("import_id", "")), columns)
+            job = self.app.start_mapped_import(
+                str(payload.get("import_id", "")),
+                columns,
+                delete_after_use=bool(payload.get("delete_after_use", True)),
+            )
             self._json(job.to_json(), 202)
             return
         if path == "/api/import/prepare":

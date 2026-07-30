@@ -124,17 +124,27 @@
 
         <div class="form-field">
           <label for="serialInput"><span id="serialLabel">Serial number</span><em>Required</em></label>
-          <input id="serialInput" type="text" autocomplete="off" spellcheck="false" placeholder="e.g. 8P15FH4">
+          <div id="serialSearchControl" class="search-control lookup-control">
+            <input id="serialInput" type="text" autocomplete="off" spellcheck="false" placeholder="Type at least 2 characters">
+            <button id="searchSerialButton" class="button secondary compact lookup-button" type="button" disabled>Search</button>
+          </div>
+          <div id="serialConfirmed" class="lookup-confirmed" hidden>
+            <span class="lookup-confirmed-mark" aria-hidden="true">✓</span>
+            <span><strong id="serialConfirmedValue"></strong></span>
+            <button id="resetSerialSelection" class="text-button" type="button">Change</button>
+          </div>
           <textarea id="serialsInput" rows="5" spellcheck="false" placeholder="Enter serials separated by commas, spaces, or new lines" hidden></textarea>
+          <div id="serialLookupStatus" class="lookup-status" role="status" aria-live="polite" hidden></div>
           <div class="field-actions">
             <span id="serialHint" class="hint"></span>
-            <button id="searchSerialButton" class="text-button" type="button">Search EUDM</button>
             <button id="validateBulkSerialButton" class="text-button" type="button" hidden>Validate</button>
           </div>
+          <div id="bulkValidationStatus" class="bulk-validation-status" hidden></div>
+          <div id="bulkValidationAlert" class="bulk-validation-alert" hidden></div>
           <div id="serialResults" class="search-results" hidden></div>
         </div>
 
-        <div class="form-field">
+        <div id="statusFields" class="form-field">
           <label for="statusInput">Change status to <em>Required</em></label>
           <select id="statusInput"></select>
         </div>
@@ -142,10 +152,16 @@
         <div id="userFields">
           <div class="form-field">
             <label for="userInput">Deployed to user <em>Required</em></label>
-            <div class="search-control">
-              <input id="userInput" type="text" autocomplete="off" spellcheck="false" placeholder="Login ID or name">
-              <button id="searchUserButton" class="button secondary compact" type="button">Search</button>
+            <div id="userSearchControl" class="search-control lookup-control">
+              <input id="userInput" type="text" autocomplete="off" spellcheck="false" placeholder="Type at least 2 characters">
+              <button id="searchUserButton" class="button secondary compact lookup-button" type="button" disabled>Search</button>
             </div>
+            <div id="userConfirmed" class="lookup-confirmed" hidden>
+              <span class="lookup-confirmed-mark" aria-hidden="true">✓</span>
+              <span><strong id="userConfirmedValue"></strong><small id="userConfirmedUsername"></small></span>
+              <button id="resetUserSelection" class="text-button" type="button">Change</button>
+            </div>
+            <div id="userLookupStatus" class="lookup-status" role="status" aria-live="polite" hidden></div>
             <div id="userResults" class="search-results" hidden></div>
           </div>
         </div>
@@ -173,10 +189,16 @@
             </label>
             <div id="returningSearch" class="form-field nested" hidden>
               <label for="returningUserInput">Returning user</label>
-              <div class="search-control">
-                <input id="returningUserInput" type="text" autocomplete="off" spellcheck="false" placeholder="Login ID or name">
-                <button id="searchReturningButton" class="button secondary compact" type="button">Search</button>
+              <div id="returningSearchControl" class="search-control lookup-control">
+                <input id="returningUserInput" type="text" autocomplete="off" spellcheck="false" placeholder="Type at least 2 characters">
+                <button id="searchReturningButton" class="button secondary compact lookup-button" type="button" disabled>Search</button>
               </div>
+              <div id="returningConfirmed" class="lookup-confirmed" hidden>
+                <span class="lookup-confirmed-mark" aria-hidden="true">✓</span>
+                <span><strong id="returningConfirmedValue"></strong><small id="returningConfirmedUsername"></small></span>
+                <button id="resetReturningSelection" class="text-button" type="button">Change</button>
+              </div>
+              <div id="returningLookupStatus" class="lookup-status" role="status" aria-live="polite" hidden></div>
               <div id="returningResults" class="search-results" hidden></div>
             </div>
             <div id="returnConfirmation" class="return-confirmation" hidden>
@@ -240,7 +262,6 @@
               <option value="">Choose a deployment type</option>
             </select>
           </label>
-          <button id="pairsApplyBulkButton" class="button secondary compact" type="button">Apply to all</button>
         </div>
         <div id="pairsReviewList" class="quick-import-list"></div>
         <div id="pairsLocationFields" class="pairs-location-fields" hidden>
@@ -296,6 +317,7 @@
           <div class="import-progress" aria-hidden="true"><span id="importBusyBar"></span></div>
           <span id="importBusyPercent" class="import-progress-percent">0%</span>
         </div>
+        <label class="settings-checkbox import-cleanup-option"><input id="deleteWorkbookAfterUseInput" type="checkbox" checked><span>Delete after use</span></label>
         <div id="importMapColumns" hidden>
           <div class="import-file-row">
             <div><strong id="importMapFilename"></strong><small>Choose the columns in this workbook.</small></div>
@@ -392,10 +414,6 @@
         </label>
       </section>
       <section data-settings-panel="validation" hidden>
-        <p class="settings-help">Turn off checks only when EUDM lookups are unavailable. Format checks and required fields still apply.</p>
-        <label class="settings-checkbox"><input id="validateEditorSerialsInput" type="checkbox"><span>Verify serials in request editors</span></label>
-        <label class="settings-checkbox"><input id="validateEditorUsersInput" type="checkbox"><span>Verify users in request editors</span></label>
-        <label class="settings-checkbox"><input id="validateBulkSerialsInput" type="checkbox"><span>Verify every serial in bulk requests</span></label>
         <label class="settings-checkbox"><input id="validateQuickImportInput" type="checkbox"><span>Verify serials and users in Quick import</span></label>
         <label class="settings-checkbox"><input id="validateWorkbookImportInput" type="checkbox"><span>Verify serials and users in ALM Workbook imports</span></label>
       </section>

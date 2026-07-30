@@ -206,8 +206,12 @@ class RequestSpec:
         if self.kind not in {"user", "location", "bulk_location"}:
             return ["Choose Deploy to user, Add to location stock, or Bulk add to location stock."]
         if not self.serials:
-            errors.append("Enter at least one serial number.")
-        if self.kind != "bulk_location" and len(self.serials) != 1:
+            errors.append(
+                "Enter one or more serial numbers."
+                if self.kind == "bulk_location"
+                else "Enter a serial number."
+            )
+        if self.kind != "bulk_location" and len(self.serials) > 1:
             errors.append("This request must contain exactly one serial number.")
         duplicate_serials = [
             serial
@@ -219,22 +223,17 @@ class RequestSpec:
         if duplicate_serials:
             errors.append("Remove duplicate serial numbers from this request.")
         for serial in self.serials:
-            if not SERIAL_PATTERN.fullmatch(serial):
-                errors.append(
-                    f"Serial {serial!r} can contain only letters, numbers, dot, dash, and underscore."
-                )
-                break
-            if len(serial) < 6:
-                errors.append(f"Serial {serial!r} must contain at least six characters.")
+            # Serial format guidance is rendered beside the editor field.
+            # Keep the request invalid without duplicating that guidance in the
+            # summary list.
+            if not SERIAL_PATTERN.fullmatch(serial) or len(serial) < 6:
                 break
 
         if self.kind == "user":
             allowed = user_statuses or {value for _, value in USER_STATUSES}
             if self.status not in allowed:
                 errors.append("Choose a valid status for Deploy to user.")
-            if not self.user:
-                errors.append("Choose the user receiving the device.")
-            elif not re.fullmatch(r"[A-Za-z][A-Za-z0-9._-]*", self.user):
+            if self.user and not re.fullmatch(r"[A-Za-z][A-Za-z0-9._-]*", self.user):
                 errors.append("The receiving user must be a login ID, not a display name or email address.")
             if self.returning_requested:
                 errors.append("Deploy to user cannot have a returning user.")

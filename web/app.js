@@ -31,7 +31,6 @@ const CONCURRENCY_STORAGE_KEY = "auto-eudm-concurrency";
 const IMPORT_COLUMNS_STORAGE_KEY = "auto-eudm-import-columns";
 const IMPORT_LOCATION_STORAGE_KEY = "auto-eudm-import-location";
 const SPREADSHEET_URL_STORAGE_KEY = "auto-eudm-spreadsheet-url";
-const BULK_SERIAL_VALIDATION_STORAGE_KEY = "auto-eudm-validate-bulk-serials";
 const VALIDATION_DEBOUNCE_MS = 1500;
 const MAX_RECENT_LOCATIONS = 8;
 const IMPORT_PREVIEW_ROW_LIMIT = 80;
@@ -284,17 +283,7 @@ function validationEnabled(key, fallback = true) {
   if (state.preferences?._saved && typeof state.preferences?.[key] === "boolean") {
     return state.preferences[key];
   }
-  if (key === "validate_bulk_serials") {
-    try {
-      const legacy = localStorage.getItem(BULK_SERIAL_VALIDATION_STORAGE_KEY);
-      if (legacy !== null) return legacy === "true";
-    } catch (_) {}
-  }
   return fallback;
-}
-
-function bulkSerialValidationEnabled() {
-  return validationEnabled("validate_bulk_serials");
 }
 
 function rememberImportLocation(location) {
@@ -356,6 +345,7 @@ function makeRequest(kind) {
     returning_user_validation_error: "",
     bulk_validation: "empty",
     bulk_validation_error: "",
+    bulk_validation_missing: [],
     status: "",
     user: "",
     returning: false,
@@ -425,19 +415,21 @@ function validateRequest(request) {
   if (!["user", "location", "bulk_location"].includes(request.kind)) {
     return ["Choose Deploy to user, Add to location stock, or Bulk add to location stock."];
   }
-  if (!request.serials.length) errors.push("Enter at least one serial number.");
-  if (request.kind !== "bulk_location" && request.serials.length && validationEnabled("validate_editor_serials") && request.serial_validation !== "valid") {
-    errors.push(request.serial_validation === "checking" || request.serial_validation === "pending"
-      ? "Verifying the serial number in EUDM. Please wait."
-      : request.serial_validation_error || "Search EUDM and select the serial number from the results.");
+  if (!request.serials.length) errors.push(
+    request.kind === "bulk_location" ? "Enter one or more serial numbers." : "Enter a serial number.",
+  );
+  // Serial verification is shown inline beside the field, not repeated in the
+  // request error summary.
+  if (request.kind !== "bulk_location" && request.serials.length && request.serial_validation !== "valid") {
+    errors.push("__field_serial__");
   }
-  if (request.kind !== "bulk_location" && request.serials.length !== 1) {
+  if (request.kind !== "bulk_location" && request.serials.length > 1) {
     errors.push("This request must contain exactly one serial number.");
   }
   const seen = new Set();
   for (const serial of request.serials) {
     if (!/^[A-Za-z0-9._-]{6,}$/.test(serial)) {
-      errors.push(`Serial ${serial} must have at least six letters, numbers, dots, underscores, or hyphens.`);
+      errors.push("__field_serial__");
       break;
     }
     const key = serial.toLowerCase();
@@ -449,14 +441,11 @@ function validateRequest(request) {
   }
   if (request.kind === "user") {
     if (!userStatusValues().has(request.status)) errors.push("Choose a status for Deploy to user.");
-    if (!request.user.trim()) errors.push("Choose the user receiving the device.");
-    if (request.user && !/^[A-Za-z][A-Za-z0-9._-]*$/.test(request.user.trim())) {
-      errors.push("The receiving username is not in a valid login ID format.");
-    }
-    if (request.user && /^[A-Za-z][A-Za-z0-9._-]*$/.test(request.user.trim()) && validationEnabled("validate_editor_users") && request.user_validation !== "valid") {
-      errors.push(request.user_validation === "checking"
-        ? "Verifying the user in EUDM. Please wait."
-        : request.user_validation_error || "Search EUDM and select the verified user.");
+    // The empty user state is shown by the editor field itself.
+    if (!request.user.trim()) errors.push("__field_user__");
+    if (request.user && !/^[A-Za-z][A-Za-z0-9._-]*$/.test(request.user.trim())) errors.push("__field_user__");
+    if (request.user && /^[A-Za-z][A-Za-z0-9._-]*$/.test(request.user.trim()) && request.user_validation !== "valid") {
+      errors.push("__field_user__");
     }
     if (request.returning || request.returning_user) errors.push("Deploy to user cannot include a returning user.");
     if (request.location) errors.push("Deploy to user cannot include a location.");
@@ -473,9 +462,9 @@ function validateRequest(request) {
     if (request.returning_user && !/^[A-Za-z][A-Za-z0-9._-]*$/.test(request.returning_user.trim())) {
       errors.push("The returning username is not in a valid login ID format.");
     }
-    if (request.returning_user && validationEnabled("validate_editor_users") && request.returning_user_validation === "checking") {
+    if (request.returning_user && request.returning_user_validation === "checking") {
       errors.push("Verifying the returning user in EUDM. Please wait.");
-    } else if (request.returning_user && validationEnabled("validate_editor_users") && !request.returning_user_info && !request.returning_user_loading) {
+    } else if (request.returning_user && !request.returning_user_info && !request.returning_user_loading) {
       errors.push(request.returning_user_validation_error || "Search and verify the returning user's details before submitting; an email will be sent to them.");
     }
     if (request.kind === "bulk_location" && request.returning) {
@@ -512,15 +501,7 @@ function serialResultMatches(result, serial) {
     .includes(wanted);
 }
 
-function userResultMatches(result, username) {
-  const wanted = String(username || "").toLowerCase();
-  return [result?.value, ...(result?.columns || [])]
-    .map((value) => String(value || "").toLowerCase())
-    .includes(wanted);
-}
-
 async function validateBulkSerials({ force = false, requests = null, render = true } = {}) {
-  if (!validationEnabled("validate_bulk_serials")) return true;
   const candidates = requests || [
     ...state.queue,
     ...(state.newRequest ? [state.newRequest] : []),
@@ -534,6 +515,7 @@ async function validateBulkSerials({ force = false, requests = null, render = tr
   bulkRequests.forEach((request) => {
     request.bulk_validation = "checking";
     request.bulk_validation_error = "";
+    request.bulk_validation_missing = [];
     if (request === selectedRequest()) refreshBulkValidationButton(request);
   });
   if (render) renderAll();
@@ -554,6 +536,7 @@ async function validateBulkSerials({ force = false, requests = null, render = tr
     if (snapshots.get(request.id) !== request.serials.join("\u0000")) return;
     const invalid = missing.get(request.id);
     request.bulk_validation = invalid.length ? "failed" : "valid";
+    request.bulk_validation_missing = invalid;
     request.bulk_validation_error = invalid.length
       ? `Could not verify: ${invalid.slice(0, 3).join(", ")}${invalid.length > 3 ? ` and ${invalid.length - 3} more` : ""}.`
       : "";
@@ -564,7 +547,8 @@ async function validateBulkSerials({ force = false, requests = null, render = tr
     refreshSelectedValidation();
     renderQueue();
   }
-  return !bulkRequests.some((request) => snapshots.get(request.id) === request.serials.join("\u0000") && request.bulk_validation === "failed");
+  // Verification is advisory for bulk requests; it never blocks submission.
+  return true;
 }
 
 function statusLabel(request) {
@@ -585,19 +569,21 @@ function destinationLabel(request) {
 
 function renderReturningUserInfo(request) {
   const panel = $("#returnUserInfo");
-  if (!panel || !request?.returning) return;
+  if (!panel) return;
+  const verified = Boolean(
+    request?.returning
+    && request.returning_user
+    && request.returning_user_selected
+    && request.returning_user_validation === "valid"
+    && request.returning_user_info,
+  );
+  panel.hidden = !verified;
+  if (!verified) {
+    panel.replaceChildren();
+    return;
+  }
   const info = request.returning_user_info;
-  if (request.returning_user_loading) {
-    panel.className = "return-user-info loading";
-    panel.innerHTML = "<strong>Verifying returning user details…</strong><span>Fetching the user details EUDM will use before this request can be submitted.</span>";
-    return;
-  }
   const values = info?.columns || [];
-  if (!request.returning_user || !info || !values.length) {
-    panel.className = "return-user-info unknown";
-    panel.innerHTML = "<strong>Returning user details unknown</strong><span>Search and select the user before submitting.</span>";
-    return;
-  }
   const unknown = values.some((value) => !String(value).trim() || /unknown|not available|not found/i.test(value));
   panel.className = `return-user-info ${unknown ? "unknown" : ""}`;
   panel.innerHTML = `<strong>Selected user</strong><span>${escapeHtml(info.login || request.returning_user)}</span><small>${escapeHtml(values.join(" · "))}</small>${unknown ? "<em>Some details are unknown. Verify the user before submitting.</em>" : ""}`;
@@ -694,9 +680,12 @@ function refreshSelectedValidation() {
   const errors = state.newRequest === request
     ? validateRequest(request)
     : queueValidation().get(request.id) || [];
-  elements.validationPanel.hidden = !errors.length;
-  elements.validationPanel.innerHTML = errors.length
-    ? `<ul>${errors.map((error) => `<li>${escapeHtml(error)}</li>`).join("")}</ul>`
+  const visibleErrors = errors.filter((error) =>
+    !error.startsWith("__field_") && !/^Verifying .+ Please wait\.$/.test(error)
+  );
+  elements.validationPanel.hidden = !visibleErrors.length;
+  elements.validationPanel.innerHTML = visibleErrors.length
+    ? `<ul>${visibleErrors.map((error) => `<li>${escapeHtml(error)}</li>`).join("")}</ul>`
     : "";
   const saveButton = $("#saveNewRequestButton");
   if (saveButton) saveButton.disabled = state.newRequest === request && errors.length > 0;
@@ -714,31 +703,37 @@ function renderInspector() {
   elements.inspectorEmpty.hidden = Boolean(request);
   elements.inspectorContent.hidden = !request;
   hideSearchResults();
+  setLookupStatus("serial", "");
+  setLookupStatus("user", "");
+  setLookupStatus("returning", "");
   if (!request) return;
 
   const bulk = request.kind === "bulk_location";
   const user = request.kind === "user";
   $("#requestSizeInput").value = bulk ? "bulk" : "single";
-  elements.serialInput.hidden = bulk;
+  $("#serialSearchControl").hidden = bulk;
   elements.serialsInput.hidden = !bulk;
-  $("#searchSerialButton").hidden = bulk;
   const bulkValidateButton = $("#validateBulkSerialButton");
-  bulkValidateButton.hidden = !bulk || !validationEnabled("validate_bulk_serials");
+  bulkValidateButton.hidden = !bulk;
   bulkValidateButton.disabled = !request.serials.length || request.bulk_validation === "checking";
-  bulkValidateButton.textContent = request.bulk_validation === "checking"
-    ? "Validating…"
-    : request.bulk_validation === "valid" ? "Validated" : "Validate";
+  bulkValidateButton.textContent = request.bulk_validation === "checking" ? "Verifying…" : "Verify";
   elements.serialLabel.textContent = bulk ? "Serial numbers" : "Serial number";
   elements.serialInput.value = bulk ? "" : (request.serials[0] || "");
   elements.serialsInput.value = bulk ? request.serials.join("\n") : "";
   elements.serialHint.textContent = bulk ? `${request.serials.length} serial${request.serials.length === 1 ? "" : "s"}` : "";
+  refreshBulkValidationButton(request);
 
   const statusOptions = bulk ? state.config.location_statuses : singleRequestStatusOptions();
   normalizeRequestStatus(request);
   fillSelect(elements.statusInput, statusOptions, request.status, "Choose a status");
-  elements.userFields.hidden = !user;
-  elements.locationFields.hidden = user;
+  const serialReady = bulk
+    ? request.serials.length > 0
+    : Boolean(request.serial_selected && request.serial_validation === "valid");
+  $("#statusFields").hidden = !serialReady;
+  elements.userFields.hidden = !user || !serialReady;
+  elements.locationFields.hidden = user || !serialReady;
   elements.userInput.value = request.user || "";
+  renderLookupConfirmations(request, { bulk, user });
 
   if (!user) {
     fillSelect(elements.cityInput, locationCities(request.location), request.location?.city || "", "Choose a city");
@@ -751,7 +746,13 @@ function renderInspector() {
     elements.returningToggle.checked = Boolean(request.returning);
     elements.returningSearch.hidden = !request.returning;
     elements.returningUserInput.value = request.returning_user || "";
-    elements.returnConfirmation.hidden = !request.returning;
+    elements.returnConfirmation.hidden = !(
+      request.returning
+      && request.returning_user
+      && request.returning_user_selected
+      && request.returning_user_validation === "valid"
+      && request.returning_user_info
+    );
     $("#confirmSerial").textContent = request.serials[0] || "Not selected";
     $("#confirmUser").textContent = request.returning_user || "Not selected";
     $("#confirmLocation").textContent = destinationLabel(request);
@@ -759,17 +760,27 @@ function renderInspector() {
   }
 
   refreshSelectedValidation();
+  updateLookupControlStates(request);
 }
 
 function refreshBulkValidationButton(request = selectedRequest()) {
   const button = $("#validateBulkSerialButton");
   if (!button || !request) return;
   const bulk = request.kind === "bulk_location";
-  button.hidden = !bulk || !validationEnabled("validate_bulk_serials");
+  button.hidden = !bulk;
   button.disabled = !request.serials.length || request.bulk_validation === "checking";
-  button.textContent = request.bulk_validation === "checking"
-    ? "Validating…"
-    : request.bulk_validation === "valid" ? "Validated" : "Validate";
+  button.textContent = request.bulk_validation === "checking" ? "Verifying…" : "Verify";
+  const status = $("#bulkValidationStatus");
+  const alert = $("#bulkValidationAlert");
+  status.hidden = !bulk || request.bulk_validation !== "valid";
+  status.textContent = request.bulk_validation === "valid"
+    ? `✓ Verified ${request.serials.length} serial${request.serials.length === 1 ? "" : "s"}`
+    : "";
+  const missing = request.bulk_validation_missing || [];
+  alert.hidden = !bulk || request.bulk_validation !== "failed" || !missing.length;
+  alert.innerHTML = missing.length
+    ? `<strong>Could not verify</strong><ul>${missing.map((serial) => `<li>${escapeHtml(serial)}</li>`).join("")}</ul>`
+    : "";
 }
 
 function renderAll() {
@@ -802,15 +813,11 @@ function changeRequestSize(size) {
     request.returning_user_validation = "empty";
     request.returning_user_validation_error = "";
     request.location = request.location || preferredLocation();
-    request.bulk_validation = request.serials.length
-      ? validationEnabled("validate_bulk_serials") ? "pending" : "valid"
-      : "empty";
+    request.bulk_validation = request.serials.length ? "pending" : "empty";
     request.bulk_validation_error = "";
   } else if (request.kind === "bulk_location") {
     request.serials = request.serials.slice(0, 1);
-    request.serial_validation = request.serials.length
-      ? validationEnabled("validate_editor_serials") ? "pending" : "valid"
-      : "empty";
+    request.serial_validation = request.serials.length ? "pending" : "empty";
     request.serial_validation_error = "";
     applyInferredKind(request, request.status, false);
   }
@@ -1009,12 +1016,105 @@ function validationStillCurrent(request, field, epoch, value) {
   return true;
 }
 
+function setLookupStatus(kind, message = "", busy = false) {
+  const node = $("#" + kind + "LookupStatus");
+  if (!node) return;
+  node.hidden = !message;
+  node.classList.toggle("busy", Boolean(message && busy));
+  node.textContent = message;
+}
+
+function setLookupInputStatus(kind, value) {
+  if (!value) return setLookupStatus(kind, "");
+  if (value.length < 2) return setLookupStatus(kind, "Type at least 2 characters to search.");
+  setLookupStatus(kind, "Press Enter or Search to look up in EUDM.");
+}
+
+function updateLookupControlStates(request = selectedRequest()) {
+  const serialButton = $("#searchSerialButton");
+  const userButton = $("#searchUserButton");
+  const returningButton = $("#searchReturningButton");
+  if (!request) {
+    [serialButton, userButton, returningButton].forEach((button) => { if (button) button.disabled = true; });
+    return;
+  }
+  serialButton.disabled = request.kind === "bulk_location"
+    || elements.serialInput.value.trim().length < 2
+    || request.serial_validation === "checking";
+  userButton.disabled = request.kind !== "user"
+    || elements.userInput.value.trim().length < 2
+    || request.user_validation === "checking";
+  returningButton.disabled = !request.returning
+    || elements.returningUserInput.value.trim().length < 2
+    || request.returning_user_validation === "checking";
+}
+
+function confirmedPersonLabel(login, info) {
+  const values = (info?.columns || []).map((value) => String(value).trim()).filter(Boolean);
+  const fullName = values.find((value) => value !== login && /\s/.test(value)) || login;
+  return { fullName, login: fullName === login ? "" : login };
+}
+
+function renderLookupConfirmations(request, { bulk, user }) {
+  const serialConfirmed = !bulk && Boolean(request.serial_selected && request.serials[0]);
+  $("#serialSearchControl").hidden = bulk || serialConfirmed;
+  $("#serialConfirmed").hidden = !serialConfirmed;
+  $("#serialConfirmedValue").textContent = request.serials[0] || "";
+  if (serialConfirmed) {
+    elements.serialResults.hidden = true;
+    elements.serialResults.replaceChildren();
+  }
+
+  const userConfirmed = user && Boolean(request.user_selected && request.user);
+  $("#userSearchControl").hidden = !user || userConfirmed;
+  $("#userConfirmed").hidden = !userConfirmed;
+  const selectedUser = confirmedPersonLabel(request.user || "", request.user_info);
+  $("#userConfirmedValue").textContent = selectedUser.fullName;
+  $("#userConfirmedUsername").textContent = selectedUser.login;
+  if (userConfirmed) {
+    elements.userResults.hidden = true;
+    elements.userResults.replaceChildren();
+  }
+
+  const returningConfirmed = !user && request.returning && Boolean(request.returning_user_selected && request.returning_user);
+  $("#returningSearchControl").hidden = !request.returning || returningConfirmed;
+  $("#returningConfirmed").hidden = !returningConfirmed;
+  const selectedReturningUser = confirmedPersonLabel(request.returning_user || "", request.returning_user_info);
+  $("#returningConfirmedValue").textContent = selectedReturningUser.fullName;
+  $("#returningConfirmedUsername").textContent = selectedReturningUser.login;
+  if (returningConfirmed) {
+    elements.returningResults.hidden = true;
+    elements.returningResults.replaceChildren();
+  }
+}
+
+function resetLookupSelection(kind) {
+  const request = selectedRequest();
+  if (!request) return;
+  const field = kind === "serial" ? "serial" : kind === "user" ? "user" : "returning_user";
+  const value = field === "serial" ? request.serials[0] || "" : request[field] || "";
+  request[`${field}_selected`] = false;
+  request[`${field}_validation_epoch`] = Number(request[`${field}_validation_epoch`] || 0) + 1;
+  request[`${field}_validation`] = value ? "pending" : "empty";
+  request[`${field}_validation_error`] = "";
+  if (field === "returning_user") request.returning_user_loading = false;
+  renderInspector();
+  const input = field === "serial" ? elements.serialInput : field === "user" ? elements.userInput : elements.returningUserInput;
+  input.focus();
+  input.select();
+  setLookupInputStatus(kind === "returning_user" ? "returning" : kind, value);
+  updateLookupControlStates(request);
+  renderQueue();
+}
+
 async function loadSerialSuggestions(request, query, { requireSelection = true } = {}) {
   const value = query.trim();
   if (!value || value.length < 2) return;
   const epoch = Number(request.serial_validation_epoch || 0);
   request.serial_validation = "checking";
   request.serial_validation_error = "";
+  setLookupStatus("serial", "Searching EUDM for serial numbers…", true);
+  updateLookupControlStates(request);
   refreshSelectedValidation();
   renderQueue();
   try {
@@ -1026,30 +1126,36 @@ async function loadSerialSuggestions(request, query, { requireSelection = true }
     const results = payload.results || [];
     if (selectedRequest() === request) renderSearchResults(elements.serialResults, results, (result) => {
       if (!validationStillCurrent(request, "serial", epoch, value)) return;
+      hideSearchResults();
+      request.serial_validation_epoch = Number(request.serial_validation_epoch || 0) + 1;
       request.serials = [bestSerial(result, value)];
-      elements.serialInput.value = request.serials[0];
+      request.serial_selected = true;
       request.serial_validation = "valid";
       request.serial_validation_error = "";
-      refreshSelectedValidation();
+      renderInspector();
       renderQueue();
     }, 1);
+    if (selectedRequest() === request) setLookupStatus("serial", results.length ? "Select a matching serial number:" : "No matching serial numbers found.");
     const exact = results.some((item) => serialResultMatches(item, value));
     if (!exact) {
       request.serial_validation = "failed";
       request.serial_validation_error = "Serial number was not found in EUDM.";
     } else if (requireSelection) {
       request.serial_validation = "unselected";
-      request.serial_validation_error = "Choose the verified serial number from the suggestions.";
+      request.serial_validation_error = "Serial number is not verified.";
     } else {
       request.serial_validation = "valid";
     }
     refreshSelectedValidation();
+    updateLookupControlStates(request);
     renderQueue();
   } catch (error) {
     if (!validationStillCurrent(request, "serial", epoch, value)) return;
     request.serial_validation = "failed";
     request.serial_validation_error = error.message || "Could not verify the serial number in EUDM.";
+    if (selectedRequest() === request) setLookupStatus("serial", "Serial search failed.");
     refreshSelectedValidation();
+    updateLookupControlStates(request);
     renderQueue();
   }
 }
@@ -1067,6 +1173,8 @@ async function validateUserAfterPause(request, returning = false) {
     request.user_validation = "checking";
     request.user_validation_error = "";
   }
+  setLookupStatus(returning ? "returning" : "user", "Searching EUDM for users…", true);
+  updateLookupControlStates(request);
   refreshSelectedValidation();
   renderQueue();
   try {
@@ -1079,35 +1187,39 @@ async function validateUserAfterPause(request, returning = false) {
     const container = returning ? elements.returningResults : elements.userResults;
     if (selectedRequest() === request) renderSearchResults(container, results, (result) => {
       if (!validationStillCurrent(request, field, epoch, value)) return;
+      hideSearchResults();
+      request[`${field}_validation_epoch`] = Number(request[`${field}_validation_epoch`] || 0) + 1;
       const login = bestLogin(result, value);
       const info = { login, columns: (result.columns || [result.value]).map(String).filter(Boolean) };
       if (returning) {
         request.returning_user = login;
-        elements.returningUserInput.value = login;
+        request.returning_user_selected = true;
         request.returning_user_info = info;
         request.returning_user_validation = "valid";
         request.returning_user_validation_error = "";
         request.returning_user_loading = false;
       } else {
         request.user = login;
-        elements.userInput.value = login;
+        request.user_selected = true;
         request.user_info = info;
         request.user_validation = "valid";
         request.user_validation_error = "";
       }
-      refreshSelectedValidation();
+      renderInspector();
       renderQueue();
     }, 0);
-    const exact = results.some((item) => userResultMatches(item, value));
+    if (selectedRequest() === request) setLookupStatus(returning ? "returning" : "user", results.length ? "Select a matching user:" : "No matching users found.");
+    const hasResults = results.length > 0;
     if (returning) {
       request.returning_user_loading = false;
-      request.returning_user_validation = exact ? "suggested" : "failed";
-      request.returning_user_validation_error = exact ? "Choose the verified user from the suggestions." : "User was not found in EUDM.";
+      request.returning_user_validation = hasResults ? "suggested" : "failed";
+      request.returning_user_validation_error = hasResults ? "Choose the verified user from the suggestions." : "User was not found in EUDM.";
     } else {
-      request.user_validation = exact ? "suggested" : "failed";
-      request.user_validation_error = exact ? "Choose the verified user from the suggestions." : "User was not found in EUDM.";
+      request.user_validation = hasResults ? "suggested" : "failed";
+      request.user_validation_error = hasResults ? "Choose the verified user from the suggestions." : "User was not found in EUDM.";
     }
     refreshSelectedValidation();
+    updateLookupControlStates(request);
     renderQueue();
   } catch (error) {
     if (!validationStillCurrent(request, field, epoch, value)) return;
@@ -1119,7 +1231,9 @@ async function validateUserAfterPause(request, returning = false) {
       request.user_validation = "failed";
       request.user_validation_error = error.message || "Could not verify the user in EUDM.";
     }
+    if (selectedRequest() === request) setLookupStatus(returning ? "returning" : "user", "User search failed.");
     refreshSelectedValidation();
+    updateLookupControlStates(request);
     renderQueue();
   }
 }
@@ -1129,11 +1243,10 @@ async function searchAssets() {
   if (!request || request.kind === "bulk_location") return;
   const query = elements.serialInput.value.trim();
   if (query.length < 2) return toast("Enter at least two serial characters.", "error");
-  $("#searchSerialButton").disabled = true;
   request.serial_validation_epoch = Number(request.serial_validation_epoch || 0) + 1;
   try { await loadSerialSuggestions(request, query, { requireSelection: true }); }
   catch (error) { toast(error.message, "error"); }
-  finally { $("#searchSerialButton").disabled = false; }
+  finally { updateLookupControlStates(request); }
 }
 
 async function searchUsers(returning = false) {
@@ -1143,7 +1256,8 @@ async function searchUsers(returning = false) {
   const button = returning ? $("#searchReturningButton") : $("#searchUserButton");
   const container = returning ? elements.returningResults : elements.userResults;
   const query = input.value.trim();
-  if (query.length < 2) return toast("Enter at least two username characters.", "error");
+  if (query.length < 2) return toast("Enter at least two name or username characters.", "error");
+  setLookupStatus(returning ? "returning" : "user", "Searching EUDM for users…", true);
   button.disabled = true;
   try {
     const payload = await api("/api/search/users", {
@@ -1151,10 +1265,13 @@ async function searchUsers(returning = false) {
       body: JSON.stringify({ query, returning }),
     });
     renderSearchResults(container, payload.results, (result) => {
+      hideSearchResults();
+      const field = returning ? "returning_user" : "user";
+      request[`${field}_validation_epoch`] = Number(request[`${field}_validation_epoch`] || 0) + 1;
       const login = bestLogin(result, query);
       if (returning) {
         request.returning_user = login;
-        input.value = login;
+        request.returning_user_selected = true;
         request.returning_user_info = {
           login,
           columns: (Array.isArray(result.columns) ? result.columns : [result.value]).map(String).filter(Boolean),
@@ -1164,7 +1281,7 @@ async function searchUsers(returning = false) {
         request.returning_user_loading = false;
       } else {
         request.user = login;
-        input.value = login;
+        request.user_selected = true;
         request.user_info = {
           login,
           columns: (Array.isArray(result.columns) ? result.columns : [result.value]).map(String).filter(Boolean),
@@ -1172,14 +1289,14 @@ async function searchUsers(returning = false) {
         request.user_validation = "valid";
         request.user_validation_error = "";
       }
-      refreshSelectedValidation();
+      renderInspector();
       renderQueue();
     }, 0);
+    setLookupStatus(returning ? "returning" : "user", payload.results?.length ? "Select a matching user:" : "No matching users found.");
   } catch (error) {
+    setLookupStatus(returning ? "returning" : "user", "User search failed.");
     toast(error.message, "error");
-  } finally {
-    button.disabled = false;
-  }
+  } finally { updateLookupControlStates(request); }
 }
 
 async function loadLocations({ city: requestedCity, force = false, quiet = false } = {}) {
@@ -1354,9 +1471,6 @@ function openSettings() {
   $("#spreadsheetPendingColumnInput").value = columns.pending_return || "OLD Device SN";
   $("#spreadsheetEnabledColumnInput").value = columns.enabled || "";
   $("#workbookHeadlessInput").checked = workbookHeadlessEnabled();
-  $("#validateEditorSerialsInput").checked = validationEnabled("validate_editor_serials");
-  $("#validateEditorUsersInput").checked = validationEnabled("validate_editor_users");
-  $("#validateBulkSerialsInput").checked = validationEnabled("validate_bulk_serials");
   $("#validateQuickImportInput").checked = validationEnabled("validate_quick_import");
   $("#validateWorkbookImportInput").checked = validationEnabled("validate_workbook_import");
   $("#settingsDialog").showModal();
@@ -1480,8 +1594,9 @@ function renderQuickImportReview() {
   populateQuickImportBulkOptions();
   const list = $("#pairsReviewList");
   list.innerHTML = state.pasteEntries.map((entry, index) => {
+    const usernameRequired = entry.kind === "user" && !entry.username;
     const username = entry.kind === "user"
-      ? `To ${escapeHtml(entry.username)}`
+      ? entry.username ? `To ${escapeHtml(entry.username)}` : "Username required"
       : entry.username
         ? `Returned by ${escapeHtml(entry.username)}`
         : "No returning user";
@@ -1502,8 +1617,11 @@ function renderQuickImportReview() {
         : entry.validationState === "valid"
           ? `<small class="import-check-ok">✓ Serial verified${entry.username ? " · User verified" : ""}</small>`
           : "";
+    const usernameError = usernameRequired
+      ? `<div class="quick-import-row-error"><input data-pairs-username="${index}" type="text" autocomplete="off" spellcheck="false" placeholder="Enter username" aria-label="Username for ${escapeHtml(entry.serial)}"><small>Username required for Deploy to user</small></div>`
+      : "";
     return `<div class="quick-import-row">
-      <div><strong>${escapeHtml(entry.serial)}</strong><small>${username}</small>${returnInfo}${checking}</div>
+      <div><strong>${escapeHtml(entry.serial)}</strong><small>${username}</small>${usernameError}${returnInfo}${checking}</div>
       <div class="quick-import-row-actions">
         ${deploymentStatus}
         <button class="row-menu" type="button" data-pairs-remove="${index}" aria-label="Remove ${escapeHtml(entry.serial)}" title="Remove device"><span class="trash-icon" aria-hidden="true"></span></button>
@@ -1529,9 +1647,21 @@ function renderQuickImportReview() {
     state.pasteEntries.splice(Number(button.dataset.pairsRemove), 1);
     renderQuickImportReview();
   }));
+  $$("[data-pairs-username]").forEach((input) => input.addEventListener("change", () => {
+    const entry = state.pasteEntries[Number(input.dataset.pairsUsername)];
+    if (!entry) return;
+    entry.username = input.value.trim();
+    entry.validationChecked = false;
+    entry.validationState = "";
+    entry.validationError = "";
+    entry.returningUserInfo = null;
+    renderQuickImportReview();
+    resolveQuickImportReturningUsers();
+  }));
   const locationNeeded = state.pasteEntries.some((entry) => entry.kind === "location");
   $("#pairsLocationFields").hidden = !locationNeeded;
-  $("#addPairsButton").disabled = state.pasteEntries.length === 0;
+  $("#addPairsButton").disabled = state.pasteEntries.length === 0
+    || state.pasteEntries.some((entry) => entry.kind === "user" && !entry.username);
   if (locationNeeded) renderPasteLocationFields();
 }
 
@@ -1734,6 +1864,7 @@ function resetImportDialog() {
   $("#backImportButton").hidden = true;
   $("#prepareImportButton").disabled = true;
   $("#prepareImportButton").textContent = "Review import";
+  $("#deleteWorkbookAfterUseInput").checked = true;
   $("#importError").hidden = true;
   setImportBusy(false);
   state.importLocation = preferredImportLocation();
@@ -1941,6 +2072,7 @@ function openImportColumnMapping() {
 }
 
 function showImportedWorkbook(workbook) {
+  $("#importError").hidden = true;
   if (workbook.needs_mapping) {
     state.workbook = workbook;
     state.workbookInspection = workbook;
@@ -1951,7 +2083,6 @@ function showImportedWorkbook(workbook) {
       mapWorkbookColumns().catch((error) => {
         $("#importError").textContent = error.message;
         $("#importError").hidden = false;
-        openImportColumnMapping();
       });
       return;
     }
@@ -2018,9 +2149,6 @@ function updateImportColumnMapButton() {
 async function saveImportColumnPreferences(columns) {
   const preferences = {
     concurrency: Number(elements.concurrency.value),
-    validate_editor_serials: validationEnabled("validate_editor_serials"),
-    validate_editor_users: validationEnabled("validate_editor_users"),
-    validate_bulk_serials: bulkSerialValidationEnabled(),
     validate_quick_import: validationEnabled("validate_quick_import"),
     validate_workbook_import: validationEnabled("validate_workbook_import"),
     workbook_headless: workbookHeadlessEnabled(),
@@ -2055,7 +2183,11 @@ async function mapWorkbookColumns({ persist = true } = {}) {
   try {
     const job = await api("/api/import/map", {
       method: "POST",
-      body: JSON.stringify({ import_id: inspection.import_id, columns }),
+      body: JSON.stringify({
+        import_id: inspection.import_id,
+        columns,
+        delete_after_use: $("#deleteWorkbookAfterUseInput").checked,
+      }),
     });
     const token = state.importUploadToken;
     const workbook = await waitForWorkbookImport(job.job_id, token);
@@ -2126,7 +2258,11 @@ async function downloadSavedWorkbook() {
   try {
     const job = await api("/api/import/download", {
       method: "POST",
-      body: JSON.stringify({ url, headless: workbookHeadlessEnabled() }),
+      body: JSON.stringify({
+        url,
+        headless: workbookHeadlessEnabled(),
+        delete_after_use: $("#deleteWorkbookAfterUseInput").checked,
+      }),
     });
     const workbook = await waitForWorkbookImport(job.job_id, token);
     if (workbook && token === state.importUploadToken) showImportedWorkbook(workbook);
@@ -2160,11 +2296,14 @@ function updateImportPrepareButton(payload = state.importPreview) {
   if (!payload) return;
   const selected = payload.requests.filter((request) => request.included !== false);
   const checking = selected.some((request) => request.import_validation === "checking" || !request.import_validation);
+  const missingDeploymentStatus = selected.some((request) => request.group === "Deployments" && !request.status);
   const valid = selected.filter((request) => request.import_validation === "valid").length;
   const button = $("#prepareImportButton");
-  button.disabled = checking || valid === 0;
+  button.disabled = checking || missingDeploymentStatus || valid === 0;
   button.textContent = checking
     ? "Verifying selections…"
+    : missingDeploymentStatus
+      ? "Choose deployment statuses"
     : valid === selected.length
       ? `Add ${valid} to queue`
       : `Add ${valid} verified to queue`;
@@ -2210,6 +2349,7 @@ function renderImportPreview() {
       const isIncluded = request.included !== false;
       const statusControl = isDeployment
         ? `<select data-import-status="${escapeHtml(request.id)}" aria-label="Status for ${escapeHtml(request.serials[0])}">
+            <option value="" ${!request.status ? "selected" : ""}>Choose a deployment status</option>
             <option value="Deployed - New Stock" ${request.status === "Deployed - New Stock" ? "selected" : ""}>Deployed - New Stock</option>
             <option value="Deployed - Existing Stock" ${request.status === "Deployed - Existing Stock" ? "selected" : ""}>Deployed - Existing Stock</option>
           </select>`
@@ -2242,6 +2382,7 @@ function renderImportPreview() {
       <div class="import-group-heading">
         <div><strong>${group.title}</strong><small>${group.detail} · ${selectedCount} of ${requests.length} selected</small></div>
         <div class="import-group-actions">
+          ${group.key === "Deployments" ? `<select data-import-status-all="${escapeHtml(group.key)}" aria-label="Set deployment status for all"><option value="">Set all statuses</option><option value="Deployed - New Stock">Deployed - New Stock</option><option value="Deployed - Existing Stock">Deployed - Existing Stock</option></select><button class="text-button" type="button" data-import-apply-status="${escapeHtml(group.key)}">Apply</button>` : ""}
           <button class="text-button" type="button" data-import-group="${escapeHtml(group.key)}" data-include="true">All</button>
           <button class="text-button" type="button" data-import-group="${escapeHtml(group.key)}" data-include="false">None</button>
         </div>
@@ -2254,8 +2395,19 @@ function renderImportPreview() {
     select.addEventListener("change", () => {
       const request = payload.requests.find((item) => item.id === select.dataset.importStatus);
       if (request) request.status = select.value;
+      updateImportPrepareButton(payload);
     });
   });
+  $("#importPreviewList").querySelectorAll("[data-import-apply-status]").forEach((button) => button.addEventListener("click", () => {
+    const select = $("#importPreviewList").querySelector(`[data-import-status-all="${CSS.escape(button.dataset.importApplyStatus)}"]`);
+    const status = select?.value;
+    if (!status) return;
+    payload.requests
+      .filter((request) => request.group === button.dataset.importApplyStatus)
+      .forEach((request) => { request.status = status; });
+    renderImportPreview();
+    updateImportPrepareButton(payload);
+  }));
   $("#importPreviewList").querySelectorAll("[data-import-include]").forEach((checkbox) => {
     checkbox.addEventListener("change", () => {
       const request = payload.requests.find((item) => item.id === checkbox.dataset.importInclude);
@@ -2368,6 +2520,11 @@ async function prepareImport() {
       updateImportPrepareButton(state.importPreview);
       return;
     }
+    if (selected.some((request) => request.group === "Deployments" && !request.status)) {
+      toast("Choose a deployment status for every user deployment.", "error");
+      updateImportPrepareButton(state.importPreview);
+      return;
+    }
     const requests = state.importPreview.requests
       .filter((request) => request.included !== false && request.import_validation === "valid")
       .map((request) => {
@@ -2412,7 +2569,8 @@ async function prepareImport() {
     });
     payload.requests.forEach((request) => {
       request.included = true;
-      normalizeRequestStatus(request);
+      if (request.group === "Deployments") request.status = "";
+      else normalizeRequestStatus(request);
       request.import_validation = "checking";
       request.import_error = "";
     });
@@ -2665,7 +2823,7 @@ function bindEvents() {
   });
   $("#pastePairsButton").addEventListener("click", openPasteDialog);
   $("#addPairsButton").addEventListener("click", addPairs);
-  $("#pairsApplyBulkButton").addEventListener("click", applyQuickImportKind);
+  $("#pairsBulkKind").addEventListener("change", applyQuickImportKind);
   $("#pairsConfirmAddButton").addEventListener("click", addQuickImportEntry);
   $("#pairsAddListButton").addEventListener("click", addQuickImportList);
   $("#pairsTextModeButton").addEventListener("click", () => {
@@ -2751,9 +2909,6 @@ function bindEvents() {
     if (url && !/^https:\/\//i.test(url)) { toast("Use a full https ALM Workbook link.", "error"); return; }
     const preferences = {
       concurrency: Number(elements.concurrency.value),
-      validate_editor_serials: $("#validateEditorSerialsInput").checked,
-      validate_editor_users: $("#validateEditorUsersInput").checked,
-      validate_bulk_serials: $("#validateBulkSerialsInput").checked,
       validate_quick_import: $("#validateQuickImportInput").checked,
       validate_workbook_import: $("#validateWorkbookImportInput").checked,
       workbook_headless: $("#workbookHeadlessInput").checked,
@@ -2769,7 +2924,6 @@ function bindEvents() {
       if (url) localStorage.setItem(SPREADSHEET_URL_STORAGE_KEY, url);
       else localStorage.removeItem(SPREADSHEET_URL_STORAGE_KEY);
       localStorage.setItem(IMPORT_COLUMNS_STORAGE_KEY, JSON.stringify(columns));
-      localStorage.setItem(BULK_SERIAL_VALIDATION_STORAGE_KEY, String($("#validateBulkSerialsInput").checked));
       localStorage.setItem(CONCURRENCY_STORAGE_KEY, elements.concurrency.value);
       $("#downloadSheetButton").hidden = !state.config.spreadsheet_import_enabled || !url;
       $("#settingsDialog").close();
@@ -2843,6 +2997,7 @@ function bindEvents() {
   $("#duplicateButton").addEventListener("click", duplicateSelected);
   $("#removeButton").addEventListener("click", () => removeRequest(state.selectedId));
   $("#searchSerialButton").addEventListener("click", searchAssets);
+  $("#resetSerialSelection").addEventListener("click", () => resetLookupSelection("serial"));
   $("#validateBulkSerialButton").addEventListener("click", async () => {
     const request = selectedRequest();
     if (!request || request.kind !== "bulk_location" || !request.serials.length) return;
@@ -2852,20 +3007,24 @@ function bindEvents() {
   });
   $("#searchUserButton").addEventListener("click", () => searchUsers(false));
   $("#searchReturningButton").addEventListener("click", () => searchUsers(true));
+  $("#resetUserSelection").addEventListener("click", () => resetLookupSelection("user"));
+  $("#resetReturningSelection").addEventListener("click", () => resetLookupSelection("returning"));
   $("#loadLocationsButton").addEventListener("click", loadLocations);
   elements.serialInput.addEventListener("input", () => {
     hideSearchResults();
+    setLookupStatus("serial", "");
     const request = selectedRequest();
     if (!request) return;
     const value = elements.serialInput.value.trim();
     request.serial_validation_epoch = Number(request.serial_validation_epoch || 0) + 1;
+    request.serial_selected = false;
     request.serials = value ? [value] : [];
-    request.serial_validation = request.serials.length
-      ? validationEnabled("validate_editor_serials") ? "pending" : "valid"
-      : "empty";
+    request.serial_validation = request.serials.length ? "pending" : "empty";
     request.serial_validation_error = "";
-    if (request.serials.length && validationEnabled("validate_editor_serials")) scheduleValidation(request, "serial", () => loadSerialSuggestions(request, value, { requireSelection: true }));
+    if (value) setLookupInputStatus("serial", value);
+    if (request.serials.length) scheduleValidation(request, "serial", () => loadSerialSuggestions(request, value, { requireSelection: true }));
     refreshSelectedValidation();
+    updateLookupControlStates(request);
     renderQueue();
   });
   elements.serialsInput.addEventListener("input", () => {
@@ -2877,6 +3036,7 @@ function bindEvents() {
       ? "pending"
       : "empty";
     request.bulk_validation_error = "";
+    request.bulk_validation_missing = [];
     elements.serialHint.textContent = request.serials.length + " serial" + (request.serials.length === 1 ? "" : "s");
     refreshBulkValidationButton(request);
     refreshSelectedValidation();
@@ -2890,16 +3050,18 @@ function bindEvents() {
   });
   elements.userInput.addEventListener("input", () => {
     hideSearchResults();
+    setLookupStatus("user", "");
     const request = selectedRequest();
     if (!request) return;
     request.user = elements.userInput.value.trim();
     request.user_validation_epoch = Number(request.user_validation_epoch || 0) + 1;
-    request.user_validation = request.user
-      ? validationEnabled("validate_editor_users") ? "pending" : "valid"
-      : "empty";
+    request.user_selected = false;
+    request.user_validation = request.user ? "pending" : "empty";
     request.user_validation_error = "";
-    if (request.user && validationEnabled("validate_editor_users")) scheduleValidation(request, "user", () => validateUserAfterPause(request, false));
+    if (request.user) setLookupInputStatus("user", request.user);
+    if (request.user) scheduleValidation(request, "user", () => validateUserAfterPause(request, false));
     refreshSelectedValidation();
+    updateLookupControlStates(request);
     renderQueue();
   });
   elements.cityInput.addEventListener("change", () => {
@@ -2939,24 +3101,32 @@ function bindEvents() {
   });
   elements.returningUserInput.addEventListener("input", () => {
     hideSearchResults();
+    setLookupStatus("returning", "");
     const request = selectedRequest();
     if (!request) return;
     request.returning_user = elements.returningUserInput.value.trim();
     request.returning_user_info = null;
     request.returning_user_validation_epoch = Number(request.returning_user_validation_epoch || 0) + 1;
-    request.returning_user_validation = request.returning_user
-      ? validationEnabled("validate_editor_users") ? "pending" : "valid"
-      : "empty";
+    request.returning_user_selected = false;
+    request.returning_user_validation = request.returning_user ? "pending" : "empty";
     request.returning_user_validation_error = "";
-    request.returning_user_loading = Boolean(request.returning_user) && validationEnabled("validate_editor_users");
-    if (request.returning_user && validationEnabled("validate_editor_users")) scheduleValidation(request, "returning_user", () => validateUserAfterPause(request, true));
+    request.returning_user_loading = Boolean(request.returning_user);
+    if (request.returning_user) setLookupInputStatus("returning", request.returning_user);
+    if (request.returning_user) scheduleValidation(request, "returning_user", () => validateUserAfterPause(request, true));
     renderReturningUserInfo(request);
     refreshSelectedValidation();
+    updateLookupControlStates(request);
     renderQueue();
   });
-  elements.serialInput.addEventListener("keydown", (event) => { if (event.key === "Enter") searchAssets(); });
-  elements.userInput.addEventListener("keydown", (event) => { if (event.key === "Enter") searchUsers(false); });
-  elements.returningUserInput.addEventListener("keydown", (event) => { if (event.key === "Enter") searchUsers(true); });
+  elements.serialInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !$("#searchSerialButton").disabled) { event.preventDefault(); searchAssets(); }
+  });
+  elements.userInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !$("#searchUserButton").disabled) { event.preventDefault(); searchUsers(false); }
+  });
+  elements.returningUserInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !$("#searchReturningButton").disabled) { event.preventDefault(); searchUsers(true); }
+  });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && [elements.serialResults, elements.userResults, elements.returningResults].some((node) => !node.hidden)) {
       hideSearchResults();

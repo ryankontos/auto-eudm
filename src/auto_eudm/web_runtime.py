@@ -836,6 +836,7 @@ class ImportJob:
     workbook: dict[str, Any] | None = None
     error: str | None = None
     diagnostic_log: str | None = None
+    delete_after_use: bool = True
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def update(
@@ -884,6 +885,7 @@ class ImportJob:
                 "workbook": self.workbook,
                 "error": self.error,
                 "diagnostic_log": self.diagnostic_log,
+                "delete_after_use": self.delete_after_use,
             }
 
 
@@ -1068,8 +1070,9 @@ class Application:
         ).start()
         return job
 
-    def start_remote_import(self, url: str) -> ImportJob:
+    def start_remote_import(self, url: str, *, delete_after_use: bool = True) -> ImportJob:
         job = ImportJob(job_id=uuid.uuid4().hex, filename="sharepoint-workbook.xlsx")
+        job.delete_after_use = delete_after_use
         with self.import_lock:
             self.import_jobs[job.job_id] = job
         threading.Thread(
@@ -1108,13 +1111,19 @@ class Application:
             diagnostics.event("import_job.failed", error=repr(exc), traceback=traceback.format_exc())
             job.fail(f"Could not download the workbook from SharePoint. See {job.diagnostic_log}.")
 
-    def start_mapped_import(self, import_id: str, columns: dict[str, Any]) -> ImportJob:
+    def start_mapped_import(
+        self,
+        import_id: str,
+        columns: dict[str, Any],
+        *,
+        delete_after_use: bool = True,
+    ) -> ImportJob:
         with self.import_lock:
-            pending = self.pending_imports.get(import_id)
+            pending = self.pending_imports.pop(import_id, None) if delete_after_use else self.pending_imports.get(import_id)
         if not pending:
             raise eudm.EUDMError("That workbook import expired. Choose the file again.")
         filename, encoded = pending
-        job = ImportJob(job_id=uuid.uuid4().hex, filename=filename)
+        job = ImportJob(job_id=uuid.uuid4().hex, filename=filename, delete_after_use=delete_after_use)
         with self.import_lock:
             self.import_jobs[job.job_id] = job
         threading.Thread(target=self._read_import, args=(job, encoded, inventory.columns_from_mapping(columns)), daemon=True).start()

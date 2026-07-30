@@ -396,32 +396,44 @@ def download_workbook_with_browser(
     diagnostics: WorkbookDownloadDiagnostics | None = None,
     headless: bool = False,
 ) -> tuple[str, bytes]:
-    """Download through Excel's menu, retrying visibly when background mode fails."""
-    try:
-        return _download_workbook_with_browser_once(
-            url,
-            profile,
-            job=job,
-            diagnostics=diagnostics,
-            headless=headless,
-        )
-    except eudm.EUDMError as exc:
-        if not headless:
-            raise
-        if diagnostics:
-            diagnostics.event(
-                "browser.headless_failed_retrying_visible",
-                error=str(exc),
+    """Download through Excel's menu with a few paced browser retries."""
+    last_error: eudm.EUDMError | None = None
+    for attempt in range(1, 4):
+        attempt_headless = headless and attempt == 1
+        if attempt > 1:
+            time.sleep(3)
+            if job is not None:
+                job.update(
+                    state="downloading",
+                    message=f"Retrying workbook download ({attempt}/3)…",
+                )
+            if diagnostics:
+                diagnostics.event(
+                    "browser.retry_started",
+                    attempt=attempt,
+                    headless=attempt_headless,
+                )
+        try:
+            return _download_workbook_with_browser_once(
+                url,
+                profile,
+                job=job,
+                diagnostics=diagnostics,
+                headless=attempt_headless,
             )
-        if job is not None:
-            job.update(
-                state="downloading",
-                message="Opening Chrome to finish the workbook download…",
-            )
-        return _download_workbook_with_browser_once(
-            url,
-            profile,
-            job=job,
-            diagnostics=diagnostics,
-            headless=False,
-        )
+        except eudm.EUDMError as exc:
+            last_error = exc
+            if diagnostics:
+                diagnostics.event(
+                    "browser.attempt_failed",
+                    attempt=attempt,
+                    headless=attempt_headless,
+                    error=str(exc),
+                )
+            if attempt == 1 and headless and job is not None:
+                job.update(
+                    state="downloading",
+                    message="Opening Chrome to finish the workbook download…",
+                )
+    assert last_error is not None
+    raise last_error
