@@ -726,12 +726,13 @@ function renderInspector() {
   const statusOptions = bulk ? state.config.location_statuses : singleRequestStatusOptions();
   normalizeRequestStatus(request);
   fillSelect(elements.statusInput, statusOptions, request.status, "Choose a status");
-  const serialReady = bulk
-    ? request.serials.length > 0
-    : Boolean(request.serial_selected && request.serial_validation === "valid");
-  $("#statusFields").hidden = !serialReady;
-  elements.userFields.hidden = !user || !serialReady;
-  elements.locationFields.hidden = user || !serialReady;
+  // Keep the complete single-device editor visible while a serial is being
+  // looked up. Validation still prevents an incomplete request from being
+  // saved or submitted, but the user/location fields should not be staged
+  // behind serial verification.
+  $("#statusFields").hidden = false;
+  elements.userFields.hidden = !user;
+  elements.locationFields.hidden = user;
   elements.userInput.value = request.user || "";
   renderLookupConfirmations(request, { bulk, user });
 
@@ -1806,7 +1807,7 @@ function addPairs() {
       errors.push("Choose a complete city and location before adding these requests.");
     }
   }
-  if (validationEnabled("validate_quick_import") && state.pasteEntries.some((entry) => entry.validationState === "checking")) errors.push("Wait for EUDM validation to finish.");
+  if (validationEnabled("validate_quick_import") && state.pasteEntries.some((entry) => !["valid", "failed"].includes(entry.validationState))) errors.push("Wait for EUDM validation to finish.");
   if (validationEnabled("validate_quick_import") && state.pasteEntries.some((entry) => entry.validationState === "failed")) errors.push("Correct the entries EUDM could not validate.");
   if (state.pasteEntries.some((entry) => entry.kind === "user" && !entry.username)) errors.push("A username is required for a deployed status.");
   if (errors.length) {
@@ -1814,11 +1815,14 @@ function addPairs() {
     $("#pairsError").hidden = false;
     return;
   }
-  const requests = state.pasteEntries.map(({ serial, username, kind, userStatus, locationStatus, returningUserInfo }) => {
+  const requests = state.pasteEntries.map(({ serial, username, kind, userStatus, locationStatus, returningUserInfo, validationState, validationError }) => {
     const locationMode = kind === "location";
     const request = makeRequest(locationMode ? "location" : "user");
+    const validated = validationState === "valid";
     request.serials = [serial];
-    request.serial_validation = "valid";
+    request.serial_selected = validated;
+    request.serial_validation = validated ? "valid" : (validationState || "pending");
+    request.serial_validation_error = validationError || "";
     request.status = locationMode
       ? resolveStatus(
         state.config.location_statuses,
@@ -1831,12 +1835,21 @@ function addPairs() {
       request.location = structuredClone(state.pasteLocation || preferredLocation());
       request.returning = Boolean(username);
       request.returning_user = username;
+      request.returning_user_selected = Boolean(username && validated);
       request.returning_user_info = returningUserInfo || null;
-      request.returning_user_validation = username ? "valid" : "empty";
+      request.returning_user_validation = username
+        ? (validated ? "valid" : (validationState || "pending"))
+        : "empty";
+      request.returning_user_validation_error = username ? (validationError || "") : "";
       request.group = "Quick import · Add to location stock";
     } else {
       request.user = username;
-      request.user_validation = "valid";
+      request.user_selected = Boolean(username && validated);
+      request.user_info = returningUserInfo || null;
+      request.user_validation = username
+        ? (validated ? "valid" : (validationState || "pending"))
+        : "empty";
+      request.user_validation_error = username ? (validationError || "") : "";
       request.group = "Quick import · Deploy to user";
     }
     return request;
