@@ -1552,11 +1552,38 @@ function makeQuickImportEntry(serial, username) {
     username,
     returningUserInfo: null,
     returningUserChecked: false,
+    serialValidationState: "",
+    serialValidationError: "",
+    userValidationState: username ? "" : "valid",
+    userValidationError: "",
     validationChecked: false,
     kind: username ? "user" : "location",
     userStatus: resolveStatus(state.config.user_statuses, state.config.default_user_status),
     locationStatus: resolveStatus(state.config.location_statuses, state.config.default_location_status),
   };
+}
+
+function syncQuickImportValidation(entry) {
+  const serialFailed = entry.serialValidationState === "failed";
+  const userFailed = entry.userValidationState === "failed";
+  const checking = entry.serialValidationState === "checking" || entry.userValidationState === "checking";
+  const valid = entry.serialValidationState === "valid"
+    && (!entry.username || entry.userValidationState === "valid");
+  entry.validationState = checking ? "checking" : serialFailed || userFailed ? "failed" : valid ? "valid" : "";
+  entry.validationError = serialFailed
+    ? entry.serialValidationError
+    : userFailed
+      ? entry.userValidationError
+      : "";
+  return entry.validationState;
+}
+
+function resetQuickImportUserValidation(entry) {
+  entry.userValidationState = entry.username ? "" : "valid";
+  entry.userValidationError = "";
+  entry.returningUserInfo = null;
+  entry.validationChecked = false;
+  syncQuickImportValidation(entry);
 }
 
 function parseQuickImportLines() {
@@ -1595,6 +1622,7 @@ function renderQuickImportReview() {
   populateQuickImportBulkOptions();
   const list = $("#pairsReviewList");
   list.innerHTML = state.pasteEntries.map((entry, index) => {
+    const validationState = syncQuickImportValidation(entry);
     const usernameRequired = entry.kind === "user" && !entry.username;
     const username = entry.kind === "user"
       ? entry.username ? `To ${escapeHtml(entry.username)}` : "Username required"
@@ -1611,11 +1639,11 @@ function renderQuickImportReview() {
     const returnInfo = entry.kind === "location" && entry.username
       ? `<div class="quick-import-return ${entry.returningUserInfo ? "" : "unknown"}"><strong>Returning user</strong><span>${escapeHtml(entry.returningUserInfo?.login || entry.username)}</span><small>${entry.returningUserInfo?.columns?.length ? escapeHtml(entry.returningUserInfo.columns.join(" · ")) : "Details unknown — search and verify before submitting. An email will be sent to this user."}</small></div>`
       : "";
-    const checking = entry.validationState === "checking"
-      ? '<small class="import-checking">Verifying the serial and user in EUDM…</small>'
-      : entry.validationState === "failed"
+    const checking = validationState === "checking"
+      ? `<small class="import-checking">${entry.serialValidationState === "valid" ? "✓ Serial verified · Verifying the user in EUDM…" : "Verifying the serial and user in EUDM…"}</small>`
+      : validationState === "failed"
         ? `<small class="import-check-failed">${escapeHtml(entry.validationError || "Not found in EUDM")}</small>`
-        : entry.validationState === "valid"
+        : validationState === "valid"
           ? `<small class="import-check-ok">✓ Serial verified${entry.username ? " · User verified" : ""}</small>`
           : "";
     const usernameError = usernameRequired
@@ -1632,15 +1660,12 @@ function renderQuickImportReview() {
   $$("[data-pairs-status]").forEach((select) => select.addEventListener("change", () => {
     const entry = state.pasteEntries[Number(select.dataset.pairsStatus)];
     const kind = kindForStatus(select.value);
+    const kindChanged = entry.kind !== kind;
     entry.kind = kind;
-    if (kind === "location") {
-      entry.locationStatus = select.value;
-      if (entry.username) {
-        entry.validationChecked = false;
-        entry.validationState = "";
-        entry.returningUserInfo = null;
-      }
-    } else entry.userStatus = select.value;
+    if (kind === "location") entry.locationStatus = select.value;
+    else entry.userStatus = select.value;
+    if (kindChanged && entry.username) resetQuickImportUserValidation(entry);
+    else syncQuickImportValidation(entry);
     renderQuickImportReview();
     resolveQuickImportReturningUsers();
   }));
@@ -1652,10 +1677,7 @@ function renderQuickImportReview() {
     const entry = state.pasteEntries[Number(input.dataset.pairsUsername)];
     if (!entry) return;
     entry.username = input.value.trim();
-    entry.validationChecked = false;
-    entry.validationState = "";
-    entry.validationError = "";
-    entry.returningUserInfo = null;
+    resetQuickImportUserValidation(entry);
     renderQuickImportReview();
     resolveQuickImportReturningUsers();
   }));
@@ -1684,30 +1706,85 @@ async function resolveQuickImportReturningUsers() {
   if (!validationEnabled("validate_quick_import")) {
     entries.forEach((entry) => {
       entry.validationChecked = true;
-      entry.validationState = "valid";
-      entry.validationError = "";
+      entry.serialValidationState = "valid";
+      entry.serialValidationError = "";
+      entry.userValidationState = "valid";
+      entry.userValidationError = "";
+      syncQuickImportValidation(entry);
     });
     renderQuickImportReview();
     return;
   }
   if (!entries.length || !["connected", "simulation"].includes(state.connection?.state)) return;
-  entries.forEach((entry) => { entry.validationChecked = true; entry.validationState = "checking"; });
+  entries.forEach((entry) => {
+    entry.validationChecked = true;
+    if (entry.serialValidationState !== "valid") {
+      entry.serialValidationState = "checking";
+      entry.serialValidationError = "";
+    }
+    if (entry.username && entry.userValidationState !== "valid") {
+      entry.userValidationState = "checking";
+      entry.userValidationError = "";
+    } else if (!entry.username) {
+      entry.userValidationState = "valid";
+    }
+    syncQuickImportValidation(entry);
+  });
   renderQuickImportReview();
   await Promise.all(entries.map(async (entry) => {
+    const serialChecking = entry.serialValidationState === "checking";
+    const userChecking = entry.userValidationState === "checking";
+    const settled = (promise) => promise.then((value) => ({ value })).catch((error) => ({ error }));
     try {
-      const [assets, users] = await Promise.all([
-        api("/api/search/assets", { method: "POST", body: JSON.stringify({ query: entry.serial, fresh: true }) }),
-        entry.username ? api("/api/search/users", { method: "POST", body: JSON.stringify({ query: entry.username, returning: entry.kind === "location", fresh: true }) }) : Promise.resolve({ results: [] }),
+      const [assetsResult, usersResult] = await Promise.all([
+        serialChecking
+          ? settled(api("/api/search/assets", { method: "POST", body: JSON.stringify({ query: entry.serial, fresh: true }) }))
+          : Promise.resolve({ value: null }),
+        userChecking
+          ? settled(api("/api/search/users", { method: "POST", body: JSON.stringify({ query: entry.username, returning: entry.kind === "location", fresh: true }) }))
+          : Promise.resolve({ value: null }),
       ]);
-      const asset = (assets.results || []).find((item) => bestSerial(item, entry.serial).toLowerCase() === entry.serial.toLowerCase());
-      const result = entry.username ? (users.results || []).find((item) => bestLogin(item, entry.username).toLowerCase() === entry.username.toLowerCase()) : null;
-      if (!asset || (entry.username && !result)) throw new Error(!asset ? "Serial number was not found in EUDM." : "Username was not found in EUDM.");
-      entry.returningUserInfo = result ? { login: bestLogin(result, entry.username), columns: (result.columns || [result.value]).map(String).filter(Boolean) } : null;
-      entry.validationState = "valid";
+
+      if (serialChecking) {
+        const asset = assetsResult.error
+          ? null
+          : (assetsResult.value?.results || []).find((item) => bestSerial(item, entry.serial).toLowerCase() === entry.serial.toLowerCase());
+        if (assetsResult.error || !asset) {
+          entry.serialValidationState = "failed";
+          entry.serialValidationError = assetsResult.error?.message || "Serial number was not found in EUDM.";
+        } else {
+          entry.serialValidationState = "valid";
+          entry.serialValidationError = "";
+        }
+      }
+
+      if (userChecking) {
+        const result = usersResult.error
+          ? null
+          : (usersResult.value?.results || []).find((item) => bestLogin(item, entry.username).toLowerCase() === entry.username.toLowerCase());
+        if (usersResult.error || !result) {
+          entry.userValidationState = "failed";
+          entry.userValidationError = usersResult.error?.message || "Username was not found in EUDM.";
+          entry.returningUserInfo = null;
+        } else {
+          entry.returningUserInfo = { login: bestLogin(result, entry.username), columns: (result.columns || [result.value]).map(String).filter(Boolean) };
+          entry.userValidationState = "valid";
+          entry.userValidationError = "";
+        }
+      }
+      syncQuickImportValidation(entry);
     } catch (error) {
-      entry.returningUserInfo = null;
-      entry.validationState = "failed";
-      entry.validationError = error.message || "Could not validate this entry.";
+      const message = error.message || "Could not validate this entry.";
+      if (serialChecking) {
+        entry.serialValidationState = "failed";
+        entry.serialValidationError = message;
+      }
+      if (userChecking) {
+        entry.userValidationState = "failed";
+        entry.userValidationError = message;
+        entry.returningUserInfo = null;
+      }
+      syncQuickImportValidation(entry);
     }
   }));
   renderQuickImportReview();
@@ -1741,17 +1818,15 @@ function applyQuickImportKind() {
   if (!status) return;
   const kind = kindForStatus(status);
   state.pasteEntries.forEach((entry) => {
+    const kindChanged = entry.kind !== kind;
     entry.kind = kind;
     if (kind === "location") {
       entry.locationStatus = resolveStatus(state.config.location_statuses, status);
-      if (entry.username) {
-        entry.validationChecked = false;
-        entry.validationState = "";
-        entry.returningUserInfo = null;
-      }
     } else {
       entry.userStatus = resolveStatus(state.config.user_statuses, status);
     }
+    if (kindChanged && entry.username) resetQuickImportUserValidation(entry);
+    else syncQuickImportValidation(entry);
   });
   renderQuickImportReview();
   resolveQuickImportReturningUsers();
@@ -1800,6 +1875,7 @@ function addQuickImportList() {
 
 function addPairs() {
   const errors = [];
+  state.pasteEntries.forEach(syncQuickImportValidation);
   if (!state.pasteEntries.length) errors.push("Choose deployments before adding them to the queue.");
   if (state.pasteEntries.some((entry) => entry.kind === "location")) {
     const location = state.pasteLocation || preferredLocation();
@@ -1815,14 +1891,15 @@ function addPairs() {
     $("#pairsError").hidden = false;
     return;
   }
-  const requests = state.pasteEntries.map(({ serial, username, kind, userStatus, locationStatus, returningUserInfo, validationState, validationError }) => {
+  const requests = state.pasteEntries.map(({ serial, username, kind, userStatus, locationStatus, returningUserInfo, serialValidationState, serialValidationError, userValidationState, userValidationError, validationState, validationError }) => {
     const locationMode = kind === "location";
     const request = makeRequest(locationMode ? "location" : "user");
-    const validated = validationState === "valid";
+    const serialValidated = serialValidationState === "valid";
+    const userValidated = !username || userValidationState === "valid";
     request.serials = [serial];
-    request.serial_selected = validated;
-    request.serial_validation = validated ? "valid" : (validationState || "pending");
-    request.serial_validation_error = validationError || "";
+    request.serial_selected = serialValidated;
+    request.serial_validation = serialValidated ? "valid" : (serialValidationState || validationState || "pending");
+    request.serial_validation_error = serialValidationError || validationError || "";
     request.status = locationMode
       ? resolveStatus(
         state.config.location_statuses,
@@ -1835,21 +1912,21 @@ function addPairs() {
       request.location = structuredClone(state.pasteLocation || preferredLocation());
       request.returning = Boolean(username);
       request.returning_user = username;
-      request.returning_user_selected = Boolean(username && validated);
+      request.returning_user_selected = Boolean(username && userValidated);
       request.returning_user_info = returningUserInfo || null;
       request.returning_user_validation = username
-        ? (validated ? "valid" : (validationState || "pending"))
+        ? (userValidated ? "valid" : (userValidationState || validationState || "pending"))
         : "empty";
-      request.returning_user_validation_error = username ? (validationError || "") : "";
+      request.returning_user_validation_error = username ? (userValidationError || validationError || "") : "";
       request.group = "Quick import · Add to location stock";
     } else {
       request.user = username;
-      request.user_selected = Boolean(username && validated);
+      request.user_selected = Boolean(username && userValidated);
       request.user_info = returningUserInfo || null;
       request.user_validation = username
-        ? (validated ? "valid" : (validationState || "pending"))
+        ? (userValidated ? "valid" : (userValidationState || validationState || "pending"))
         : "empty";
-      request.user_validation_error = username ? (validationError || "") : "";
+      request.user_validation_error = username ? (userValidationError || validationError || "") : "";
       request.group = "Quick import · Deploy to user";
     }
     return request;
@@ -2395,7 +2472,7 @@ function renderImportPreview() {
       <div class="import-group-heading">
         <div><strong>${group.title}</strong><small>${group.detail} · ${selectedCount} of ${requests.length} selected</small></div>
         <div class="import-group-actions">
-          ${group.key === "Deployments" ? `<select data-import-status-all="${escapeHtml(group.key)}" aria-label="Set deployment status for all"><option value="">Set all statuses</option><option value="Deployed - New Stock">Deployed - New Stock</option><option value="Deployed - Existing Stock">Deployed - Existing Stock</option></select><button class="text-button" type="button" data-import-apply-status="${escapeHtml(group.key)}">Apply</button>` : ""}
+          ${group.key === "Deployments" ? `<select data-import-status-all="${escapeHtml(group.key)}" aria-label="Set deployment status for all"><option value="">Set all statuses</option><option value="Deployed - New Stock">Deployed - New Stock</option><option value="Deployed - Existing Stock">Deployed - Existing Stock</option></select>` : ""}
           <button class="text-button" type="button" data-import-group="${escapeHtml(group.key)}" data-include="true">All</button>
           <button class="text-button" type="button" data-import-group="${escapeHtml(group.key)}" data-include="false">None</button>
         </div>
@@ -2411,12 +2488,11 @@ function renderImportPreview() {
       updateImportPrepareButton(payload);
     });
   });
-  $("#importPreviewList").querySelectorAll("[data-import-apply-status]").forEach((button) => button.addEventListener("click", () => {
-    const select = $("#importPreviewList").querySelector(`[data-import-status-all="${CSS.escape(button.dataset.importApplyStatus)}"]`);
-    const status = select?.value;
+  $("#importPreviewList").querySelectorAll("[data-import-status-all]").forEach((select) => select.addEventListener("change", () => {
+    const status = select.value;
     if (!status) return;
     payload.requests
-      .filter((request) => request.group === button.dataset.importApplyStatus)
+      .filter((request) => request.group === select.dataset.importStatusAll)
       .forEach((request) => { request.status = status; });
     renderImportPreview();
     updateImportPrepareButton(payload);
@@ -3108,8 +3184,7 @@ function bindEvents() {
       request.returning_user_validation_error = "";
       request.returning_user_loading = false;
     }
-    elements.returningSearch.hidden = !elements.returningToggle.checked;
-    elements.returnConfirmation.hidden = !elements.returningToggle.checked;
+    renderInspector();
     renderQueue();
   });
   elements.returningUserInput.addEventListener("input", () => {
