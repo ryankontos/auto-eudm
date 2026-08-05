@@ -64,6 +64,7 @@ class SheetRow:
     pending_return_serial: str | None
     marked_red: bool
     enabled: bool
+    date_group: int = 1
 
 
 @dataclass(frozen=True)
@@ -180,6 +181,38 @@ def cell_is_red(cell: Any) -> bool:
     return red >= 180 and green <= 100 and blue <= 100
 
 
+def _color_key(color: Any) -> tuple[Any, ...]:
+    """Return a safe, comparable representation of an openpyxl colour."""
+    if color is None:
+        return (None,)
+    values: list[Any] = []
+    for name in ("type", "rgb", "indexed", "theme", "tint", "auto"):
+        try:
+            value = getattr(color, name, None)
+        except Exception:
+            value = None
+        values.append(str(value) if value is not None else None)
+    return tuple(values)
+
+
+def background_fill_key(cell: Any) -> tuple[Any, ...]:
+    """Return the background-fill identity used to find date sections.
+
+    The importer intentionally keeps this as workbook metadata rather than
+    exposing the actual fill to the web UI. A missing fill is one stable
+    section; solid and patterned fills are compared by their type and colours.
+    """
+    fill = getattr(cell, "fill", None)
+    fill_type = str(getattr(fill, "fill_type", None) or "").casefold()
+    if not fill_type or fill_type == "none":
+        return ("none",)
+    return (
+        fill_type,
+        _color_key(getattr(fill, "fgColor", None)),
+        _color_key(getattr(fill, "bgColor", None)),
+    )
+
+
 def normalize_date(value: Any, epoch: datetime) -> date | None:
     if isinstance(value, datetime):
         return value.date()
@@ -239,10 +272,22 @@ def load_sheet(path: Path, columns: ImportColumns | None = None) -> tuple[str, l
         header_row, indexes, date_index = find_column_indexes(sheet, columns or ImportColumns())
         max_column = max(sheet.max_column or 1, date_index, *indexes.values())
         rows: list[SheetRow] = []
+        previous_date: date | None = None
+        previous_fill: tuple[Any, ...] | None = None
+        date_group = 0
         for values in sheet.iter_rows(min_row=header_row + 1, min_col=1, max_col=max_column):
             deployment_date = normalize_date(values[date_index - 1].value, workbook.epoch)
             if deployment_date is None:
+                previous_date = None
+                previous_fill = None
                 continue
+            fill_key = background_fill_key(values[date_index - 1])
+            if deployment_date != previous_date:
+                date_group = 1
+            elif fill_key != previous_fill:
+                date_group += 1
+            previous_date = deployment_date
+            previous_fill = fill_key
             username = username_for(values)
             rows.append(
                 SheetRow(
@@ -256,6 +301,7 @@ def load_sheet(path: Path, columns: ImportColumns | None = None) -> tuple[str, l
                     enabled=enabled_column_allows(
                         values[indexes["enabled"] - 1].value
                     ) if indexes["enabled"] else True,
+                    date_group=date_group,
                 )
             )
         if not rows:
@@ -327,16 +373,50 @@ def eligible_counts(rows: Iterable[SheetRow]) -> tuple[int, int, int]:
     )
 
 
+def attended_rows_missing_return_serials(rows: Iterable[SheetRow]) -> list[SheetRow]:
+    """Find attended, included rows missing either return serial."""
+    return [
+        row
+        for row in rows
+        if row.enabled
+        and not row.marked_red
+        and row.username
+        and (
+            not looks_like_serial(row.returned_device_serial)
+            or not looks_like_serial(row.pending_return_serial)
+        )
+    ]
+
+
 def build_actions(
-    rows: list[SheetRow], selected_date: date, mode: str
+    rows: list[SheetRow],
+    selected_date: date,
+    mode: str,
+    group_selection: str | int | None = None,
 ) -> tuple[list[Action], Counter[str]]:
     selected_modes = {part.strip() for part in mode.split(",") if part.strip()}
     if "all" in selected_modes:
         selected_modes.update({"deployments", "returned_devices", "pending_returns"})
+    selected_group: int | None = None
+    raw_group = str(group_selection or "all").strip().casefold()
+    if raw_group not in {"", "all"}:
+        try:
+            selected_group = int(raw_group)
+        except ValueError as exc:
+            raise eudm.EUDMError("Choose a valid date section.") from exc
+        if selected_group < 1:
+            raise eudm.EUDMError("Choose a valid date section.")
+        available_groups = {
+            row.date_group for row in rows if row.deployment_date == selected_date
+        }
+        if selected_group not in available_groups:
+            raise eudm.EUDMError("Choose one of the workbook's available date sections.")
     actions: list[Action] = []
     ignored: Counter[str] = Counter()
     for row in rows:
         if row.deployment_date != selected_date:
+            continue
+        if selected_group is not None and row.date_group != selected_group:
             continue
         if not row.enabled:
             ignored["TRUE/FALSE column is false"] += 1

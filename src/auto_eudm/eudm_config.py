@@ -57,6 +57,7 @@ class AppConfig:
     env_file: Path
     base: str
     browser_profile: str | None
+    browser_debug_port: int
     browser_headless: bool
     request_for: str | None
     city: str | None
@@ -84,11 +85,15 @@ class AppConfig:
         raw_concurrency = os.getenv("EUDM_CONCURRENCY", "1").strip()
         if not raw_concurrency.isdigit() or int(raw_concurrency) < 1 or int(raw_concurrency) > 50:
             raise ValueError("EUDM_CONCURRENCY must be a whole number between 1 and 50")
+        raw_debug_port = os.getenv("EUDM_BROWSER_DEBUG_PORT", "9222").strip()
+        if not raw_debug_port.isdigit() or not 1024 <= int(raw_debug_port) <= 65535:
+            raise ValueError("EUDM_BROWSER_DEBUG_PORT must be a whole number between 1024 and 65535")
 
         return cls(
             env_file=env_file,
             base=os.getenv("EUDM_BASE", "https://macquarie-dwp.onbmc.com/dwp/rest").strip(),
             browser_profile=optional("EUDM_BROWSER_PROFILE") or "~/.auto-eudm-chrome",
+            browser_debug_port=int(raw_debug_port),
             browser_headless=env_bool("EUDM_BROWSER_HEADLESS"),
             request_for=optional("EUDM_REQUEST_FOR"),
             city=optional("EUDM_CITY"),

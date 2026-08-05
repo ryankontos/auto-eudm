@@ -110,8 +110,9 @@ The web workspace is designed for preparing many requests quickly:
 - preselect the most recently used location in every location workflow,
   and automatically load the other locations for that city;
 - run the Inventory Tracking import wizard: choose file, sheet, date, and new,
-  return, or both; preview exclusions; mark individual rows as do not deploy;
-  then change individual new devices between new and existing stock;
+  return, or both; choose a dated section when the sheet contains grouped
+  sections; preview exclusions and attended-row warnings; mark individual rows
+  as do not deploy; then choose every deployment and returned-device status;
 - search EUDM for devices, people, cities, and locations;
 - record who returned a device on **Add to location stock** requests when needed;
 - review the device, returning user, and destination details required by EUDM;
@@ -182,14 +183,16 @@ The web app’s spreadsheet importer shows heading pickers in the Workbook step
 only when saved headings do not match the selected sheet. **Change columns**
 opens them again at any time. Updated mappings are saved with the other
 persistent web settings. The importer never relies on column letters. The deployment
-serial goes to the user, the returned-device serial goes to one shared import
-location as Used Stock or Pending Decom, and the pending-return serial is sent
-as Deployed - Pending Return.
+serial goes to the user, returned-device requests use the selected shared import
+location, and pending-return serials are sent as Deployed - Pending Return. New
+deployments and returned devices have no assumed status: choose one for every
+included row (or use the section bulk selector) before adding them to the queue.
 
 In **Settings → ALM Workbook**, you can save a SharePoint or OneDrive workbook
-link. AutoEUDM opens Chrome immediately, waits for Excel Online and any
-required sign-in to finish, then uses **File → Save As → Download a Copy**.
-Chrome closes as soon as the completed workbook has been verified. The workbook
+link. AutoEUDM opens a fresh Chrome workbook window, waits for Excel Online and
+any required sign-in to finish, then uses Excel’s **Make a copy → Download a
+copy** flow. It retries that menu download every three seconds for up to one
+minute. Chrome closes the temporary workbook tab/window as soon as the completed workbook has been verified. The workbook
 stays in Playwright's temporary download area while it is mapped and read; it
 is never copied to Downloads or kept as a permanent local file.
 
@@ -201,8 +204,11 @@ computer. It does not export browser cookies or record password keystrokes.
 
 The same settings tab lets you set the headings for username, deployment
 serial, returned device, pending return, and the optional TRUE/FALSE column.
-Web settings are stored in `results/web-settings.json`, so they survive browser
-and AutoEUDM restarts.
+The General settings tab can also route command-launcher pages through the
+dedicated EUDM Chrome profile. This keeps AutoEUDM and the temporary EUDM
+verification page in the same Chrome window; verification uses a new tab and
+closes only that tab when it finishes. Web settings are stored in
+`results/web-settings.json`, so they survive browser and AutoEUDM restarts.
 
 The web workspace verifies the authenticated EUDM session every 30 seconds
 with a read-only API request. If SSO has expired, it immediately switches to a

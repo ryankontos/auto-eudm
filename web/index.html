@@ -351,6 +351,12 @@
             <select id="dateInput"></select>
           </label>
         </div>
+        <div id="importDateGroups" class="import-date-groups" hidden>
+          <label>Date sections
+            <select id="importGroupInput"></select>
+          </label>
+          <small id="importDateGroupsHelp"></small>
+        </div>
         <fieldset class="choice-cards">
           <legend>What should be added?</legend>
           <label><input type="checkbox" name="importMode" value="deployments" checked><span><strong>Deploy to users</strong><small id="deploymentImportCount">0 requests</small></span></label>
@@ -367,6 +373,7 @@
             </label>
           </div>
         </div>
+        <div id="importWarnings" class="import-warning" role="status" hidden></div>
         <p class="import-skip-note">Red text, FALSE rows, and unusable serial numbers are skipped.</p>
       </div>
       <div id="importPreview" hidden>
@@ -412,6 +419,7 @@
             <option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option><option value="15">15</option><option value="20">20</option><option value="25">25</option><option value="30">30</option><option value="40">40</option><option value="50">50</option>
           </select>
         </label>
+        <label class="settings-checkbox"><input id="openWebInEudmProfileInput" type="checkbox"><span>Open the AutoEUDM website in the EUDM Chrome profile</span></label>
       </section>
       <section data-settings-panel="validation" hidden>
         <label class="settings-checkbox"><input id="validateQuickImportInput" type="checkbox"><span>Verify serials and users in Quick import</span></label>

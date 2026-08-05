@@ -170,10 +170,39 @@ def manual_review(
 class BrowserClient:
     """API client that stays inside the authenticated Playwright browser context."""
 
-    def __init__(self, base: str, context: Any, verbose: bool = False) -> None:
+    def __init__(
+        self,
+        base: str,
+        context: Any,
+        verbose: bool = False,
+        *,
+        auth_page: Any | None = None,
+        owns_context: bool = True,
+    ) -> None:
         self.base = base
         self.context = context
         self.verbose = verbose
+        self.auth_page = auth_page
+        self.owns_context = owns_context
+
+    def close_auth_page(self) -> None:
+        """Close only the temporary verification tab when other tabs exist."""
+        if self.auth_page is not None:
+            try:
+                if not self.auth_page.is_closed():
+                    self.auth_page.close()
+            except Exception:
+                pass
+        try:
+            remaining = [
+                page
+                for page in self.context.pages
+                if not page.is_closed() and str(page.url) not in {"", "about:blank"}
+            ]
+            if self.owns_context and not remaining:
+                self.context.close()
+        except Exception:
+            pass
 
     def request(self, method: str, path: str, payload: Any | None = None) -> Any:
         started = time.monotonic()
@@ -521,6 +550,8 @@ def browser_client_from_profile(
     verbose: bool,
     headless: bool = False,
     interactive_auth: bool = True,
+    reuse_existing_profile: bool = False,
+    debug_port: int = 9222,
 ) -> BrowserClient:
     try:
         from playwright.sync_api import sync_playwright
@@ -531,12 +562,38 @@ def browser_client_from_profile(
         ) from exc
     try:
         playwright = sync_playwright().start()
-        context = playwright.chromium.launch_persistent_context(
-            user_data_dir=str(Path(profile).expanduser()),
-            channel="chrome",
-            headless=headless,
-        )
-        page = context.pages[0] if context.pages else context.new_page()
+        owns_context = True
+        context = None
+        if reuse_existing_profile:
+            try:
+                browser = playwright.chromium.connect_over_cdp(
+                    f"http://127.0.0.1:{int(debug_port)}"
+                )
+                contexts = browser.contexts
+                if not contexts:
+                    raise RuntimeError("The Chrome debugging endpoint had no browser context.")
+                context = contexts[0]
+                owns_context = False
+                run_reporting.event("Reusing the EUDM Chrome window through its local debugging endpoint")
+            except Exception:
+                try:
+                    playwright.stop()
+                except Exception:
+                    pass
+                playwright = sync_playwright().start()
+        if context is None:
+            context = playwright.chromium.launch_persistent_context(
+                user_data_dir=str(Path(profile).expanduser()),
+                channel="chrome",
+                headless=headless,
+            )
+            for existing_page in list(context.pages):
+                if str(existing_page.url) in {"", "about:blank"}:
+                    try:
+                        existing_page.close()
+                    except Exception:
+                        pass
+        page = context.new_page()
         run_reporting.event("Opening Chrome for EUDM SSO")
         page.goto(app_url, wait_until="domcontentloaded", timeout=60_000)
         if headless:
@@ -556,8 +613,15 @@ def browser_client_from_profile(
         ) from exc
     # Keep the browser context alive for every API call; do not extract/replay cookies.
     atexit.register(playwright.stop)
-    atexit.register(context.close)
-    return BrowserClient(base, context, verbose)
+    if owns_context:
+        atexit.register(context.close)
+    return BrowserClient(
+        base,
+        context,
+        verbose,
+        auth_page=page,
+        owns_context=owns_context,
+    )
 
 
 def open_client(
@@ -568,6 +632,8 @@ def open_client(
     verbose: bool = False,
     headless: bool = False,
     interactive_browser_auth: bool = True,
+    reuse_existing_profile: bool = False,
+    browser_debug_port: int = 9222,
 ) -> Any:
     """Open one authenticated client that can be reused for many requests."""
     if simulate:
@@ -581,6 +647,8 @@ def open_client(
             verbose,
             headless,
             interactive_browser_auth,
+            reuse_existing_profile,
+            browser_debug_port,
         )
     cookie = os.getenv("EUDM_COOKIE", "").strip()
     if cookie.lower().startswith("cookie:"):

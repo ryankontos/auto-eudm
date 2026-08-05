@@ -122,6 +122,9 @@ def _download_workbook_with_browser_once(
     job: Any | None = None,
     diagnostics: WorkbookDownloadDiagnostics | None = None,
     headless: bool = False,
+    reuse_existing_profile: bool = False,
+    debug_port: int = 9222,
+    retry_deadline: float | None = None,
 ) -> tuple[str, bytes]:
     """Run one Excel Online download attempt in either headless or visible Chrome."""
     if not profile:
@@ -142,6 +145,17 @@ def _download_workbook_with_browser_once(
                 message=message,
             )
 
+    def bounded_timeout(milliseconds: int) -> int:
+        if retry_deadline is None:
+            return milliseconds
+        remaining = int((retry_deadline - time.monotonic()) * 1000)
+        if remaining <= 0:
+            raise eudm.EUDMError("The workbook download retry window expired.")
+        return max(1, min(milliseconds, remaining))
+
+    def bounded_wait(milliseconds: int) -> None:
+        page.wait_for_timeout(bounded_timeout(milliseconds))
+
     playwright = None
     context = None
     page = None
@@ -156,14 +170,44 @@ def _download_workbook_with_browser_once(
                 profile_exists=Path(profile).expanduser().exists(),
             )
         playwright = sync_playwright().start()
-        context = playwright.chromium.launch_persistent_context(
-            user_data_dir=str(Path(profile).expanduser()),
-            channel="chrome",
-            headless=headless,
-            accept_downloads=True,
-            downloads_path=download_dir.name,
-        )
-        page = context.pages[0] if context.pages else context.new_page()
+        owns_context = True
+        context = None
+        if reuse_existing_profile:
+            try:
+                browser = playwright.chromium.connect_over_cdp(
+                    f"http://127.0.0.1:{int(debug_port)}"
+                )
+                contexts = browser.contexts
+                if not contexts:
+                    raise RuntimeError("The Chrome debugging endpoint had no browser context.")
+                context = contexts[0]
+                owns_context = False
+                if diagnostics:
+                    diagnostics.event("browser.reusing_profile_window", debug_port=debug_port)
+            except Exception:
+                try:
+                    playwright.stop()
+                except Exception:
+                    pass
+                playwright = sync_playwright().start()
+        if context is None:
+            context = playwright.chromium.launch_persistent_context(
+                user_data_dir=str(Path(profile).expanduser()),
+                channel="chrome",
+                headless=headless,
+                accept_downloads=True,
+                downloads_path=download_dir.name,
+            )
+        if owns_context:
+            for existing_page in list(context.pages):
+                if str(existing_page.url) in {"", "about:blank"}:
+                    try:
+                        existing_page.close()
+                    except Exception:
+                        pass
+        # A fresh persistent context gives the workbook its own Chrome window;
+        # never navigate a tab that may already belong to AutoEUDM.
+        page = context.new_page()
 
         if diagnostics:
             diagnostics.event(
@@ -200,11 +244,20 @@ def _download_workbook_with_browser_once(
             return None
 
         update_job("Opening ALM Workbook in Chrome…")
-        page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+        page.goto(url, wait_until="domcontentloaded", timeout=bounded_timeout(60_000))
+        try:
+            page.wait_for_load_state("load", timeout=bounded_timeout(30_000))
+        except Exception:
+            # Excel Online can keep a frame busy while the visible workbook is
+            # already usable. The readiness loop below is the source of truth.
+            pass
+        bounded_wait(8_000)
         if diagnostics:
             diagnostics.event("browser.workbook_opened", current_url=str(page.url))
 
         deadline = time.monotonic() + (60 if headless else 300)
+        if retry_deadline is not None:
+            deadline = min(deadline, retry_deadline)
         announced_login = False
         file_menu = None
         while time.monotonic() < deadline:
@@ -216,14 +269,14 @@ def _download_workbook_with_browser_once(
                     update_job("Finish signing in in Chrome…", waiting_for_login=True)
                     if diagnostics:
                         diagnostics.event("browser.authentication_wait_started")
-                page.wait_for_timeout(1_000)
+                bounded_wait(1_000)
                 continue
 
             file_menu = find_control(r"^file$")
             if file_menu is not None:
                 break
             update_job("Waiting for ALM Workbook to finish loading…")
-            page.wait_for_timeout(1_000)
+            bounded_wait(1_000)
         if file_menu is None:
             if diagnostics:
                 diagnostics.page_snapshot("excel_menu_not_ready", page)
@@ -234,12 +287,12 @@ def _download_workbook_with_browser_once(
         # Excel can show the File tab before the workbook's commands are ready.
         # Give its last data and ribbon updates time to settle before opening it.
         update_job("Workbook loaded. Preparing Download a Copy…")
-        page.wait_for_timeout(4_000)
+        bounded_wait(4_000)
         file_menu = find_control(r"^file$")
         if file_menu is None:
             raise eudm.EUDMError("Excel Online's File menu was no longer available.")
-        file_menu.click(timeout=15_000)
-        page.wait_for_timeout(600)
+        file_menu.click(timeout=bounded_timeout(15_000))
+        bounded_wait(600)
 
         # Office varies the accessible label between "Download a copy",
         # "Download a Copy", and labels containing a line break/shortcut.
@@ -248,14 +301,14 @@ def _download_workbook_with_browser_once(
         download_control = find_control(download_pattern)
         if download_control is None:
             # Some Excel Online tenants put the workbook download behind a
-            # second popover: File -> Create a Copy -> Download a Copy.
-            create_copy = find_control(r"create\s+a\s+copy")
+            # second popover: File -> Make/Create a Copy -> Download a Copy.
+            create_copy = find_control(r"(?:make|create)\s+a\s+copy")
             if create_copy is not None:
                 update_job("Opening Excel's copy options…")
-                create_copy.click(timeout=15_000)
+                create_copy.click(timeout=bounded_timeout(15_000))
                 copy_deadline = time.monotonic() + 15
                 while time.monotonic() < copy_deadline and download_control is None:
-                    page.wait_for_timeout(300)
+                    bounded_wait(300)
                     download_control = find_control(download_pattern)
 
         if download_control is None:
@@ -266,8 +319,8 @@ def _download_workbook_with_browser_once(
                 raise eudm.EUDMError(
                     "Excel Online did not show Download a Copy in its File menu."
                 )
-            save_as.click(timeout=15_000)
-            page.wait_for_timeout(600)
+            save_as.click(timeout=bounded_timeout(15_000))
+            bounded_wait(600)
             download_control = find_control(download_pattern)
         if download_control is None:
             if diagnostics:
@@ -294,8 +347,8 @@ def _download_workbook_with_browser_once(
             diagnostics.event("browser.download_click", directory=download_dir.name)
         download = None
         try:
-            with page.expect_download(timeout=15_000) as pending:
-                download_control.click(timeout=15_000)
+            with page.expect_download(timeout=bounded_timeout(15_000)) as pending:
+                download_control.click(timeout=bounded_timeout(15_000))
             download = pending.value
         except Exception as exc:
             # Excel can hand the download to Chrome without emitting a
@@ -314,6 +367,8 @@ def _download_workbook_with_browser_once(
             suggested_filename = download.suggested_filename or ""
         else:
             deadline = time.monotonic() + 120
+            if retry_deadline is not None:
+                deadline = min(deadline, retry_deadline)
             last_size = -1
             stable_reads = 0
             while time.monotonic() < deadline:
@@ -335,7 +390,7 @@ def _download_workbook_with_browser_once(
                         downloaded_path = candidate
                         suggested_filename = candidate.name
                         break
-                page.wait_for_timeout(500)
+                bounded_wait(500)
             if downloaded_path is None:
                 if diagnostics:
                     diagnostics.event(
@@ -375,7 +430,16 @@ def _download_workbook_with_browser_once(
             try:
                 if diagnostics:
                     diagnostics.event("browser.context_closing")
-                context.close()
+                if page is not None:
+                    page.close()
+                remaining = [
+                    open_page
+                    for open_page in context.pages
+                    if not open_page.is_closed()
+                    and str(open_page.url) not in {"", "about:blank"}
+                ]
+                if owns_context and not remaining:
+                    context.close()
             except Exception:
                 pass
         if playwright:
@@ -395,17 +459,27 @@ def download_workbook_with_browser(
     job: Any | None = None,
     diagnostics: WorkbookDownloadDiagnostics | None = None,
     headless: bool = False,
+    reuse_existing_profile: bool = False,
+    debug_port: int = 9222,
 ) -> tuple[str, bytes]:
-    """Download through Excel's menu with a few paced browser retries."""
+    """Download through Excel's menu, retrying every three seconds for one minute."""
     last_error: eudm.EUDMError | None = None
-    for attempt in range(1, 4):
+    retry_deadline = time.monotonic() + 60
+    attempt = 0
+    while True:
+        attempt += 1
         attempt_headless = headless and attempt == 1
         if attempt > 1:
-            time.sleep(3)
+            remaining = retry_deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(3, remaining))
+            if time.monotonic() >= retry_deadline:
+                break
             if job is not None:
                 job.update(
                     state="downloading",
-                    message=f"Retrying workbook download ({attempt}/3)…",
+                    message=f"Retrying workbook download ({attempt})…",
                 )
             if diagnostics:
                 diagnostics.event(
@@ -420,6 +494,9 @@ def download_workbook_with_browser(
                 job=job,
                 diagnostics=diagnostics,
                 headless=attempt_headless,
+                reuse_existing_profile=reuse_existing_profile,
+                debug_port=debug_port,
+                retry_deadline=retry_deadline,
             )
         except eudm.EUDMError as exc:
             last_error = exc
@@ -435,5 +512,7 @@ def download_workbook_with_browser(
                     state="downloading",
                     message="Opening Chrome to finish the workbook download…",
                 )
+            if time.monotonic() >= retry_deadline:
+                break
     assert last_error is not None
     raise last_error

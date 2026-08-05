@@ -11,7 +11,6 @@ import subprocess
 import sys
 import urllib.error
 import urllib.request
-import webbrowser
 
 
 ROOT = Path(__file__).resolve().parent
@@ -48,6 +47,27 @@ def configured_simulation() -> bool:
     from auto_eudm.eudm_config import AppConfig  # noqa: WPS433
 
     return AppConfig.load().simulate
+
+
+def open_web_url(url: str) -> None:
+    """Open the launcher URL using the saved web preference when available."""
+    if str(SRC) not in sys.path:
+        sys.path.insert(0, str(SRC))
+    from auto_eudm.browser_launch import open_url, preference_enabled  # noqa: WPS433
+    from auto_eudm.eudm_config import AppConfig  # noqa: WPS433
+
+    config = None
+    try:
+        config = AppConfig.load()
+        profile = config.browser_profile
+    except (OSError, ValueError):
+        profile = None
+    open_url(
+        url,
+        profile=profile,
+        use_profile=preference_enabled(),
+        debug_port=config.browser_debug_port if config else 9222,
+    )
 
 
 def package_available(python: Path, package: str) -> bool:
@@ -102,7 +122,7 @@ def open_existing_web_ui(arguments: list[str]) -> bool:
             return False
     except (OSError, urllib.error.URLError):
         return False
-    webbrowser.open(url)
+    open_web_url(url)
     say(f"The web workspace is already running; opening {url}")
     return True
 

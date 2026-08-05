@@ -431,6 +431,9 @@ class WorkbookImport:
                 except eudm.EUDMError:
                     continue
                 max_column = max(sheet.max_column or 1, date_index, *indexes.values())
+                previous_date = None
+                previous_fill = None
+                date_group = 0
                 for values in sheet.iter_rows(min_row=header_row + 1, min_col=1, max_col=max_column):
                     processed_rows += 1
                     if on_progress and (
@@ -441,7 +444,16 @@ class WorkbookImport:
                         values[date_index - 1].value, workbook.epoch
                     )
                     if deployment_date is None:
+                        previous_date = None
+                        previous_fill = None
                         continue
+                    fill_key = inventory.background_fill_key(values[date_index - 1])
+                    if deployment_date != previous_date:
+                        date_group = 1
+                    elif fill_key != previous_fill:
+                        date_group += 1
+                    previous_date = deployment_date
+                    previous_fill = fill_key
                     rows.append(
                         inventory.SheetRow(
                             row_number=values[0].row,
@@ -456,6 +468,7 @@ class WorkbookImport:
                             enabled=inventory.enabled_column_allows(
                                 values[indexes["enabled"] - 1].value
                             ) if indexes["enabled"] else True,
+                            date_group=date_group,
                         )
                     )
                 if rows:
@@ -481,9 +494,22 @@ class WorkbookImport:
             for selected in sorted(
                 {row.deployment_date for row in rows}, reverse=True
             ):
-                deployment_count, returned_device_count, pending_return_count = inventory.eligible_counts(
-                    row for row in rows if row.deployment_date == selected
-                )
+                selected_rows = [row for row in rows if row.deployment_date == selected]
+                deployment_count, returned_device_count, pending_return_count = inventory.eligible_counts(selected_rows)
+                groups = []
+                for group_number in sorted({row.date_group for row in selected_rows}):
+                    group_rows = [row for row in selected_rows if row.date_group == group_number]
+                    group_deployments, group_returned, group_pending = inventory.eligible_counts(group_rows)
+                    groups.append(
+                        {
+                            "value": str(group_number),
+                            "row_count": len(group_rows),
+                            "deployment_count": group_deployments,
+                            "returned_device_count": group_returned,
+                            "pending_return_count": group_pending,
+                        }
+                    )
+                warning_rows = inventory.attended_rows_missing_return_serials(selected_rows)
                 dates.append(
                     {
                         "value": selected.isoformat(),
@@ -491,6 +517,16 @@ class WorkbookImport:
                         "deployment_count": deployment_count,
                         "returned_device_count": returned_device_count,
                         "pending_return_count": pending_return_count,
+                        "groups": groups,
+                        "warnings": [
+                            {
+                                "row_number": row.row_number,
+                                "username": row.username or "",
+                                "missing_returned": not inventory.looks_like_serial(row.returned_device_serial),
+                                "missing_pending": not inventory.looks_like_serial(row.pending_return_serial),
+                            }
+                            for row in warning_rows
+                        ],
                     }
                 )
             sheet_summaries.append({"name": name, "dates": dates})
@@ -512,6 +548,7 @@ class WorkbookImport:
         selected_date: str,
         mode: str,
         location: Location | None = None,
+        group_selection: str | int | None = None,
     ) -> dict[str, Any]:
         if sheet_name not in self.sheets:
             raise eudm.EUDMError("Choose one of the workbook's available sheets.")
@@ -526,7 +563,10 @@ class WorkbookImport:
         except ValueError as exc:
             raise eudm.EUDMError("Choose a valid deployment date.") from exc
         actions, ignored = inventory.build_actions(
-            self.sheets[sheet_name], chosen_date, ",".join(sorted(selected_modes))
+            self.sheets[sheet_name],
+            chosen_date,
+            ",".join(sorted(selected_modes)),
+            group_selection=group_selection,
         )
         if not actions:
             raise eudm.EUDMError(
@@ -534,13 +574,23 @@ class WorkbookImport:
             )
         requests = []
         for action in actions:
-            if action.kind == "location" and not location:
-                raise eudm.EUDMError("Choose one location for returned devices.")
+            if action.kind == "location" and (
+                not location
+                or not all(
+                    (
+                        location.city,
+                        location.building,
+                        location.floor,
+                        location.room,
+                    )
+                )
+            ):
+                raise eudm.EUDMError("Choose a complete destination for returned devices.")
             requests.append(RequestSpec(
                 client_id=uuid.uuid4().hex,
                 kind=action.kind,
                 serials=(action.serial,),
-                status=action.status,
+                status=action.status if action.group == "Pending returns" else "",
                 user=action.username if action.kind == "user" else None,
                 returning_requested=action.kind == "location",
                 returning_user=action.username if action.kind == "location" else None,

@@ -139,13 +139,15 @@ updating the list if EUDM's locations have changed.
 The right inspector edits the selected request and provides live EUDM device,
 user, city, and location searches. The spreadsheet mode reproduces the
 CLI wizard as three steps: choose the workbook; choose its sheet, deployment
-date, and new devices, returns, or both; then preview every generated request
-and ignored-serial reason. New deployments and pending returns are presented in
-separate preview sections. Every preview row can be unchecked, and each section
-has quick All and None controls. New devices default to Deployed - New Stock and
-can be changed individually to Deployed - Existing Stock. Old devices in column
-L become Deployed - Pending Return requests for the column D user. `Bookings
-2026` is preselected when present; otherwise every dated sheet is available.
+date, and new devices, returns, or both; choose a dated section when the day is
+split into grouped sections; then preview every generated request, ignored
+serial reason, and attended-row warning. New deployments, returned devices, and
+pending returns are presented in separate preview sections. Every preview row
+can be unchecked, and each section has quick All and None controls. New
+deployments and returned devices require an explicit status, with a bulk status
+selector for each section; pending returns retain their fixed pending-return
+status. `Bookings 2026` is preselected when present; otherwise every dated
+sheet is available.
 
 When a location request is marked as a return, the inspector shows the device,
 returning user, and destination. The separate confirmation checkbox is not
@@ -201,6 +203,7 @@ to use a configuration file elsewhere.
 | --- | --- |
 | `EUDM_REQUEST_FOR` | Default requesting login ID. |
 | `EUDM_BROWSER_PROFILE` | Dedicated installed-Chrome profile. |
+| `EUDM_BROWSER_DEBUG_PORT` | Local Chrome debugging port used to share that profile with the web launcher (default `9222`). |
 | `EUDM_BROWSER_HEADLESS` | Run that profile with no visible Chrome window; use `--no-headless` when SSO needs attention. |
 | `EUDM_BASE` | EUDM REST base URL. |
 | `EUDM_CITY`, `EUDM_BUILDING`, `EUDM_FLOOR`, `EUDM_ROOM`, `EUDM_CABINET` | Direct-script location defaults. |
@@ -404,9 +407,10 @@ independently, so a missing serial in one column does not discard a valid serial
 in the other. Short markers such as `1` to `5` are not serials. The preview
 reports ignored serial numbers.
 
-After choosing a date, choose new serials, returns, or both. New serials default
-to `Deployed - New Stock`. Enter numbers/ranges such as `2,4-6` at the override
-prompt to switch selected new serials to `Deployed - Existing Stock`.
+After choosing a date, choose new serials, returns, or both. The web importer
+does not assume a deployment or returned-device status; choose every included
+status before adding the requests to the queue. A dated day split into sections
+can be limited to one section or imported in full.
 
 The preview shows serial, user, status, and ignored serial-number counts.
 It asks once more before real authentication. Results are grouped as `New

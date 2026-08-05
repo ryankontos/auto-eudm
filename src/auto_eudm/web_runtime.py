@@ -20,6 +20,7 @@ import uuid
 from . import eudm_inventory_import as inventory
 from . import eudm_request as eudm
 from . import run_reporting
+from .browser_launch import open_url, preference_enabled
 from .eudm_config import AppConfig
 from .web_downloads import (
     WorkbookDownloadDiagnostics,
@@ -109,7 +110,13 @@ def authenticated_user_id(payload: Any) -> str | None:
     return None
 
 
-def open_existing_server(url: str) -> bool:
+def open_existing_server(
+    url: str,
+    *,
+    profile: str | None = None,
+    use_profile: bool = False,
+    debug_port: int = 9222,
+) -> bool:
     """Open a live AutoEUDM server when this process cannot bind its port."""
     try:
         request = urllib.request.Request(url, headers={"User-Agent": "AutoEUDM launcher"})
@@ -119,7 +126,7 @@ def open_existing_server(url: str) -> bool:
             return False
     except (OSError, urllib.error.URLError):
         return False
-    webbrowser.open(url)
+    open_url(url, profile=profile, use_profile=use_profile, debug_port=debug_port)
     print(f"AutoEUDM is already running at {url}; opening it in your browser.", flush=True)
     return True
 
@@ -373,6 +380,8 @@ class ClientManager:
                 verbose=self.config.verbose,
                 headless=self.config.browser_headless,
                 interactive_browser_auth=False,
+                reuse_existing_profile=preference_enabled(),
+                browser_debug_port=self.config.browser_debug_port,
             )
             with self.lock:
                 self.message = (
@@ -418,10 +427,11 @@ class ClientManager:
                     "Set EUDM_REQUEST_FOR in .env and connect again."
                 )
             # The copied API client is independent of Playwright. Once it has
-            # proven the session and inferred the user, close the temporary
-            # Chrome window instead of leaving it behind the workspace.
+            # proven the session and inferred the user, close only the temporary
+            # verification tab (or its private window) instead of leaving it
+            # behind the workspace.
             try:
-                browser.context.close()
+                browser.close_auth_page()
                 run_reporting.event("Closed Chrome after successful EUDM SSO")
             except Exception:
                 run_reporting.event("Could not close Chrome after EUDM SSO")
@@ -429,7 +439,7 @@ class ClientManager:
         except Exception as exc:
             if browser is not None:
                 try:
-                    browser.context.close()
+                    browser.close_auth_page()
                 except Exception:
                     pass
             with self.lock:
@@ -944,6 +954,7 @@ class Application:
             "validate_quick_import": True,
             "validate_workbook_import": True,
             "workbook_headless": False,
+            "open_web_in_eudm_profile": False,
             "workbook_url": "",
             "import_columns": {
                 "username": "Username",
@@ -981,6 +992,7 @@ class Application:
             "validate_quick_import",
             "validate_workbook_import",
             "workbook_headless",
+            "open_web_in_eudm_profile",
         ):
             if key in raw and not isinstance(raw[key], bool):
                 raise eudm.EUDMError("A settings toggle had an invalid value.")
@@ -1095,6 +1107,10 @@ class Application:
                 job=job,
                 diagnostics=diagnostics,
                 headless=bool(self.preferences_json().get("workbook_headless", False)),
+                reuse_existing_profile=bool(
+                    self.preferences_json().get("open_web_in_eudm_profile", False)
+                ),
+                debug_port=self.config.browser_debug_port,
             )
             job.filename = filename
             encoded = base64.b64encode(data).decode("ascii")

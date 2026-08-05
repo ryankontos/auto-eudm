@@ -963,6 +963,32 @@ fieldset { margin: 0; padding: 0; border: 0; }
 .import-preview-row small { color: var(--muted); font-size: 10px; }
 .import-preview-row select { width: 100%; min-height: 32px; font-size: 11px; }
 .fixed-status { color: var(--ink); font-size: 11px; font-weight: 650; }
+.import-date-groups {
+  display: grid;
+  grid-template-columns: minmax(180px, .7fr) 1.3fr;
+  gap: 8px;
+  align-items: end;
+  margin-top: 10px;
+  padding: 9px 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--surface-alt);
+}
+.import-date-groups label { margin: 0; }
+.import-date-groups > small { padding-bottom: 8px; color: var(--muted); line-height: 1.35; }
+.import-warning {
+  margin-top: 10px;
+  padding: 9px 11px;
+  border: 1px solid var(--amber-border);
+  border-radius: 4px;
+  color: var(--amber-text);
+  background: var(--amber-surface);
+  font-size: 11px;
+  line-height: 1.35;
+}
+.import-warning strong,
+.import-warning span { display: block; }
+.import-warning span { margin-top: 2px; }
 .import-show-more {
   display: block;
   width: calc(100% - 18px);

@@ -249,6 +249,7 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
                     str(payload.get("date", "")),
                     str(payload.get("mode", "")),
                     Location.from_json(payload.get("location")) if payload.get("location") else None,
+                    payload.get("group_selection"),
                 )
             )
             return

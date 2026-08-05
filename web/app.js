@@ -34,6 +34,16 @@ const SPREADSHEET_URL_STORAGE_KEY = "auto-eudm-spreadsheet-url";
 const VALIDATION_DEBOUNCE_MS = 1500;
 const MAX_RECENT_LOCATIONS = 8;
 const IMPORT_PREVIEW_ROW_LIMIT = 80;
+const ALM_IMPORT_STATUS_OPTIONS = {
+  Deployments: [
+    { value: "Deployed - New Stock", label: "Deployed - New Stock" },
+    { value: "Deployed - Existing Stock", label: "Deployed - Existing Stock" },
+  ],
+  "Returned devices": [
+    { value: "Pending Decom", label: "Pending Decom" },
+    { value: "Pending Rebuild", label: "Pending Rebuild" },
+  ],
+};
 const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
 
 const $ = (selector) => document.querySelector(selector);
@@ -276,6 +286,12 @@ function savedSpreadsheetUrl() {
 function workbookHeadlessEnabled() {
   return state.preferences?._saved && typeof state.preferences?.workbook_headless === "boolean"
     ? state.preferences.workbook_headless
+    : false;
+}
+
+function openWebInEudmProfileEnabled() {
+  return state.preferences?._saved && typeof state.preferences?.open_web_in_eudm_profile === "boolean"
+    ? state.preferences.open_web_in_eudm_profile
     : false;
 }
 
@@ -1472,6 +1488,7 @@ function openSettings() {
   $("#spreadsheetPendingColumnInput").value = columns.pending_return || "OLD Device SN";
   $("#spreadsheetEnabledColumnInput").value = columns.enabled || "";
   $("#workbookHeadlessInput").checked = workbookHeadlessEnabled();
+  $("#openWebInEudmProfileInput").checked = openWebInEudmProfileEnabled();
   $("#validateQuickImportInput").checked = validationEnabled("validate_quick_import");
   $("#validateWorkbookImportInput").checked = validationEnabled("validate_workbook_import");
   $("#settingsDialog").showModal();
@@ -1951,6 +1968,11 @@ function resetImportDialog() {
   $("#importConfigure").hidden = true;
   $("#importMapColumns").hidden = true;
   $("#importPreview").hidden = true;
+  $("#importDateGroups").hidden = true;
+  $("#importGroupInput").innerHTML = "";
+  $("#importDateGroupsHelp").textContent = "";
+  $("#importWarnings").hidden = true;
+  $("#importWarnings").innerHTML = "";
   $("#backImportButton").hidden = true;
   $("#prepareImportButton").disabled = true;
   $("#prepareImportButton").textContent = "Review import";
@@ -2012,6 +2034,7 @@ function updateImportDates() {
   const todayValue = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
   const selected = dates.some((entry) => entry.value === todayValue) ? todayValue : dates.some((entry) => entry.value === previous) ? previous : dates[0]?.value;
   $("#dateInput").innerHTML = dates.map((entry) => `<option value="${escapeHtml(entry.value)}" ${entry.value === selected ? "selected" : ""}>${escapeHtml(entry.label)} [${escapeHtml(relativeDateLabel(entry.value))}]</option>`).join("");
+  if (selected !== previous) $("#importGroupInput").value = "";
   updateImportCounts();
 }
 
@@ -2024,12 +2047,60 @@ function importModeValue() {
   return modes.length === 3 ? "all" : modes.join(",");
 }
 
+function selectedImportGroup() {
+  const value = $("#importGroupInput").value;
+  return value || null;
+}
+
+function updateImportGroupChoices(selected) {
+  const groups = selected?.groups || [];
+  const selector = $("#importGroupInput");
+  const wrapper = $("#importDateGroups");
+  if (groups.length <= 1) {
+    wrapper.hidden = true;
+    selector.innerHTML = '<option value="all">All sections</option>';
+    selector.value = "all";
+    $("#importDateGroupsHelp").textContent = "";
+    return;
+  }
+  const previous = selector.value;
+  const validPrevious = previous === "all" || groups.some((group) => group.value === previous);
+  selector.innerHTML = [
+    '<option value="">Choose a section</option>',
+    ...groups.map((group, index) => `<option value="${escapeHtml(group.value)}">Section ${index + 1} · ${group.row_count} rows</option>`),
+    '<option value="all">All sections</option>',
+  ].join("");
+  selector.value = validPrevious ? previous : "";
+  wrapper.hidden = false;
+  $("#importDateGroupsHelp").textContent = `This date appears grouped into ${groups.length} sections. Choose one section or all sections.`;
+}
+
+function updateImportWarnings(selected) {
+  const warnings = selected?.warnings || [];
+  const warning = $("#importWarnings");
+  if (!warnings.length) {
+    warning.hidden = true;
+    warning.innerHTML = "";
+    return;
+  }
+  const names = warnings.map((item) => item.username).filter(Boolean);
+  const shownNames = names.slice(0, 4).map(escapeHtml).join(", ");
+  const remainder = names.length > 4 ? ` and ${names.length - 4} more` : "";
+  warning.innerHTML = `<strong>Check ${warnings.length} attended row${warnings.length === 1 ? "" : "s"}</strong><span>These rows have no returned-device or pending-return serial${shownNames ? `: ${shownNames}${remainder}` : "."}</span>`;
+  warning.hidden = false;
+}
+
 function updateImportCounts() {
   const sheet = workbookSheet($("#sheetInput").value);
   const selected = sheet?.dates.find((entry) => entry.value === $("#dateInput").value);
-  const deploymentCount = selected?.deployment_count || 0;
-  const returnedDeviceCount = selected?.returned_device_count || 0;
-  const pendingReturnCount = selected?.pending_return_count || 0;
+  updateImportGroupChoices(selected);
+  updateImportWarnings(selected);
+  const groupValue = selectedImportGroup();
+  const group = selected?.groups?.find((item) => item.value === groupValue);
+  const counts = groupValue && groupValue !== "all" && group ? group : selected;
+  const deploymentCount = counts?.deployment_count || 0;
+  const returnedDeviceCount = counts?.returned_device_count || 0;
+  const pendingReturnCount = counts?.pending_return_count || 0;
   $("#deploymentImportCount").textContent = `${deploymentCount} request${deploymentCount === 1 ? "" : "s"}`;
   $("#returnedDeviceImportCount").textContent = `${returnedDeviceCount} request${returnedDeviceCount === 1 ? "" : "s"}`;
   $("#pendingReturnImportCount").textContent = `${pendingReturnCount} request${pendingReturnCount === 1 ? "" : "s"}`;
@@ -2037,10 +2108,16 @@ function updateImportCounts() {
   const selectedCount = (modes.includes("deployments") ? deploymentCount : 0)
     + (modes.includes("returned_devices") ? returnedDeviceCount : 0)
     + (modes.includes("pending_returns") ? pendingReturnCount : 0);
-  const needsLocation = modes.includes("returned_devices");
+  const groupRequired = (selected?.groups || []).length > 1 && !groupValue;
+  const needsLocation = modes.includes("returned_devices") && returnedDeviceCount > 0;
+  const missingLocation = needsLocation && !hasCompleteLocation(state.importLocation);
   $("#importLocationFields").hidden = !needsLocation;
   if (needsLocation) renderImportLocationFields();
-  $("#prepareImportButton").disabled = !selected || selectedCount === 0;
+  const prepareButton = $("#prepareImportButton");
+  prepareButton.disabled = !selected || selectedCount === 0 || missingLocation || groupRequired;
+  prepareButton.textContent = groupRequired
+    ? "Choose a date section"
+    : missingLocation ? "Choose a destination" : "Review import";
 }
 
 function renderImportLocationFields() {
@@ -2242,6 +2319,7 @@ async function saveImportColumnPreferences(columns) {
     validate_quick_import: validationEnabled("validate_quick_import"),
     validate_workbook_import: validationEnabled("validate_workbook_import"),
     workbook_headless: workbookHeadlessEnabled(),
+    open_web_in_eudm_profile: openWebInEudmProfileEnabled(),
     workbook_url: savedSpreadsheetUrl(),
     import_columns: columns,
   };
@@ -2386,17 +2464,24 @@ function updateImportPrepareButton(payload = state.importPreview) {
   if (!payload) return;
   const selected = payload.requests.filter((request) => request.included !== false);
   const checking = selected.some((request) => request.import_validation === "checking" || !request.import_validation);
-  const missingDeploymentStatus = selected.some((request) => request.group === "Deployments" && !request.status);
+  const missingStatus = selected.some((request) => ALM_IMPORT_STATUS_OPTIONS[request.group] && !request.status);
+  const missingLocation = selected.some((request) => request.group === "Returned devices")
+    && !hasCompleteLocation(state.importLocation);
+  const invalid = selected.some((request) => request.import_validation !== "valid");
   const valid = selected.filter((request) => request.import_validation === "valid").length;
   const button = $("#prepareImportButton");
-  button.disabled = checking || missingDeploymentStatus || valid === 0;
+  button.disabled = !selected.length || checking || missingStatus || missingLocation || invalid;
   button.textContent = checking
     ? "Verifying selections…"
-    : missingDeploymentStatus
-      ? "Choose deployment statuses"
-    : valid === selected.length
-      ? `Add ${valid} to queue`
-      : `Add ${valid} verified to queue`;
+    : missingStatus
+      ? "Choose import statuses"
+      : missingLocation
+        ? "Choose a destination"
+        : invalid
+          ? "Fix invalid rows or exclude them"
+          : selected.length
+            ? `Add ${valid} to queue`
+            : "Select rows to add";
 }
 
 function renderImportPreview() {
@@ -2437,18 +2522,13 @@ function renderImportPreview() {
       const isDeployment = request.group === "Deployments";
       const isReturnedDevice = request.group === "Returned devices";
       const isIncluded = request.included !== false;
-      const statusControl = isDeployment
+      const statusOptions = ALM_IMPORT_STATUS_OPTIONS[request.group] || [];
+      const statusControl = statusOptions.length
         ? `<select data-import-status="${escapeHtml(request.id)}" aria-label="Status for ${escapeHtml(request.serials[0])}">
-            <option value="" ${!request.status ? "selected" : ""}>Choose a deployment status</option>
-            <option value="Deployed - New Stock" ${request.status === "Deployed - New Stock" ? "selected" : ""}>Deployed - New Stock</option>
-            <option value="Deployed - Existing Stock" ${request.status === "Deployed - Existing Stock" ? "selected" : ""}>Deployed - Existing Stock</option>
+            <option value="" ${!request.status ? "selected" : ""}>Choose a ${isDeployment ? "deployment" : "returned-device"} status</option>
+            ${statusOptions.map((option) => `<option value="${escapeHtml(option.value)}" ${request.status === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
           </select>`
-        : isReturnedDevice
-          ? `<select data-import-status="${escapeHtml(request.id)}" aria-label="Status for ${escapeHtml(request.serials[0])}">
-               <option value="Used Stock" ${request.status === "Used Stock" ? "selected" : ""}>Used Stock</option>
-               <option value="Pending Decom" ${request.status === "Pending Decom" ? "selected" : ""}>Pending Decom</option>
-             </select>`
-          : `<span class="fixed-status">Deployed - Pending Return</span>`;
+        : `<span class="fixed-status">Deployed - Pending Return</span>`;
       const validation = request.import_validation === "checking"
         ? '<small class="import-checking">Verifying serial and user details in EUDM…</small>'
         : request.import_validation === "failed"
@@ -2468,11 +2548,18 @@ function renderImportPreview() {
         <div>${statusControl}${isIncluded ? validation : "<small>Do not deploy</small>"}${returnDetails}${editable}</div>
       </div>`;
     }).join("");
+    const bulkStatusOptions = ALM_IMPORT_STATUS_OPTIONS[group.key] || [];
+    const bulkStatusControl = bulkStatusOptions.length
+      ? `<select data-import-status-all="${escapeHtml(group.key)}" aria-label="Set status for all ${escapeHtml(group.key.toLowerCase())}">
+          <option value="">Set all statuses</option>
+          ${bulkStatusOptions.map((option) => `<option value="${escapeHtml(option.value)}">${escapeHtml(option.label)}</option>`).join("")}
+        </select>`
+      : "";
     return `<section class="import-preview-section">
       <div class="import-group-heading">
         <div><strong>${group.title}</strong><small>${group.detail} · ${selectedCount} of ${requests.length} selected</small></div>
         <div class="import-group-actions">
-          ${group.key === "Deployments" ? `<select data-import-status-all="${escapeHtml(group.key)}" aria-label="Set deployment status for all"><option value="">Set all statuses</option><option value="Deployed - New Stock">Deployed - New Stock</option><option value="Deployed - Existing Stock">Deployed - Existing Stock</option></select>` : ""}
+          ${bulkStatusControl}
           <button class="text-button" type="button" data-import-group="${escapeHtml(group.key)}" data-include="true">All</button>
           <button class="text-button" type="button" data-import-group="${escapeHtml(group.key)}" data-include="false">None</button>
         </div>
@@ -2609,21 +2696,29 @@ async function prepareImport() {
       updateImportPrepareButton(state.importPreview);
       return;
     }
-    if (selected.some((request) => request.group === "Deployments" && !request.status)) {
-      toast("Choose a deployment status for every user deployment.", "error");
+    if (selected.some((request) => ALM_IMPORT_STATUS_OPTIONS[request.group] && !request.status)) {
+      toast("Choose a status for every deployment and returned device.", "error");
       updateImportPrepareButton(state.importPreview);
       return;
     }
-    const requests = state.importPreview.requests
-      .filter((request) => request.included !== false && request.import_validation === "valid")
-      .map((request) => {
-        const cleanRequest = { ...request };
-        cleanRequest.serial_validation = "valid";
-        if (cleanRequest.kind === "user") cleanRequest.user_validation = "valid";
-        if (cleanRequest.kind === "location" && cleanRequest.returning_user) cleanRequest.returning_user_validation = "valid";
-        delete cleanRequest.included;
-        return cleanRequest;
-      });
+    if (selected.some((request) => request.group === "Returned devices") && !hasCompleteLocation(state.importLocation)) {
+      toast("Choose a complete destination for returned devices.", "error");
+      updateImportPrepareButton(state.importPreview);
+      return;
+    }
+    if (selected.some((request) => request.import_validation !== "valid")) {
+      toast("Verify every included serial and user, or exclude invalid rows.", "error");
+      updateImportPrepareButton(state.importPreview);
+      return;
+    }
+    const requests = selected.map((request) => {
+      const cleanRequest = { ...request };
+      cleanRequest.serial_validation = "valid";
+      if (cleanRequest.kind === "user") cleanRequest.user_validation = "valid";
+      if (cleanRequest.kind === "location" && cleanRequest.returning_user) cleanRequest.returning_user_validation = "valid";
+      delete cleanRequest.included;
+      return cleanRequest;
+    });
     if (!requests.length) {
       $("#importError").textContent = "Select at least one deployment to add.";
       $("#importError").hidden = false;
@@ -2646,6 +2741,17 @@ async function prepareImport() {
     }
     const mode = importModeValue();
     if (!mode) throw new Error("Select at least one type of deployment to import.");
+    const groupSelection = selectedImportGroup();
+    const selectedDate = workbookSheet($("#sheetInput").value)?.dates.find((entry) => entry.value === $("#dateInput").value);
+    if ((selectedDate?.groups || []).length > 1 && !groupSelection) {
+      throw new Error("Choose a date section to import, or choose all sections.");
+    }
+    const selectedReturnedCount = selectedDate?.groups?.find((item) => item.value === groupSelection)?.returned_device_count
+      ?? (groupSelection === "all" ? selectedDate?.returned_device_count : 0)
+      ?? 0;
+    if (selectedReturnedCount > 0 && !hasCompleteLocation(state.importLocation)) {
+      throw new Error("Choose a complete destination for returned devices.");
+    }
     const payload = await api("/api/import/prepare", {
       method: "POST",
       body: JSON.stringify({
@@ -2654,12 +2760,12 @@ async function prepareImport() {
         date: $("#dateInput").value,
         mode,
         location: state.importLocation,
+        group_selection: groupSelection || "all",
       }),
     });
     payload.requests.forEach((request) => {
       request.included = true;
-      if (request.group === "Deployments") request.status = "";
-      else normalizeRequestStatus(request);
+      if (request.group !== "Pending returns") request.status = "";
       request.import_validation = "checking";
       request.import_error = "";
     });
@@ -2678,7 +2784,7 @@ async function prepareImport() {
     $("#importError").hidden = false;
   } finally {
     if (state.importPreview) {
-      button.disabled = false;
+      updateImportPrepareButton(state.importPreview);
     } else {
       updateImportCounts();
     }
@@ -3001,6 +3107,7 @@ function bindEvents() {
       validate_quick_import: $("#validateQuickImportInput").checked,
       validate_workbook_import: $("#validateWorkbookImportInput").checked,
       workbook_headless: $("#workbookHeadlessInput").checked,
+      open_web_in_eudm_profile: $("#openWebInEudmProfileInput").checked,
       workbook_url: url,
       import_columns: columns,
     };
@@ -3052,13 +3159,17 @@ function bindEvents() {
     "#importMapPending",
     "#importMapEnabled",
   ].forEach((selector) => $(selector).addEventListener("change", updateImportColumnMapButton));
-  $("#sheetInput").addEventListener("change", updateImportDates);
+  $("#sheetInput").addEventListener("change", () => {
+    $("#importGroupInput").value = "";
+    updateImportDates();
+  });
   $("#dateInput").addEventListener("change", updateImportCounts);
+  $("#importGroupInput").addEventListener("change", updateImportCounts);
   $$('input[name="importMode"]').forEach((radio) => radio.addEventListener("change", updateImportCounts));
   $("#importCityInput").addEventListener("change", () => {
     state.importLocation = { city: $("#importCityInput").value, building: "", floor: "", room: "", cabinet: "" };
     state.importLocationResults = [];
-    fetchImportLocations(state.importLocation.city);
+    updateImportCounts();
   });
   $("#importLocationInput").addEventListener("change", () => {
     const result = state.importLocationResults[Number($("#importLocationInput").value)];
@@ -3066,7 +3177,7 @@ function bindEvents() {
     const [building = "", floor = "", room = "", cabinet = ""] = result.columns;
     state.importLocation = { city: $("#importCityInput").value, building, floor, room, cabinet };
     rememberImportLocation(state.importLocation);
-    renderImportLocationFields();
+    updateImportCounts();
   });
   $("#requestSizeInput").addEventListener("change", () => changeRequestSize($("#requestSizeInput").value));
   $("#prepareImportButton").addEventListener("click", prepareImport);
