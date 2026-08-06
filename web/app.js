@@ -30,7 +30,6 @@ const RECENT_LOCATIONS_STORAGE_KEY = "auto-eudm-recent-locations";
 const CONCURRENCY_STORAGE_KEY = "auto-eudm-concurrency";
 const IMPORT_COLUMNS_STORAGE_KEY = "auto-eudm-import-columns";
 const IMPORT_LOCATION_STORAGE_KEY = "auto-eudm-import-location";
-const SPREADSHEET_URL_STORAGE_KEY = "auto-eudm-spreadsheet-url";
 const VALIDATION_DEBOUNCE_MS = 1500;
 const MAX_RECENT_LOCATIONS = 8;
 const IMPORT_PREVIEW_ROW_LIMIT = 80;
@@ -274,25 +273,6 @@ function preferredImportLocation() {
     if (hasCompleteLocation(saved)) return saved;
   } catch (_) {}
   return preferredLocation();
-}
-
-function savedSpreadsheetUrl() {
-  if (state.preferences?._saved && typeof state.preferences?.workbook_url === "string") {
-    return state.preferences.workbook_url.trim();
-  }
-  try { return String(localStorage.getItem(SPREADSHEET_URL_STORAGE_KEY) || "").trim(); } catch (_) { return ""; }
-}
-
-function workbookHeadlessEnabled() {
-  return state.preferences?._saved && typeof state.preferences?.workbook_headless === "boolean"
-    ? state.preferences.workbook_headless
-    : false;
-}
-
-function openWebInEudmProfileEnabled() {
-  return state.preferences?._saved && typeof state.preferences?.open_web_in_eudm_profile === "boolean"
-    ? state.preferences.open_web_in_eudm_profile
-    : false;
 }
 
 function validationEnabled(key, fallback = true) {
@@ -1481,14 +1461,11 @@ function openPasteDialog() {
 
 function openSettings() {
   const columns = importColumns() || {};
-  $("#spreadsheetUrlInput").value = savedSpreadsheetUrl();
   $("#spreadsheetUsernameColumnInput").value = columns.username || "Username";
   $("#spreadsheetDeploymentColumnInput").value = columns.deployment_serial || "SN";
   $("#spreadsheetReturnedColumnInput").value = columns.returned_device || "";
   $("#spreadsheetPendingColumnInput").value = columns.pending_return || "OLD Device SN";
   $("#spreadsheetEnabledColumnInput").value = columns.enabled || "";
-  $("#workbookHeadlessInput").checked = workbookHeadlessEnabled();
-  $("#openWebInEudmProfileInput").checked = openWebInEudmProfileEnabled();
   $("#validateQuickImportInput").checked = validationEnabled("validate_quick_import");
   $("#validateWorkbookImportInput").checked = validationEnabled("validate_workbook_import");
   $("#settingsDialog").showModal();
@@ -1976,7 +1953,6 @@ function resetImportDialog() {
   $("#backImportButton").hidden = true;
   $("#prepareImportButton").disabled = true;
   $("#prepareImportButton").textContent = "Review import";
-  $("#deleteWorkbookAfterUseInput").checked = true;
   $("#importError").hidden = true;
   setImportBusy(false);
   state.importLocation = preferredImportLocation();
@@ -2191,11 +2167,10 @@ async function waitForWorkbookImport(jobId, token) {
     const detail = total
       ? `${status.sheet || "ALM Workbook"} · ${completed.toLocaleString()} of ${total.toLocaleString()} rows`
       : "Opening ALM Workbook…";
-    const downloading = ["downloading", "waiting_for_login"].includes(status.state);
     setImportBusy(true, {
-      percent: downloading ? 18 : 28 + scanProgress * 70,
-      title: downloading ? "Downloading ALM Workbook…" : (status.message || "Reading ALM Workbook…"),
-      detail: downloading ? "" : detail,
+      percent: 28 + scanProgress * 70,
+      title: status.message || "Reading ALM Workbook…",
+      detail,
     });
     if (status.state === "ready") return status.workbook;
     if (status.state === "failed") throw new Error(status.error || "The ALM Workbook could not be imported.");
@@ -2318,9 +2293,6 @@ async function saveImportColumnPreferences(columns) {
     concurrency: Number(elements.concurrency.value),
     validate_quick_import: validationEnabled("validate_quick_import"),
     validate_workbook_import: validationEnabled("validate_workbook_import"),
-    workbook_headless: workbookHeadlessEnabled(),
-    open_web_in_eudm_profile: openWebInEudmProfileEnabled(),
-    workbook_url: savedSpreadsheetUrl(),
     import_columns: columns,
   };
   state.preferences = await api("/api/preferences", {
@@ -2340,7 +2312,7 @@ async function mapWorkbookColumns({ persist = true } = {}) {
   }
   const inspection = state.workbookInspection;
   if (!inspection?.import_id) {
-    throw new Error("Choose the ALM Workbook again.");
+    throw new Error("Import the ALM Workbook again.");
   }
   $("#importError").hidden = true;
   $("#importMapColumns").hidden = true;
@@ -2354,7 +2326,6 @@ async function mapWorkbookColumns({ persist = true } = {}) {
       body: JSON.stringify({
         import_id: inspection.import_id,
         columns,
-        delete_after_use: $("#deleteWorkbookAfterUseInput").checked,
       }),
     });
     const token = state.importUploadToken;
@@ -2411,39 +2382,6 @@ async function uploadWorkbook(file) {
     }
   } finally {
     if (token === state.importUploadToken) setImportBusy(false);
-  }
-}
-
-async function downloadSavedWorkbook() {
-  const url = savedSpreadsheetUrl();
-  if (!url) return toast("Add an ALM Workbook link in Settings.", "error");
-  const token = state.importUploadToken + 1;
-  state.importUploadToken = token;
-  $("#importError").hidden = true;
-  $("#prepareImportButton").disabled = true;
-  $("#downloadSheetButton").disabled = true;
-  setImportBusy(true, { percent: 8, title: "Downloading ALM Workbook…", detail: "" });
-  try {
-    const job = await api("/api/import/download", {
-      method: "POST",
-      body: JSON.stringify({
-        url,
-        headless: workbookHeadlessEnabled(),
-        delete_after_use: $("#deleteWorkbookAfterUseInput").checked,
-      }),
-    });
-    const workbook = await waitForWorkbookImport(job.job_id, token);
-    if (workbook && token === state.importUploadToken) showImportedWorkbook(workbook);
-  } catch (error) {
-    if (token === state.importUploadToken) {
-      $("#importError").textContent = error.message;
-      $("#importError").hidden = false;
-    }
-  } finally {
-    if (token === state.importUploadToken) {
-      setImportBusy(false);
-      $("#downloadSheetButton").disabled = false;
-    }
   }
 }
 
@@ -3089,7 +3027,6 @@ function bindEvents() {
   }));
   $("#saveSettingsButton").addEventListener("click", async () => {
     const button = $("#saveSettingsButton");
-    const url = $("#spreadsheetUrlInput").value.trim();
     const columns = {
       username: $("#spreadsheetUsernameColumnInput").value.trim(),
       deployment_serial: $("#spreadsheetDeploymentColumnInput").value.trim(),
@@ -3101,14 +3038,10 @@ function bindEvents() {
       toast("Set the username, deployment serial, and pending return columns.", "error");
       return;
     }
-    if (url && !/^https:\/\//i.test(url)) { toast("Use a full https ALM Workbook link.", "error"); return; }
     const preferences = {
       concurrency: Number(elements.concurrency.value),
       validate_quick_import: $("#validateQuickImportInput").checked,
       validate_workbook_import: $("#validateWorkbookImportInput").checked,
-      workbook_headless: $("#workbookHeadlessInput").checked,
-      open_web_in_eudm_profile: $("#openWebInEudmProfileInput").checked,
-      workbook_url: url,
       import_columns: columns,
     };
     button.disabled = true;
@@ -3117,11 +3050,8 @@ function bindEvents() {
         method: "POST",
         body: JSON.stringify(preferences),
       });
-      if (url) localStorage.setItem(SPREADSHEET_URL_STORAGE_KEY, url);
-      else localStorage.removeItem(SPREADSHEET_URL_STORAGE_KEY);
       localStorage.setItem(IMPORT_COLUMNS_STORAGE_KEY, JSON.stringify(columns));
       localStorage.setItem(CONCURRENCY_STORAGE_KEY, elements.concurrency.value);
-      $("#downloadSheetButton").hidden = !state.config.spreadsheet_import_enabled || !url;
       $("#settingsDialog").close();
       toast("Settings saved.", "success");
     } catch (error) {
@@ -3131,18 +3061,8 @@ function bindEvents() {
     }
   });
   $("#importSheetButton").addEventListener("click", openAlmWorkbookImport);
-  $("#downloadSheetButton").addEventListener("click", () => {
-    if (!savedSpreadsheetUrl()) {
-      openSettings();
-      toast("Add the ALM Workbook link in Settings first.", "error");
-      return;
-    }
-    openAlmWorkbookImport();
-    downloadSavedWorkbook();
-  });
   $("#importDialog").addEventListener("close", () => {
     state.importUploadToken += 1;
-    $("#downloadSheetButton").disabled = false;
     setImportBusy(false);
   });
   $("#workbookInput").addEventListener("change", (event) => {
@@ -3371,11 +3291,6 @@ function bindEvents() {
     if (editable) return;
 
     const code = event.code;
-    if (event.shiftKey && code === "KeyD" && !$("#downloadSheetButton").hidden && !$("#downloadSheetButton").disabled) {
-      event.preventDefault();
-      $("#downloadSheetButton").click();
-      return;
-    }
     if (event.shiftKey && code === "KeyH") {
       event.preventDefault();
       openHistory();
@@ -3424,7 +3339,6 @@ async function init() {
     ]);
     const spreadsheetEnabled = Boolean(state.config.spreadsheet_import_enabled);
     $("#importSheetButton").hidden = !spreadsheetEnabled;
-    $("#downloadSheetButton").hidden = !spreadsheetEnabled || !savedSpreadsheetUrl();
     const spreadsheetSettings = $('[data-settings-tab="spreadsheet"]');
     if (spreadsheetSettings) spreadsheetSettings.hidden = !spreadsheetEnabled;
     configureConcurrency(state.config.concurrency);

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -11,22 +10,16 @@ import json
 from pathlib import Path
 import threading
 import time
-import traceback
 from typing import Any
 import urllib.error
 import urllib.request
 import uuid
+import webbrowser
 
 from . import eudm_inventory_import as inventory
 from . import eudm_request as eudm
 from . import run_reporting
-from .browser_launch import open_url, preference_enabled
 from .eudm_config import AppConfig
-from .web_downloads import (
-    WorkbookDownloadDiagnostics,
-    download_workbook_with_browser,
-    sharepoint_download_url,
-)
 from .web_models import (
     CITIES,
     LOCATION_STATUSES,
@@ -112,10 +105,6 @@ def authenticated_user_id(payload: Any) -> str | None:
 
 def open_existing_server(
     url: str,
-    *,
-    profile: str | None = None,
-    use_profile: bool = False,
-    debug_port: int = 9222,
 ) -> bool:
     """Open a live AutoEUDM server when this process cannot bind its port."""
     try:
@@ -126,7 +115,7 @@ def open_existing_server(
             return False
     except (OSError, urllib.error.URLError):
         return False
-    open_url(url, profile=profile, use_profile=use_profile, debug_port=debug_port)
+    webbrowser.open(url)
     print(f"AutoEUDM is already running at {url}; opening it in your browser.", flush=True)
     return True
 
@@ -380,8 +369,6 @@ class ClientManager:
                 verbose=self.config.verbose,
                 headless=self.config.browser_headless,
                 interactive_browser_auth=False,
-                reuse_existing_profile=preference_enabled(),
-                browser_debug_port=self.config.browser_debug_port,
             )
             with self.lock:
                 self.message = (
@@ -427,11 +414,10 @@ class ClientManager:
                     "Set EUDM_REQUEST_FOR in .env and connect again."
                 )
             # The copied API client is independent of Playwright. Once it has
-            # proven the session and inferred the user, close only the temporary
-            # verification tab (or its private window) instead of leaving it
-            # behind the workspace.
+            # proven the session and inferred the user, close its private
+            # authentication context.
             try:
-                browser.close_auth_page()
+                browser.context.close()
                 run_reporting.event("Closed Chrome after successful EUDM SSO")
             except Exception:
                 run_reporting.event("Could not close Chrome after EUDM SSO")
@@ -439,7 +425,7 @@ class ClientManager:
         except Exception as exc:
             if browser is not None:
                 try:
-                    browser.close_auth_page()
+                    browser.context.close()
                 except Exception:
                     pass
             with self.lock:
@@ -845,8 +831,6 @@ class ImportJob:
     total_rows: int = 0
     workbook: dict[str, Any] | None = None
     error: str | None = None
-    diagnostic_log: str | None = None
-    delete_after_use: bool = True
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def update(
@@ -894,8 +878,6 @@ class ImportJob:
                 "total_rows": self.total_rows,
                 "workbook": self.workbook,
                 "error": self.error,
-                "diagnostic_log": self.diagnostic_log,
-                "delete_after_use": self.delete_after_use,
             }
 
 
@@ -953,9 +935,6 @@ class Application:
             "validate_bulk_serials": True,
             "validate_quick_import": True,
             "validate_workbook_import": True,
-            "workbook_headless": False,
-            "open_web_in_eudm_profile": False,
-            "workbook_url": "",
             "import_columns": {
                 "username": "Username",
                 "deployment_serial": "SN",
@@ -991,19 +970,11 @@ class Application:
             "validate_bulk_serials",
             "validate_quick_import",
             "validate_workbook_import",
-            "workbook_headless",
-            "open_web_in_eudm_profile",
         ):
             if key in raw and not isinstance(raw[key], bool):
                 raise eudm.EUDMError("A settings toggle had an invalid value.")
             if key in raw:
                 values[key] = raw[key]
-
-        if "workbook_url" in raw:
-            workbook_url = str(raw["workbook_url"] or "").strip()
-            if workbook_url:
-                sharepoint_download_url(workbook_url)
-            values["workbook_url"] = workbook_url
 
         if "import_columns" in raw:
             columns = raw["import_columns"]
@@ -1082,64 +1053,17 @@ class Application:
         ).start()
         return job
 
-    def start_remote_import(self, url: str, *, delete_after_use: bool = True) -> ImportJob:
-        job = ImportJob(job_id=uuid.uuid4().hex, filename="sharepoint-workbook.xlsx")
-        job.delete_after_use = delete_after_use
-        with self.import_lock:
-            self.import_jobs[job.job_id] = job
-        threading.Thread(
-            target=self._download_import,
-            args=(job, url),
-            daemon=True,
-        ).start()
-        return job
-
-    def _download_import(self, job: ImportJob, url: str) -> None:
-        job.update(state="downloading", message="Downloading workbook…")
-        diagnostics = WorkbookDownloadDiagnostics(url)
-        job.diagnostic_log = str(diagnostics.path.relative_to(ROOT))
-        print(f"Workbook download diagnostic log: {diagnostics.path}")
-        diagnostics.event("import_job.started", job_id=job.job_id)
-        try:
-            filename, data = download_workbook_with_browser(
-                url,
-                self.config.browser_profile,
-                job=job,
-                diagnostics=diagnostics,
-                headless=bool(self.preferences_json().get("workbook_headless", False)),
-                reuse_existing_profile=bool(
-                    self.preferences_json().get("open_web_in_eudm_profile", False)
-                ),
-                debug_port=self.config.browser_debug_port,
-            )
-            job.filename = filename
-            encoded = base64.b64encode(data).decode("ascii")
-            diagnostics.event(
-                "import_job.download_ready",
-                filename=filename,
-                byte_count=len(data),
-            )
-            self._inspect_import(job, encoded)
-        except eudm.EUDMError as exc:
-            diagnostics.event("import_job.failed", error=str(exc), traceback=traceback.format_exc())
-            job.fail(f"{exc} See {job.diagnostic_log}.")
-        except Exception as exc:
-            diagnostics.event("import_job.failed", error=repr(exc), traceback=traceback.format_exc())
-            job.fail(f"Could not download the workbook from SharePoint. See {job.diagnostic_log}.")
-
     def start_mapped_import(
         self,
         import_id: str,
         columns: dict[str, Any],
-        *,
-        delete_after_use: bool = True,
     ) -> ImportJob:
         with self.import_lock:
-            pending = self.pending_imports.pop(import_id, None) if delete_after_use else self.pending_imports.get(import_id)
+            pending = self.pending_imports.pop(import_id, None)
         if not pending:
             raise eudm.EUDMError("That workbook import expired. Choose the file again.")
         filename, encoded = pending
-        job = ImportJob(job_id=uuid.uuid4().hex, filename=filename, delete_after_use=delete_after_use)
+        job = ImportJob(job_id=uuid.uuid4().hex, filename=filename)
         with self.import_lock:
             self.import_jobs[job.job_id] = job
         threading.Thread(target=self._read_import, args=(job, encoded, inventory.columns_from_mapping(columns)), daemon=True).start()

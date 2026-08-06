@@ -219,15 +219,6 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
             )
             self._json(job.to_json(), 202)
             return
-        if path == "/api/import/download":
-            if not self.app.config.spreadsheet_import_enabled:
-                raise eudm.EUDMError("Spreadsheet import is disabled by this AutoEUDM environment.")
-            job = self.app.start_remote_import(
-                str(payload.get("url", "")),
-                delete_after_use=bool(payload.get("delete_after_use", True)),
-            )
-            self._json(job.to_json(), 202)
-            return
         if path == "/api/import/map":
             if not self.app.config.spreadsheet_import_enabled:
                 raise eudm.EUDMError("Spreadsheet import is disabled by this AutoEUDM environment.")
@@ -237,7 +228,6 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
             job = self.app.start_mapped_import(
                 str(payload.get("import_id", "")),
                 columns,
-                delete_after_use=bool(payload.get("delete_after_use", True)),
             )
             self._json(job.to_json(), 202)
             return

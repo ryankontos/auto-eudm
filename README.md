@@ -188,27 +188,10 @@ location, and pending-return serials are sent as Deployed - Pending Return. New
 deployments and returned devices have no assumed status: choose one for every
 included row (or use the section bulk selector) before adding them to the queue.
 
-In **Settings → ALM Workbook**, you can save a SharePoint or OneDrive workbook
-link. AutoEUDM opens a fresh Chrome workbook window, waits for Excel Online and
-any required sign-in to finish, then uses Excel’s **Make a copy → Download a
-copy** flow. It retries that menu download every three seconds for up to one
-minute. Chrome closes the temporary workbook tab/window as soon as the completed workbook has been verified. The workbook
-stays in Playwright's temporary download area while it is mapped and read; it
-is never copied to Downloads or kept as a permanent local file.
-
-Every attempt to download a saved ALM Workbook also writes a dedicated
-`logs/*-alm-workbook-download.log` diagnostic file, even when `EUDM_LOGGING`
-is disabled. It records the browser path, navigation events, unredacted URLs,
-and page HTML so a failed SharePoint flow can be diagnosed from another
-computer. It does not export browser cookies or record password keystrokes.
-
-The same settings tab lets you set the headings for username, deployment
+**Settings → ALM Workbook** stores the headings for username, deployment
 serial, returned device, pending return, and the optional TRUE/FALSE column.
-The General settings tab can also route command-launcher pages through the
-dedicated EUDM Chrome profile. This keeps AutoEUDM and the temporary EUDM
-verification page in the same Chrome window; verification uses a new tab and
-closes only that tab when it finishes. Web settings are stored in
-`results/web-settings.json`, so they survive browser and AutoEUDM restarts.
+Web settings are stored in `results/web-settings.json`, so they survive browser
+and AutoEUDM restarts.
 
 The web workspace verifies the authenticated EUDM session every 30 seconds
 with a read-only API request. If SSO has expired, it immediately switches to a

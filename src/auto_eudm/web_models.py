@@ -431,32 +431,45 @@ class WorkbookImport:
                 except eudm.EUDMError:
                     continue
                 max_column = max(sheet.max_column or 1, date_index, *indexes.values())
-                previous_date = None
-                previous_fill = None
+                current_date = None
+                current_fill = None
                 date_group = 0
-                for values in sheet.iter_rows(min_row=header_row + 1, min_col=1, max_col=max_column):
+                for row_offset, values in enumerate(
+                    sheet.iter_rows(min_row=header_row + 1, min_col=1, max_col=max_column),
+                    start=1,
+                ):
                     processed_rows += 1
                     if on_progress and (
                         processed_rows == total_rows or processed_rows % 150 == 0
                     ):
                         on_progress(sheet.title, processed_rows, total_rows)
-                    deployment_date = inventory.normalize_date(
-                        values[date_index - 1].value, workbook.epoch
+                    row_number = getattr(values[0], "row", header_row + row_offset)
+                    date_cell = values[date_index - 1]
+                    explicit_date = inventory.normalize_date(
+                        date_cell.value, workbook.epoch
                     )
-                    if deployment_date is None:
-                        previous_date = None
-                        previous_fill = None
+                    if explicit_date is not None:
+                        fill_key = inventory.background_fill_key(date_cell)
+                        if explicit_date != current_date:
+                            date_group = 1
+                        elif fill_key != current_fill:
+                            date_group += 1
+                        current_date = explicit_date
+                        current_fill = fill_key
+                        deployment_date = explicit_date
+                    elif current_date is not None and any(
+                        inventory.clean_text(cell.value)
+                        for index, cell in enumerate(values)
+                        if index != date_index - 1
+                    ):
+                        # Merged/continued date cells are blank after the
+                        # first row; retain their date section and fill.
+                        deployment_date = current_date
+                    else:
                         continue
-                    fill_key = inventory.background_fill_key(values[date_index - 1])
-                    if deployment_date != previous_date:
-                        date_group = 1
-                    elif fill_key != previous_fill:
-                        date_group += 1
-                    previous_date = deployment_date
-                    previous_fill = fill_key
                     rows.append(
                         inventory.SheetRow(
-                            row_number=values[0].row,
+                            row_number=row_number,
                             deployment_date=deployment_date,
                             username=inventory.username_for(values, indexes["username"]),
                             deployment_serial=inventory.clean_text(values[indexes["deployment_serial"] - 1].value) if indexes["deployment_serial"] else None,
@@ -469,6 +482,7 @@ class WorkbookImport:
                                 values[indexes["enabled"] - 1].value
                             ) if indexes["enabled"] else True,
                             date_group=date_group,
+                            returned_device_column_present=bool(indexes["returned_device"]),
                         )
                     )
                 if rows:
@@ -522,7 +536,10 @@ class WorkbookImport:
                             {
                                 "row_number": row.row_number,
                                 "username": row.username or "",
-                                "missing_returned": not inventory.looks_like_serial(row.returned_device_serial),
+                                "missing_returned": (
+                                    row.returned_device_column_present
+                                    and not inventory.looks_like_serial(row.returned_device_serial)
+                                ),
                                 "missing_pending": not inventory.looks_like_serial(row.pending_return_serial),
                             }
                             for row in warning_rows

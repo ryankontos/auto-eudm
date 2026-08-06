@@ -36,13 +36,9 @@
           <span class="tool-icon import-icon" aria-hidden="true">↓</span>
           <span><strong>Quick import</strong><small>Add devices as you go</small></span>
         </button>
-        <button id="downloadSheetButton" class="tool-button" type="button" hidden>
-          <span class="tool-icon import-icon" aria-hidden="true">↓</span>
-          <span><strong>Download ALM Workbook</strong><small>Current SharePoint version</small></span>
-        </button>
         <button id="importSheetButton" class="tool-button" type="button">
           <span class="tool-icon import-icon" aria-hidden="true">↓</span>
-          <span><strong>Choose ALM Workbook</strong><small>Import a local spreadsheet</small></span>
+          <span><strong>Import ALM Workbook</strong><small>Import a local spreadsheet</small></span>
         </button>
       </div>
 
@@ -78,7 +74,7 @@
 
       <div id="queueEmpty" class="empty-state">
         <h2>Build a request queue</h2>
-        <p>Add a request, import serial/user pairs, or choose an ALM Workbook.</p>
+        <p>Add a request, import serial/user pairs, or import an ALM Workbook.</p>
       </div>
 
       <div id="queueTableWrap" class="queue-table-wrap" hidden>
@@ -303,7 +299,7 @@
         <div id="importFileChooser">
           <label class="file-drop" for="workbookInput">
             <span class="file-symbol" aria-hidden="true">↓</span>
-            <strong>Choose an ALM Workbook</strong>
+            <strong>Import an ALM Workbook</strong>
             <small>.xlsx or .xlsm, up to 100 MB</small>
             <input id="workbookInput" type="file" accept=".xlsx,.xlsm">
           </label>
@@ -317,7 +313,6 @@
           <div class="import-progress" aria-hidden="true"><span id="importBusyBar"></span></div>
           <span id="importBusyPercent" class="import-progress-percent">0%</span>
         </div>
-        <label class="settings-checkbox import-cleanup-option"><input id="deleteWorkbookAfterUseInput" type="checkbox" checked><span>Delete after use</span></label>
         <div id="importMapColumns" hidden>
           <div class="import-file-row">
             <div><strong id="importMapFilename"></strong><small>Choose the columns in this workbook.</small></div>
@@ -419,15 +414,12 @@
             <option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option><option value="15">15</option><option value="20">20</option><option value="25">25</option><option value="30">30</option><option value="40">40</option><option value="50">50</option>
           </select>
         </label>
-        <label class="settings-checkbox"><input id="openWebInEudmProfileInput" type="checkbox"><span>Open the AutoEUDM website in the EUDM Chrome profile</span></label>
       </section>
       <section data-settings-panel="validation" hidden>
         <label class="settings-checkbox"><input id="validateQuickImportInput" type="checkbox"><span>Verify serials and users in Quick import</span></label>
         <label class="settings-checkbox"><input id="validateWorkbookImportInput" type="checkbox"><span>Verify serials and users in ALM Workbook imports</span></label>
       </section>
       <section data-settings-panel="spreadsheet" hidden>
-        <label>ALM Workbook link<input id="spreadsheetUrlInput" type="url" placeholder="SharePoint or OneDrive link"></label>
-        <label class="settings-checkbox"><input id="workbookHeadlessInput" type="checkbox"><span>Try background download first; open Chrome if needed</span></label>
         <div class="settings-column-grid">
           <label>Username column<input id="spreadsheetUsernameColumnInput" type="text" placeholder="Username"></label>
           <label>Deployment serial column<input id="spreadsheetDeploymentColumnInput" type="text" placeholder="SN"></label>
@@ -447,8 +439,7 @@
       <div class="shortcut-list">
         <div><span>New single-device request</span><kbd>⌥ / Ctrl</kbd><kbd>N</kbd></div>
         <div><span>Quick import</span><kbd>⌥ / Ctrl</kbd><kbd>I</kbd></div>
-        <div><span>Choose ALM Workbook</span><kbd>⌥ / Ctrl</kbd><kbd>O</kbd></div>
-        <div><span>Download saved ALM Workbook</span><kbd>⌥ / Ctrl</kbd><kbd>Shift</kbd><kbd>D</kbd></div>
+        <div><span>Import ALM Workbook</span><kbd>⌥ / Ctrl</kbd><kbd>O</kbd></div>
         <div><span>Review request queue</span><kbd>⌥ / Ctrl</kbd><kbd>Enter</kbd></div>
         <div><span>Request history</span><kbd>⌥ / Ctrl</kbd><kbd>Shift</kbd><kbd>H</kbd></div>
         <div><span>Settings</span><kbd>⌥ / Ctrl</kbd><kbd>,</kbd></div>

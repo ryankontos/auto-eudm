@@ -6,9 +6,9 @@ from __future__ import annotations
 import argparse
 import socket
 import threading
+import webbrowser
 
 from .bootstrap import ensure_runtime
-from .browser_launch import open_url
 from .eudm_config import AppConfig
 from . import eudm_request as eudm
 from . import run_reporting
@@ -70,12 +70,7 @@ Examples:
         server = AutoEUDMServer((args.host, args.port), app)
     except OSError as exc:
         if exc.errno in {48, 98}:
-            if not args.no_open and open_existing_server(
-                url,
-                profile=config.browser_profile,
-                use_profile=bool(app.preferences_json().get("open_web_in_eudm_profile", False)),
-                debug_port=config.browser_debug_port,
-            ):
+            if not args.no_open and open_existing_server(url):
                 return 0
             raise eudm.EUDMError(
                 f"Port {args.port} is already in use. The web UI may already be open, "
@@ -88,15 +83,7 @@ Examples:
         flush=True,
     )
     if not args.no_open:
-        threading.Timer(
-            0.5,
-            lambda: open_url(
-                url,
-                profile=config.browser_profile,
-                use_profile=bool(app.preferences_json().get("open_web_in_eudm_profile", False)),
-                debug_port=config.browser_debug_port,
-            ),
-        ).start()
+        threading.Timer(0.5, lambda: webbrowser.open(url)).start()
     try:
         server.serve_forever(poll_interval=0.25)
     except KeyboardInterrupt:

@@ -65,6 +65,7 @@ class SheetRow:
     marked_red: bool
     enabled: bool
     date_group: int = 1
+    returned_device_column_present: bool = True
 
 
 @dataclass(frozen=True)
@@ -109,6 +110,21 @@ def find_column_indexes(sheet: Any, columns: ImportColumns) -> tuple[int, dict[s
         indexes = {key: found.get(title) for key, title in targets.items()}
         if not indexes["username"] or not indexes["deployment_serial"] or not indexes["pending_return"]:
             continue
+        if not indexes["enabled"] and not columns.enabled:
+            # The live ALM sheet normally calls this column "Attend". Use it
+            # automatically when no custom TRUE/FALSE heading was configured;
+            # otherwise non-attendees look like real users to the warning and
+            # import preview.
+            for title in (
+                "attend",
+                "attended",
+                "attendance",
+                "eligible",
+                "enabled",
+            ):
+                if title in found:
+                    indexes["enabled"] = found[title]
+                    break
         date_index = next((found[title] for title in date_titles if title in found), None)
         if not date_index:
             continue
@@ -132,10 +148,22 @@ def clean_text(value: Any) -> str | None:
 
 
 def enabled_column_allows(value: Any) -> bool:
-    """An optional TRUE/FALSE column; only an explicit false excludes a row."""
+    """Treat explicit non-attendance markers as excluded rows."""
     if value is False:
         return False
-    return str(value).strip().casefold() != "false"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value != 0
+    return str(value).strip().casefold() not in {
+        "false",
+        "no",
+        "n",
+        "0",
+        "absent",
+        "not attended",
+        "not attending",
+        "no show",
+        "no-show",
+    }
 
 
 def looks_like_serial(value: str | None) -> bool:
@@ -272,26 +300,39 @@ def load_sheet(path: Path, columns: ImportColumns | None = None) -> tuple[str, l
         header_row, indexes, date_index = find_column_indexes(sheet, columns or ImportColumns())
         max_column = max(sheet.max_column or 1, date_index, *indexes.values())
         rows: list[SheetRow] = []
-        previous_date: date | None = None
-        previous_fill: tuple[Any, ...] | None = None
+        current_date: date | None = None
+        current_fill: tuple[Any, ...] | None = None
         date_group = 0
-        for values in sheet.iter_rows(min_row=header_row + 1, min_col=1, max_col=max_column):
-            deployment_date = normalize_date(values[date_index - 1].value, workbook.epoch)
-            if deployment_date is None:
-                previous_date = None
-                previous_fill = None
+        for row_offset, values in enumerate(
+            sheet.iter_rows(min_row=header_row + 1, min_col=1, max_col=max_column),
+            start=1,
+        ):
+            row_number = getattr(values[0], "row", header_row + row_offset)
+            date_cell = values[date_index - 1]
+            explicit_date = normalize_date(date_cell.value, workbook.epoch)
+            if explicit_date is not None:
+                fill_key = background_fill_key(date_cell)
+                if explicit_date != current_date:
+                    date_group = 1
+                elif fill_key != current_fill:
+                    date_group += 1
+                current_date = explicit_date
+                current_fill = fill_key
+                deployment_date = explicit_date
+            elif current_date is not None and any(
+                clean_text(cell.value)
+                for index, cell in enumerate(values)
+                if index != date_index - 1
+            ):
+                # Excel often stores a date once for a vertically merged or
+                # continued block. Carry the date and Col A fill forward for
+                # populated rows beneath it.
+                deployment_date = current_date
+            else:
                 continue
-            fill_key = background_fill_key(values[date_index - 1])
-            if deployment_date != previous_date:
-                date_group = 1
-            elif fill_key != previous_fill:
-                date_group += 1
-            previous_date = deployment_date
-            previous_fill = fill_key
-            username = username_for(values)
             rows.append(
                 SheetRow(
-                    row_number=values[0].row,
+                    row_number=row_number,
                     deployment_date=deployment_date,
                     username=username_for(values, indexes["username"]),
                     deployment_serial=clean_text(values[indexes["deployment_serial"] - 1].value) if indexes["deployment_serial"] else None,
@@ -302,6 +343,7 @@ def load_sheet(path: Path, columns: ImportColumns | None = None) -> tuple[str, l
                         values[indexes["enabled"] - 1].value
                     ) if indexes["enabled"] else True,
                     date_group=date_group,
+                    returned_device_column_present=bool(indexes["returned_device"]),
                 )
             )
         if not rows:
@@ -382,7 +424,10 @@ def attended_rows_missing_return_serials(rows: Iterable[SheetRow]) -> list[Sheet
         and not row.marked_red
         and row.username
         and (
-            not looks_like_serial(row.returned_device_serial)
+            (
+                row.returned_device_column_present
+                and not looks_like_serial(row.returned_device_serial)
+            )
             or not looks_like_serial(row.pending_return_serial)
         )
     ]
