@@ -32,6 +32,15 @@ from .web_models import (
 
 ROOT = Path(__file__).resolve().parents[2]
 
+DEVICE_MODEL_USER_STATUSES = frozenset({
+    "Deployed - New Stock",
+    "Deployed - Existing Stock",
+})
+DEVICE_MODEL_LOCATION_STATUSES = frozenset({
+    "Pending Decom",
+    "Pending Rebuild",
+})
+
 
 def populate_spec(
     client: Any,
@@ -73,14 +82,37 @@ def populate_spec(
     )
 
 
-def display_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        {
-            "value": str(row.get("dataValue", "")),
-            "columns": [str(value) for value in row.get("displayValue", [])],
-        }
-        for row in rows
-    ]
+def display_rows(
+    rows: list[dict[str, Any]],
+    *,
+    include_device_type: bool = False,
+) -> list[dict[str, Any]]:
+    displayed: list[dict[str, Any]] = []
+    for row in rows:
+        value = str(row.get("dataValue", ""))
+        columns = [str(item) for item in row.get("displayValue", [])]
+        result = {"value": value, "columns": columns}
+        if include_device_type:
+            device_type = ""
+            for key in (
+                "deviceType",
+                "device_type",
+                "modelName",
+                "model_name",
+                "typeName",
+                "type_name",
+            ):
+                candidate = str(row.get(key, "") or "").strip()
+                if candidate:
+                    device_type = candidate
+                    break
+            if not device_type and len(columns) > 1:
+                candidate = columns[1].strip()
+                if candidate and candidate.casefold() not in {value.casefold(), ""}:
+                    device_type = candidate
+            result["device_type"] = device_type
+        displayed.append(result)
+    return displayed
 
 
 def authenticated_user_id(payload: Any) -> str | None:
@@ -225,7 +257,10 @@ class SearchProbe:
                 serial_field,
                 query,
             )
-            return display_rows(eudm.option_data(events, device_table["id"]))
+            return display_rows(
+                eudm.option_data(events, device_table["id"]),
+                include_device_type=True,
+            )
 
     def users(self, query: str, returning: bool = False) -> list[dict[str, Any]]:
         with self.lock:
@@ -935,6 +970,7 @@ class Application:
             "validate_bulk_serials": True,
             "validate_quick_import": True,
             "validate_workbook_import": True,
+            "device_model_mappings": [],
             "import_columns": {
                 "username": "Username",
                 "deployment_serial": "SN",
@@ -975,6 +1011,39 @@ class Application:
                 raise eudm.EUDMError("A settings toggle had an invalid value.")
             if key in raw:
                 values[key] = raw[key]
+
+        if "device_model_mappings" in raw:
+            mappings = raw["device_model_mappings"]
+            if not isinstance(mappings, list):
+                raise eudm.EUDMError("Device model mappings must be a list.")
+            normalised_mappings: list[dict[str, str]] = []
+            seen_models: set[str] = set()
+            for mapping in mappings:
+                if not isinstance(mapping, dict):
+                    raise eudm.EUDMError("Each device model mapping must be an object.")
+                model_name = " ".join(str(mapping.get("model_name", "") or "").split())
+                user_status = str(mapping.get("user_status", "") or "").strip()
+                location_status = str(mapping.get("location_status", "") or "").strip()
+                if not model_name:
+                    raise eudm.EUDMError("Every device model mapping needs a model name.")
+                model_key = model_name.casefold()
+                if model_key in seen_models:
+                    raise eudm.EUDMError(f"The device model '{model_name}' is listed more than once.")
+                if user_status not in DEVICE_MODEL_USER_STATUSES:
+                    raise eudm.EUDMError(
+                        f"'{user_status or 'Blank'}' is not a valid user deployment status for {model_name}."
+                    )
+                if location_status not in DEVICE_MODEL_LOCATION_STATUSES:
+                    raise eudm.EUDMError(
+                        f"'{location_status or 'Blank'}' is not a valid location deployment status for {model_name}."
+                    )
+                seen_models.add(model_key)
+                normalised_mappings.append({
+                    "model_name": model_name,
+                    "user_status": user_status,
+                    "location_status": location_status,
+                })
+            values["device_model_mappings"] = normalised_mappings
 
         if "import_columns" in raw:
             columns = raw["import_columns"]

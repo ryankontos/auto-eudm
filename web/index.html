@@ -58,8 +58,8 @@
         </div>
       </div>
 
-      <div id="connectionGate" class="connection-gate" role="alert" hidden>
-        <div class="connection-gate-icon" aria-hidden="true">!</div>
+      <div id="connectionGate" class="connection-gate queue-alert" role="alert" hidden>
+        <div class="connection-gate-icon queue-alert-icon" aria-hidden="true">!</div>
         <div class="connection-gate-copy">
           <strong id="connectionGateTitle">Connect to EUDM before submitting</strong>
           <p id="connectionGateMessage">An authenticated EUDM connection is required before requests can be submitted.</p>
@@ -67,8 +67,8 @@
         <button id="connectionGateButton" class="button primary compact" type="button">Connect to EUDM</button>
       </div>
 
-      <div id="queueValidationNotice" class="queue-validation-notice" role="alert" hidden>
-        <div class="queue-validation-icon" aria-hidden="true">!</div>
+      <div id="queueValidationNotice" class="queue-validation-notice queue-alert" role="alert" hidden>
+        <div class="queue-validation-icon queue-alert-icon" aria-hidden="true">!</div>
         <strong id="queueValidationMessage"></strong>
       </div>
 
@@ -142,7 +142,10 @@
 
         <div id="statusFields" class="form-field">
           <label for="statusInput">Change status to <em>Required</em></label>
-          <select id="statusInput"></select>
+          <div class="status-select-row">
+            <select id="statusInput"></select>
+            <button id="modelStatusButton" class="button secondary compact" type="button" hidden title="Suggest a status from the checked device model">Suggest</button>
+          </div>
         </div>
 
         <div id="userFields">
@@ -401,6 +404,7 @@
         <button class="settings-tab active" data-settings-tab="run" type="button">General</button>
         <button class="settings-tab" data-settings-tab="validation" type="button">Validation</button>
         <button class="settings-tab" data-settings-tab="spreadsheet" type="button">ALM Workbook</button>
+        <button class="settings-tab" data-settings-tab="models" type="button">Device models</button>
       </div>
       <section data-settings-panel="run">
         <label>Appearance
@@ -428,7 +432,31 @@
           <label>TRUE/FALSE column<input id="spreadsheetEnabledColumnInput" type="text" placeholder="Optional"></label>
         </div>
       </section>
+      <section data-settings-panel="models" hidden>
+        <p class="settings-help">Select the model number you checked on the device when importing. Each model can choose one status for user deployments and one for location deployments.</p>
+        <div id="deviceModelMappings" class="device-model-mappings"></div>
+        <button id="addDeviceModelMappingButton" class="button secondary compact" type="button">Add model mapping</button>
+      </section>
       <div class="modal-actions"><button class="button secondary" value="cancel">Cancel</button><button id="saveSettingsButton" class="button primary" value="default" type="button">Save settings</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="modelStatusDialog" class="modal">
+    <form method="dialog" class="modal-card model-status-card">
+      <div class="modal-header"><h2>Suggest status</h2><button class="icon-button" value="cancel" aria-label="Close">×</button></div>
+      <p id="modelStatusIntro" class="model-status-intro"></p>
+      <div id="modelStatusDestinationFields" class="model-status-destination" hidden>
+        <span class="model-status-label">Destination</span>
+        <label class="radio-choice"><input type="radio" name="modelStatusDestination" value="user"><span>Deploy to a user</span></label>
+        <label class="radio-choice"><input type="radio" name="modelStatusDestination" value="location"><span>Deploy to a location</span></label>
+      </div>
+      <div id="modelStatusModelChoices" class="model-status-models"></div>
+      <div id="modelStatusSuggestion" class="model-status-suggestion" role="status" aria-live="polite"></div>
+      <div id="modelStatusError" class="inline-error" hidden></div>
+      <div class="modal-actions">
+        <button class="button secondary" value="cancel">Cancel</button>
+        <button id="applyModelStatusButton" class="button primary" value="default" type="button" disabled>Apply status</button>
+      </div>
     </form>
   </dialog>
 

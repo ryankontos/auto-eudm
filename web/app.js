@@ -22,6 +22,7 @@ const state = {
   locationLoading: new Map(),
   recordedLocationJobs: new Set(),
   newRequest: null,
+  modelStatusContext: null,
   validationTimers: new Map(),
 };
 
@@ -39,6 +40,16 @@ const ALM_IMPORT_STATUS_OPTIONS = {
     { value: "Deployed - Existing Stock", label: "Deployed - Existing Stock" },
   ],
   "Returned devices": [
+    { value: "Pending Decom", label: "Pending Decom" },
+    { value: "Pending Rebuild", label: "Pending Rebuild" },
+  ],
+};
+const DEVICE_MODEL_STATUS_OPTIONS = {
+  user: [
+    { value: "Deployed - New Stock", label: "Deployed - New Stock" },
+    { value: "Deployed - Existing Stock", label: "Deployed - Existing Stock" },
+  ],
+  location: [
     { value: "Pending Decom", label: "Pending Decom" },
     { value: "Pending Rebuild", label: "Pending Rebuild" },
   ],
@@ -282,6 +293,223 @@ function validationEnabled(key, fallback = true) {
   return fallback;
 }
 
+function normaliseModelName(value) {
+  return String(value || "").trim().replace(/\s+/g, " ");
+}
+
+function deviceModelMappings() {
+  return Array.isArray(state.preferences?.device_model_mappings)
+    ? state.preferences.device_model_mappings.filter((mapping) => mapping && typeof mapping === "object")
+    : [];
+}
+
+function modelMappingForName(name) {
+  const key = normaliseModelName(name).toLowerCase();
+  return deviceModelMappings().find((mapping) => normaliseModelName(mapping.model_name).toLowerCase() === key) || null;
+}
+
+function modelStatusOptions(kind) {
+  return DEVICE_MODEL_STATUS_OPTIONS[kind] || [];
+}
+
+function modelStatusLabel(status) {
+  return modelStatusOptions("user").concat(modelStatusOptions("location"))
+    .find((option) => option.value === status)?.label || status;
+}
+
+function renderDeviceModelMappings(mappings = deviceModelMappings()) {
+  const container = $("#deviceModelMappings");
+  if (!container) return;
+  if (!mappings.length) {
+    container.innerHTML = '<p class="device-model-mappings-empty">No model mappings yet. Add the model numbers you use during imports.</p>';
+    return;
+  }
+  const optionsFor = (kind, selected) => modelStatusOptions(kind).map((option) =>
+    `<option value="${escapeHtml(option.value)}" ${option.value === selected ? "selected" : ""}>${escapeHtml(option.label)}</option>`,
+  ).join("");
+  container.innerHTML = mappings.map((mapping, index) => `
+    <div class="device-model-mapping" data-model-mapping-row="${index}">
+      <label>Model number
+        <input data-model-mapping-name type="text" value="${escapeHtml(normaliseModelName(mapping.model_name))}" placeholder="For example, MacBook Air A2337">
+      </label>
+      <label>User deployments
+        <select data-model-mapping-user>
+          ${optionsFor("user", mapping.user_status)}
+        </select>
+      </label>
+      <label>Location deployments
+        <select data-model-mapping-location>
+          ${optionsFor("location", mapping.location_status)}
+        </select>
+      </label>
+      <button class="icon-button" data-model-mapping-remove="${index}" type="button" aria-label="Remove model mapping" title="Remove model mapping">×</button>
+    </div>
+  `).join("");
+}
+
+function readDeviceModelMappings() {
+  return $$("[data-model-mapping-row]").map((row) => ({
+    model_name: normaliseModelName(row.querySelector("[data-model-mapping-name]")?.value),
+    user_status: row.querySelector("[data-model-mapping-user]")?.value || "",
+    location_status: row.querySelector("[data-model-mapping-location]")?.value || "",
+  }));
+}
+
+function validateDeviceModelMappings(mappings) {
+  const seen = new Set();
+  for (const mapping of mappings) {
+    if (!mapping.model_name) return "Enter a model number for every device model mapping, or remove the empty row.";
+    const key = mapping.model_name.toLowerCase();
+    if (seen.has(key)) return `The device model '${mapping.model_name}' is listed more than once.`;
+    seen.add(key);
+    if (!modelStatusOptions("user").some((option) => option.value === mapping.user_status)) {
+      return `Choose a user deployment status for ${mapping.model_name}.`;
+    }
+    if (!modelStatusOptions("location").some((option) => option.value === mapping.location_status)) {
+      return `Choose a location deployment status for ${mapping.model_name}.`;
+    }
+  }
+  return "";
+}
+
+function modelStatusDestination() {
+  return $("#modelStatusDestinationFields")?.hidden
+    ? state.modelStatusContext?.kind || ""
+    : $("input[name='modelStatusDestination']:checked")?.value || "";
+}
+
+function setModelStatusError(message = "") {
+  const error = $("#modelStatusError");
+  error.hidden = !message;
+  error.textContent = message;
+}
+
+function updateModelStatusDialog() {
+  const context = state.modelStatusContext;
+  if (!context) return;
+  const destination = modelStatusDestination();
+  const selects = $$(`[data-model-status-model]`);
+  context.selections = selects.map((select) => select.value);
+  const suggestion = $("#modelStatusSuggestion");
+  const applyButton = $("#applyModelStatusButton");
+  setModelStatusError("");
+  suggestion.innerHTML = "";
+  applyButton.disabled = true;
+
+  if (!destination) {
+    suggestion.textContent = "Choose whether this is a user or location deployment.";
+    return;
+  }
+  if (!deviceModelMappings().length) {
+    suggestion.textContent = "Add a model mapping in Settings → Device models first.";
+    return;
+  }
+  if (context.selections.length !== context.targets.length || context.selections.some((selection) => !selection)) {
+    suggestion.textContent = context.targets.length > 1
+      ? "Select the checked model number for every serial."
+      : "Select the checked model number for this serial.";
+    return;
+  }
+  const mappings = context.selections.map((selection) => modelMappingForName(selection));
+  if (mappings.some((mapping) => !mapping)) {
+    setModelStatusError("One of the selected model mappings is no longer available. Close this dialog and try again.");
+    return;
+  }
+  const statuses = mappings.map((mapping) => mapping[destination === "user" ? "user_status" : "location_status"]);
+  const uniqueStatuses = [...new Set(statuses)];
+  if (uniqueStatuses.length > 1) {
+    setModelStatusError("These model mappings suggest different statuses. A request with multiple serials has one shared status, so choose models that agree or split the request.");
+    return;
+  }
+  const status = uniqueStatuses[0];
+  suggestion.innerHTML = `Suggested status: <strong>${escapeHtml(modelStatusLabel(status))}</strong>`;
+  applyButton.disabled = false;
+}
+
+function renderModelStatusDialog() {
+  const context = state.modelStatusContext;
+  if (!context) return;
+  const destinationFields = $("#modelStatusDestinationFields");
+  destinationFields.hidden = Boolean(context.kind);
+  if (context.kind) {
+    $$('input[name="modelStatusDestination"]').forEach((input) => {
+      input.checked = input.value === context.kind;
+    });
+  } else {
+    $$('input[name="modelStatusDestination"]').forEach((input) => { input.checked = false; });
+  }
+  $("#modelStatusIntro").textContent = context.kind
+    ? `Select the model number you checked for ${context.targets.length === 1 ? "this serial" : "each serial"}. Any EUDM device name shown is an indication only; the configured status is based on your model selection.`
+    : "Select the model number you checked, then choose the deployment destination. Any EUDM device name shown is an indication only and is not used to choose the status.";
+  const mappings = deviceModelMappings();
+  const container = $("#modelStatusModelChoices");
+  if (!mappings.length) {
+    container.innerHTML = '<p class="device-model-mappings-empty">No model mappings are configured. Add them in Settings → Device models first.</p>';
+  } else {
+    const options = [
+      '<option value="">Choose a checked model</option>',
+      ...mappings.map((mapping) => `<option value="${escapeHtml(normaliseModelName(mapping.model_name))}">${escapeHtml(normaliseModelName(mapping.model_name))}</option>`),
+    ].join("");
+    container.innerHTML = context.targets.map((target, index) => `
+      <label class="model-status-model-row">
+        <span><strong>${escapeHtml(target.serial || "Serial number")}</strong>${target.currentStatus ? `<small>Current: ${escapeHtml(target.currentStatus)}</small>` : ""}${target.deviceType ? `<small class="model-status-eudm-hint">EUDM indication: ${escapeHtml(target.deviceType)}</small>` : ""}</span>
+        <select data-model-status-model="${index}" aria-label="Model number for ${escapeHtml(target.serial || "serial number")}" ${mappings.length ? "" : "disabled"}>
+          ${options}
+        </select>
+      </label>
+    `).join("");
+  }
+  updateModelStatusDialog();
+}
+
+function openModelStatusDialog({ targets, kind = null, apply }) {
+  const normalisedTargets = (targets || []).map((target) => ({
+    serial: String(target.serial || "").trim(),
+    currentStatus: target.currentStatus || "",
+    deviceType: normaliseModelName(target.deviceType),
+  })).filter((target) => target.serial);
+  if (!normalisedTargets.length) return;
+  state.modelStatusContext = {
+    targets: normalisedTargets,
+    kind,
+    apply,
+    selections: [],
+  };
+  renderModelStatusDialog();
+  $("#modelStatusDialog").showModal();
+}
+
+function openModelStatusForRequest() {
+  const request = selectedRequest();
+  if (!request || !request.serials.length) return;
+  const kind = request.kind === "user" ? "user" : "location";
+  openModelStatusDialog({
+    kind,
+    targets: request.serials.map((serial) => ({
+      serial,
+      currentStatus: request.status,
+      deviceType: request.kind === "bulk_location"
+        ? request.eudm_device_types?.[serial]
+        : request.eudm_device_type,
+    })),
+    apply: (status) => {
+      applyInferredKind(request, status, request.kind === "bulk_location");
+      renderAll();
+    },
+  });
+}
+
+function updateModelStatusButton(request = selectedRequest()) {
+  const button = $("#modelStatusButton");
+  if (!button) return;
+  button.hidden = !request?.serials?.length;
+  if (request) {
+    button.title = request.kind === "bulk_location"
+      ? "Choose a checked model number for each serial and suggest one shared status"
+      : "Choose the checked model number and suggest a status";
+  }
+}
+
 function rememberImportLocation(location) {
   if (!hasCompleteLocation(location)) return;
   try { localStorage.setItem(IMPORT_LOCATION_STORAGE_KEY, JSON.stringify(location)); } catch (_) {}
@@ -335,6 +563,8 @@ function makeRequest(kind) {
     serials: [],
     serial_validation: "empty",
     serial_validation_error: "",
+    eudm_device_type: "",
+    eudm_device_types: {},
     user_validation: "empty",
     user_validation_error: "",
     returning_user_validation: "empty",
@@ -512,6 +742,7 @@ async function validateBulkSerials({ force = false, requests = null, render = tr
     request.bulk_validation = "checking";
     request.bulk_validation_error = "";
     request.bulk_validation_missing = [];
+    request.eudm_device_types = {};
     if (request === selectedRequest()) refreshBulkValidationButton(request);
   });
   if (render) renderAll();
@@ -522,8 +753,9 @@ async function validateBulkSerials({ force = false, requests = null, render = tr
         method: "POST",
         body: JSON.stringify({ query: serial, fresh: true }),
       });
-      const found = (payload.results || []).some((item) => serialResultMatches(item, serial));
-      if (!found) missing.get(request.id).push(serial);
+      const asset = (payload.results || []).find((item) => serialResultMatches(item, serial));
+      if (asset) request.eudm_device_types[serial] = deviceTypeFromResult(asset, serial);
+      else missing.get(request.id).push(serial);
     } catch (_) {
       missing.get(request.id).push(serial);
     }
@@ -722,6 +954,7 @@ function renderInspector() {
   const statusOptions = bulk ? state.config.location_statuses : singleRequestStatusOptions();
   normalizeRequestStatus(request);
   fillSelect(elements.statusInput, statusOptions, request.status, "Choose a status");
+  updateModelStatusButton(request);
   // Keep the complete single-device editor visible while a serial is being
   // looked up. Validation still prevents an incomplete request from being
   // saved or submitted, but the user/location fields should not be staged
@@ -816,6 +1049,7 @@ function changeRequestSize(size) {
     request.serials = request.serials.slice(0, 1);
     request.serial_validation = request.serials.length ? "pending" : "empty";
     request.serial_validation_error = "";
+    updateModelStatusButton(request);
     applyInferredKind(request, request.status, false);
   }
   renderAll();
@@ -990,6 +1224,18 @@ function bestSerial(result, query) {
     || query;
 }
 
+function deviceTypeFromResult(result, serial) {
+  const wanted = new Set([
+    String(serial || "").trim().toLowerCase(),
+    String(result?.value || "").trim().toLowerCase(),
+  ].filter(Boolean));
+  const provided = normaliseModelName(result?.device_type || result?.deviceType);
+  if (provided && !wanted.has(provided.toLowerCase())) return provided;
+  const columns = (result?.columns || []).map((value) => normaliseModelName(value)).filter(Boolean);
+  const indicated = columns[1] || "";
+  return indicated && !wanted.has(indicated.toLowerCase()) ? indicated : "";
+}
+
 function scheduleValidation(request, field, work) {
   const key = request.id + ":" + field;
   const existing = state.validationTimers.get(key);
@@ -1121,11 +1367,14 @@ async function loadSerialSuggestions(request, query, { requireSelection = true }
     });
     if (!validationStillCurrent(request, "serial", epoch, value)) return;
     const results = payload.results || [];
+    const exactAsset = results.find((item) => serialResultMatches(item, value));
+    request.eudm_device_type = exactAsset ? deviceTypeFromResult(exactAsset, value) : "";
     if (selectedRequest() === request) renderSearchResults(elements.serialResults, results, (result) => {
       if (!validationStillCurrent(request, "serial", epoch, value)) return;
       hideSearchResults();
       request.serial_validation_epoch = Number(request.serial_validation_epoch || 0) + 1;
       request.serials = [bestSerial(result, value)];
+      request.eudm_device_type = deviceTypeFromResult(result, request.serials[0]);
       request.serial_selected = true;
       request.serial_validation = "valid";
       request.serial_validation_error = "";
@@ -1468,6 +1717,7 @@ function openSettings() {
   $("#spreadsheetEnabledColumnInput").value = columns.enabled || "";
   $("#validateQuickImportInput").checked = validationEnabled("validate_quick_import");
   $("#validateWorkbookImportInput").checked = validationEnabled("validate_workbook_import");
+  renderDeviceModelMappings();
   $("#settingsDialog").showModal();
 }
 
@@ -1546,6 +1796,7 @@ function makeQuickImportEntry(serial, username) {
     username,
     returningUserInfo: null,
     returningUserChecked: false,
+    eudmDeviceType: "",
     serialValidationState: "",
     serialValidationError: "",
     userValidationState: username ? "" : "valid",
@@ -1626,9 +1877,12 @@ function renderQuickImportReview() {
     const statusOptions = singleRequestStatusOptions();
     const selectedStatus = entry.kind === "location" ? entry.locationStatus : entry.userStatus;
     const deploymentStatus = `<label class="quick-import-status">Status
-          <select data-pairs-status="${index}" aria-label="Deployment status for ${escapeHtml(entry.serial)}">
-            ${statusOptions.map((option) => `<option value="${escapeHtml(option.value)}" ${option.value === selectedStatus ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
-          </select>
+          <div class="status-select-row">
+            <select data-pairs-status="${index}" aria-label="Deployment status for ${escapeHtml(entry.serial)}">
+              ${statusOptions.map((option) => `<option value="${escapeHtml(option.value)}" ${option.value === selectedStatus ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
+            </select>
+            <button class="button secondary compact" type="button" data-model-status-pairs="${index}" title="Suggest a status from the checked device model">Suggest</button>
+          </div>
         </label>`;
     const returnInfo = entry.kind === "location" && entry.username
       ? `<div class="quick-import-return ${entry.returningUserInfo ? "" : "unknown"}"><strong>Returning user</strong><span>${escapeHtml(entry.returningUserInfo?.login || entry.username)}</span><small>${entry.returningUserInfo?.columns?.length ? escapeHtml(entry.returningUserInfo.columns.join(" · ")) : "Details unknown — search and verify before submitting. An email will be sent to this user."}</small></div>`
@@ -1662,6 +1916,29 @@ function renderQuickImportReview() {
     else syncQuickImportValidation(entry);
     renderQuickImportReview();
     resolveQuickImportReturningUsers();
+  }));
+  $$("[data-model-status-pairs]").forEach((button) => button.addEventListener("click", () => {
+    const entry = state.pasteEntries[Number(button.dataset.modelStatusPairs)];
+    if (!entry) return;
+    openModelStatusDialog({
+      kind: entry.kind,
+      targets: [{
+        serial: entry.serial,
+        currentStatus: entry.kind === "location" ? entry.locationStatus : entry.userStatus,
+        deviceType: entry.eudmDeviceType,
+      }],
+      apply: (status) => {
+        const kind = kindForStatus(status);
+        const kindChanged = entry.kind !== kind;
+        entry.kind = kind;
+        if (kind === "location") entry.locationStatus = status;
+        else entry.userStatus = status;
+        if (kindChanged && entry.username) resetQuickImportUserValidation(entry);
+        else syncQuickImportValidation(entry);
+        renderQuickImportReview();
+        resolveQuickImportReturningUsers();
+      },
+    });
   }));
   $$("[data-pairs-remove]").forEach((button) => button.addEventListener("click", () => {
     state.pasteEntries.splice(Number(button.dataset.pairsRemove), 1);
@@ -1746,9 +2023,11 @@ async function resolveQuickImportReturningUsers() {
         if (assetsResult.error || !asset) {
           entry.serialValidationState = "failed";
           entry.serialValidationError = assetsResult.error?.message || "Serial number was not found in EUDM.";
+          entry.eudmDeviceType = "";
         } else {
           entry.serialValidationState = "valid";
           entry.serialValidationError = "";
+          entry.eudmDeviceType = deviceTypeFromResult(asset, entry.serial);
         }
       }
 
@@ -2462,10 +2741,13 @@ function renderImportPreview() {
       const isIncluded = request.included !== false;
       const statusOptions = ALM_IMPORT_STATUS_OPTIONS[request.group] || [];
       const statusControl = statusOptions.length
-        ? `<select data-import-status="${escapeHtml(request.id)}" aria-label="Status for ${escapeHtml(request.serials[0])}">
-            <option value="" ${!request.status ? "selected" : ""}>Choose a ${isDeployment ? "deployment" : "returned-device"} status</option>
-            ${statusOptions.map((option) => `<option value="${escapeHtml(option.value)}" ${request.status === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
-          </select>`
+        ? `<div class="import-status-control">
+            <select data-import-status="${escapeHtml(request.id)}" aria-label="Status for ${escapeHtml(request.serials[0])}">
+              <option value="" ${!request.status ? "selected" : ""}>Choose a ${isDeployment ? "deployment" : "returned-device"} status</option>
+              ${statusOptions.map((option) => `<option value="${escapeHtml(option.value)}" ${request.status === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
+            </select>
+            <button class="button secondary compact" type="button" data-model-status-import="${escapeHtml(request.id)}" title="Suggest a status from the checked device model">Suggest</button>
+          </div>`
         : `<span class="fixed-status">Deployed - Pending Return</span>`;
       const validation = request.import_validation === "checking"
         ? '<small class="import-checking">Verifying serial and user details in EUDM…</small>'
@@ -2511,6 +2793,25 @@ function renderImportPreview() {
       const request = payload.requests.find((item) => item.id === select.dataset.importStatus);
       if (request) request.status = select.value;
       updateImportPrepareButton(payload);
+    });
+  });
+  $("#importPreviewList").querySelectorAll("[data-model-status-import]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const request = payload.requests.find((item) => item.id === button.dataset.modelStatusImport);
+      if (!request) return;
+      openModelStatusDialog({
+        kind: request.group === "Deployments" ? "user" : "location",
+        targets: [{
+          serial: request.serials[0],
+          currentStatus: request.status,
+          deviceType: request.eudm_device_type,
+        }],
+        apply: (status) => {
+          request.status = status;
+          renderImportPreview();
+          updateImportPrepareButton(payload);
+        },
+      });
     });
   });
   $("#importPreviewList").querySelectorAll("[data-import-status-all]").forEach((select) => select.addEventListener("change", () => {
@@ -2580,6 +2881,7 @@ async function validateImportPreview(retryRequests = null) {
   requests.forEach((request) => {
     request.import_validation = "checking";
     request.import_error = "";
+    request.eudm_device_type = "";
     if (request.kind === "location") request.returning_user_loading = true;
   });
   renderImportPreview();
@@ -2595,6 +2897,7 @@ async function validateImportPreview(retryRequests = null) {
       const asset = (assets.results || []).find((item) => bestSerial(item, serial).toLowerCase() === serial.toLowerCase());
       const user = (users.results || []).find((item) => bestLogin(item, username).toLowerCase() === username.toLowerCase());
       if (!asset || !user) throw new Error(!asset ? "Serial number was not found in EUDM." : "Username was not found in EUDM.");
+      request.eudm_device_type = deviceTypeFromResult(asset, serial);
       if (request.kind === "location") {
         request.returning_user_info = { login: bestLogin(user, username), columns: (user.columns || [user.value]).map(String).filter(Boolean) };
         request.returning_user_validation = "valid";
@@ -3025,6 +3328,23 @@ function bindEvents() {
     $$('[data-settings-tab]').forEach((item) => item.classList.toggle("active", item === tab));
     $$('[data-settings-panel]').forEach((panel) => { panel.hidden = panel.dataset.settingsPanel !== tab.dataset.settingsTab; });
   }));
+  $("#addDeviceModelMappingButton").addEventListener("click", () => {
+    const mappings = readDeviceModelMappings();
+    mappings.push({
+      model_name: "",
+      user_status: "Deployed - New Stock",
+      location_status: "Pending Rebuild",
+    });
+    renderDeviceModelMappings(mappings);
+    $("[data-model-mapping-row]:last-child [data-model-mapping-name]")?.focus();
+  });
+  $("#deviceModelMappings").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-model-mapping-remove]");
+    if (!button) return;
+    const mappings = readDeviceModelMappings();
+    mappings.splice(Number(button.dataset.modelMappingRemove), 1);
+    renderDeviceModelMappings(mappings);
+  });
   $("#saveSettingsButton").addEventListener("click", async () => {
     const button = $("#saveSettingsButton");
     const columns = {
@@ -3038,10 +3358,17 @@ function bindEvents() {
       toast("Set the username, deployment serial, and pending return columns.", "error");
       return;
     }
+    const deviceModelMappingsValue = readDeviceModelMappings();
+    const modelMappingError = validateDeviceModelMappings(deviceModelMappingsValue);
+    if (modelMappingError) {
+      toast(modelMappingError, "error");
+      return;
+    }
     const preferences = {
       concurrency: Number(elements.concurrency.value),
       validate_quick_import: $("#validateQuickImportInput").checked,
       validate_workbook_import: $("#validateWorkbookImportInput").checked,
+      device_model_mappings: deviceModelMappingsValue,
       import_columns: columns,
     };
     button.disabled = true;
@@ -3059,6 +3386,24 @@ function bindEvents() {
     } finally {
       button.disabled = false;
     }
+  });
+  $("#modelStatusModelChoices").addEventListener("change", updateModelStatusDialog);
+  $$('input[name="modelStatusDestination"]').forEach((input) => input.addEventListener("change", updateModelStatusDialog));
+  $("#applyModelStatusButton").addEventListener("click", () => {
+    const context = state.modelStatusContext;
+    if (!context) return;
+    const destination = modelStatusDestination();
+    const mappings = context.selections.map((selection) => modelMappingForName(selection));
+    const statuses = mappings.map((mapping) => mapping?.[destination === "user" ? "user_status" : "location_status"]);
+    if (!destination || statuses.some((status) => !status) || new Set(statuses).size !== 1) {
+      updateModelStatusDialog();
+      return;
+    }
+    context.apply(statuses[0], destination, context.selections);
+    $("#modelStatusDialog").close();
+  });
+  $("#modelStatusDialog").addEventListener("close", () => {
+    state.modelStatusContext = null;
   });
   $("#importSheetButton").addEventListener("click", openAlmWorkbookImport);
   $("#importDialog").addEventListener("close", () => {
@@ -3141,6 +3486,8 @@ function bindEvents() {
     request.serials = value ? [value] : [];
     request.serial_validation = request.serials.length ? "pending" : "empty";
     request.serial_validation_error = "";
+    request.eudm_device_type = "";
+    updateModelStatusButton(request);
     if (value) setLookupInputStatus("serial", value);
     if (request.serials.length) scheduleValidation(request, "serial", () => loadSerialSuggestions(request, value, { requireSelection: true }));
     refreshSelectedValidation();
@@ -3151,12 +3498,14 @@ function bindEvents() {
     const request = selectedRequest();
     if (!request) return;
     request.serials = parseSerials(elements.serialsInput.value);
+    request.eudm_device_types = {};
     request.bulk_validation_epoch = Number(request.bulk_validation_epoch || 0) + 1;
     request.bulk_validation = request.serials.length
       ? "pending"
       : "empty";
     request.bulk_validation_error = "";
     request.bulk_validation_missing = [];
+    updateModelStatusButton(request);
     elements.serialHint.textContent = request.serials.length + " serial" + (request.serials.length === 1 ? "" : "s");
     refreshBulkValidationButton(request);
     refreshSelectedValidation();
@@ -3168,6 +3517,7 @@ function bindEvents() {
     applyInferredKind(request, elements.statusInput.value);
     renderAll();
   });
+  $("#modelStatusButton").addEventListener("click", openModelStatusForRequest);
   elements.userInput.addEventListener("input", () => {
     hideSearchResults();
     setLookupStatus("user", "");
