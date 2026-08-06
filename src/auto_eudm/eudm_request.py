@@ -536,7 +536,16 @@ def browser_client_from_profile(
             channel="chrome",
             headless=headless,
         )
-        page = context.pages[0] if context.pages else context.new_page()
+        # Chrome's persistent context starts with a visible blank tab. Close
+        # those startup tabs before creating the verification page; otherwise
+        # the user can be left looking at an unrelated about:blank window.
+        for existing_page in list(context.pages):
+            if str(existing_page.url) in {"", "about:blank"}:
+                try:
+                    existing_page.close()
+                except Exception:
+                    pass
+        page = context.new_page()
         run_reporting.event("Opening Chrome for EUDM SSO")
         page.goto(app_url, wait_until="domcontentloaded", timeout=60_000)
         if headless:
