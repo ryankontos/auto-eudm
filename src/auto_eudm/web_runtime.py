@@ -977,6 +977,7 @@ class Application:
                 "returned_device": "",
                 "pending_return": "OLD Device SN",
                 "enabled": "",
+                "device_allocation": "Device(s) Allocation",
             },
         }
 
@@ -1057,6 +1058,7 @@ class Application:
                     "returned_device",
                     "pending_return",
                     "enabled",
+                    "device_allocation",
                 )
             }
             if not all(normalised[key] for key in ("username", "deployment_serial", "pending_return")):

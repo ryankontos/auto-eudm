@@ -483,6 +483,7 @@ class WorkbookImport:
                             ) if indexes["enabled"] else True,
                             date_group=date_group,
                             returned_device_column_present=bool(indexes["returned_device"]),
+                            device_allocation=inventory.clean_text(values[indexes["device_allocation"] - 1].value) if indexes["device_allocation"] else None,
                         )
                     )
                 if rows:
@@ -603,7 +604,7 @@ class WorkbookImport:
                 )
             ):
                 raise eudm.EUDMError("Choose a complete destination for returned devices.")
-            requests.append(RequestSpec(
+            request = RequestSpec(
                 client_id=uuid.uuid4().hex,
                 kind=action.kind,
                 serials=(action.serial,),
@@ -616,7 +617,10 @@ class WorkbookImport:
                 location=location if action.kind == "location" else None,
                 group=action.group,
                 source=f"{self.filename} · {sheet_name}",
-            ).to_json())
+            ).to_json()
+            if action.device_allocation:
+                request["device_allocation"] = action.device_allocation
+            requests.append(request)
         requests.sort(
             key=lambda request: 0
             if request["group"] == "Deployments" else 1 if request["group"] == "Returned devices" else 2

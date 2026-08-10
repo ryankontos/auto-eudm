@@ -299,12 +299,31 @@ textarea { width: 100%; padding: 9px; resize: vertical; }
 input:hover, select:hover, textarea:hover { border-color: #99a8b5; }
 
 .queue-panel {
+  position: relative;
   min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
   background: var(--surface-alt);
 }
+
+.queue-workbook-drop {
+  position: absolute;
+  inset: 78px 12px 12px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed var(--blue);
+  border-radius: 8px;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--surface) 94%, var(--blue) 6%);
+  box-shadow: 0 8px 28px rgba(10, 44, 73, .18);
+  pointer-events: none;
+}
+.queue-workbook-drop strong { margin-top: 9px; color: var(--ink); font-size: 16px; }
+.queue-workbook-drop small { margin-top: 3px; }
 
 .queue-header {
   min-height: 66px;
@@ -945,6 +964,7 @@ fieldset { margin: 0; padding: 0; border: 0; }
 .import-preview-row strong,
 .import-preview-row small { display: block; min-width: 0; overflow-wrap: anywhere; }
 .import-preview-row small { color: var(--muted); font-size: 10px; }
+.import-preview-row .import-device-allocation { margin-top: 3px; color: var(--blue); font-weight: 650; }
 .import-preview-row select { width: 100%; min-height: 32px; font-size: 11px; }
 .import-status-control { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px; align-items: center; }
 .import-status-control .button { min-width: 62px; padding-right: 8px; padding-left: 8px; font-size: 11px; }
@@ -1152,6 +1172,7 @@ fieldset { margin: 0; padding: 0; border: 0; }
 .model-status-model-row strong { overflow-wrap: anywhere; font-size: 12px; }
 .model-status-model-row small { display: block; margin-top: 2px; color: var(--muted); font-size: 10px; }
 .model-status-model-row .model-status-eudm-hint { color: var(--subtle); font-style: italic; }
+.model-status-model-row .model-status-alm-hint { color: var(--blue); font-weight: 650; }
 .model-status-model-row select { min-width: 0; }
 .model-status-suggestion { min-height: 22px; margin-top: 13px; color: var(--ink); font-size: 13px; }
 .model-status-suggestion strong { color: var(--blue); }

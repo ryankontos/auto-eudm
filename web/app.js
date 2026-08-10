@@ -23,6 +23,7 @@ const state = {
   recordedLocationJobs: new Set(),
   newRequest: null,
   modelStatusContext: null,
+  queueDropDepth: 0,
   validationTimers: new Map(),
 };
 
@@ -308,6 +309,11 @@ function modelMappingForName(name) {
   return deviceModelMappings().find((mapping) => normaliseModelName(mapping.model_name).toLowerCase() === key) || null;
 }
 
+function exactModelMappingForHint(value) {
+  const hint = normaliseModelName(value);
+  return hint ? modelMappingForName(hint) : null;
+}
+
 function modelStatusOptions(kind) {
   return DEVICE_MODEL_STATUS_OPTIONS[kind] || [];
 }
@@ -439,26 +445,32 @@ function renderModelStatusDialog() {
     $$('input[name="modelStatusDestination"]').forEach((input) => { input.checked = false; });
   }
   $("#modelStatusIntro").textContent = context.kind
-    ? `Select the model number you checked for ${context.targets.length === 1 ? "this serial" : "each serial"}. Any EUDM device name shown is an indication only; the configured status is based on your model selection.`
-    : "Select the model number you checked, then choose the deployment destination. Any EUDM device name shown is an indication only and is not used to choose the status.";
+    ? `Select the model number you checked for ${context.targets.length === 1 ? "this serial" : "each serial"}. ALM and EUDM names are guides; an exact ALM mapping is preselected for you to confirm.`
+    : "Select the model number you checked, then choose the deployment destination. ALM and EUDM names are guides; an exact ALM mapping is preselected for you to confirm.";
   const mappings = deviceModelMappings();
   const container = $("#modelStatusModelChoices");
-  if (!mappings.length) {
-    container.innerHTML = '<p class="device-model-mappings-empty">No model mappings are configured. Add them in Settings → Device models first.</p>';
-  } else {
+  const noMappings = mappings.length
+    ? ""
+    : '<p class="device-model-mappings-empty">No model mappings are configured. Add them in Settings → Device models first.</p>';
+  const targetRows = context.targets.map((target, index) => {
+    const exactMapping = exactModelMappingForHint(target.almDeviceType);
+    const selectedName = normaliseModelName(exactMapping?.model_name);
     const options = [
-      '<option value="">Choose a checked model</option>',
-      ...mappings.map((mapping) => `<option value="${escapeHtml(normaliseModelName(mapping.model_name))}">${escapeHtml(normaliseModelName(mapping.model_name))}</option>`),
+      `<option value="" ${selectedName ? "" : "selected"}>Choose a checked model</option>`,
+      ...mappings.map((mapping) => {
+        const name = normaliseModelName(mapping.model_name);
+        return `<option value="${escapeHtml(name)}" ${name === selectedName ? "selected" : ""}>${escapeHtml(name)}</option>`;
+      }),
     ].join("");
-    container.innerHTML = context.targets.map((target, index) => `
+    return `
       <label class="model-status-model-row">
-        <span><strong>${escapeHtml(target.serial || "Serial number")}</strong>${target.currentStatus ? `<small>Current: ${escapeHtml(target.currentStatus)}</small>` : ""}${target.deviceType ? `<small class="model-status-eudm-hint">EUDM indication: ${escapeHtml(target.deviceType)}</small>` : ""}</span>
+        <span><strong>${escapeHtml(target.serial || "Serial number")}</strong>${target.currentStatus ? `<small>Current: ${escapeHtml(target.currentStatus)}</small>` : ""}${target.almDeviceType ? `<small class="model-status-alm-hint">ALM allocation: ${escapeHtml(target.almDeviceType)}</small>` : ""}${target.deviceType ? `<small class="model-status-eudm-hint">EUDM indication: ${escapeHtml(target.deviceType)}</small>` : ""}</span>
         <select data-model-status-model="${index}" aria-label="Model number for ${escapeHtml(target.serial || "serial number")}" ${mappings.length ? "" : "disabled"}>
           ${options}
         </select>
-      </label>
-    `).join("");
-  }
+      </label>`;
+  }).join("");
+  container.innerHTML = noMappings + targetRows;
   updateModelStatusDialog();
 }
 
@@ -467,6 +479,7 @@ function openModelStatusDialog({ targets, kind = null, apply }) {
     serial: String(target.serial || "").trim(),
     currentStatus: target.currentStatus || "",
     deviceType: normaliseModelName(target.deviceType),
+    almDeviceType: normaliseModelName(target.almDeviceType),
   })).filter((target) => target.serial);
   if (!normalisedTargets.length) return;
   state.modelStatusContext = {
@@ -491,6 +504,7 @@ function openModelStatusForRequest() {
       deviceType: request.kind === "bulk_location"
         ? request.eudm_device_types?.[serial]
         : request.eudm_device_type,
+      almDeviceType: request.device_allocation,
     })),
     apply: (status) => {
       applyInferredKind(request, status, request.kind === "bulk_location");
@@ -1715,6 +1729,7 @@ function openSettings() {
   $("#spreadsheetReturnedColumnInput").value = columns.returned_device || "";
   $("#spreadsheetPendingColumnInput").value = columns.pending_return || "OLD Device SN";
   $("#spreadsheetEnabledColumnInput").value = columns.enabled || "";
+  $("#spreadsheetDeviceAllocationColumnInput").value = columns.device_allocation || "Device(s) Allocation";
   $("#validateQuickImportInput").checked = validationEnabled("validate_quick_import");
   $("#validateWorkbookImportInput").checked = validationEnabled("validate_workbook_import");
   renderDeviceModelMappings();
@@ -1724,6 +1739,27 @@ function openSettings() {
 function openAlmWorkbookImport() {
   resetImportDialog();
   $("#importDialog").showModal();
+}
+
+function workbookFile(file) {
+  return file && /\.(xlsx|xlsm)$/i.test(file.name || "");
+}
+
+function setQueueWorkbookDropActive(active) {
+  const drop = $("#queueWorkbookDrop");
+  if (!drop) return;
+  drop.hidden = !active;
+  drop.setAttribute("aria-hidden", String(!active));
+}
+
+function importDroppedWorkbook(file) {
+  if (!state.config?.spreadsheet_import_enabled) return;
+  if (!workbookFile(file)) {
+    toast("Drop an .xlsx or .xlsm ALM Workbook.", "error");
+    return;
+  }
+  openAlmWorkbookImport();
+  uploadWorkbook(file);
 }
 
 function openShortcuts() {
@@ -2470,6 +2506,7 @@ function workbookMappingMatches(workbook, saved) {
     saved.returned_device,
     saved.pending_return,
     saved.enabled,
+    saved.device_allocation,
   ].filter(Boolean).every((heading) => headings.has(String(heading).trim().toLowerCase()));
 }
 
@@ -2538,6 +2575,7 @@ function renderImportColumnMap() {
   select($("#importMapReturned"), saved.returned_device || "Returned Device SN");
   select($("#importMapPending"), saved.pending_return || "OLD Device SN");
   select($("#importMapEnabled"), saved.enabled || "");
+  select($("#importMapDeviceAllocation"), saved.device_allocation || "Device(s) Allocation");
   updateImportColumnMapButton();
 }
 
@@ -2548,6 +2586,7 @@ function selectedImportColumns() {
     returned_device: $("#importMapReturned").value,
     pending_return: $("#importMapPending").value,
     enabled: $("#importMapEnabled").value,
+    device_allocation: $("#importMapDeviceAllocation").value,
   };
 }
 
@@ -2763,7 +2802,7 @@ function renderImportPreview() {
           <input type="checkbox" data-import-include="${escapeHtml(request.id)}" ${isIncluded ? "checked" : ""}>
           <span>${index + 1}</span>
         </label>
-        <div><strong>${escapeHtml(request.serials[0])}</strong><small>${isDeployment ? "Deployment serial" : isReturnedDevice ? "Returned device" : "Pending return"}</small></div>
+        <div><strong>${escapeHtml(request.serials[0])}</strong><small>${isDeployment ? "Deployment serial" : isReturnedDevice ? "Returned device" : "Pending return"}</small>${request.device_allocation ? `<small class="import-device-allocation">ALM model: ${escapeHtml(request.device_allocation)}</small>` : ""}</div>
         <div><strong>${escapeHtml(request.user || request.returning_user || "No user")}</strong><small>${isReturnedDevice ? "Returning user" : "User"}</small></div>
         <div>${statusControl}${isIncluded ? validation : "<small>Do not deploy</small>"}${returnDetails}${editable}</div>
       </div>`;
@@ -2805,6 +2844,7 @@ function renderImportPreview() {
           serial: request.serials[0],
           currentStatus: request.status,
           deviceType: request.eudm_device_type,
+          almDeviceType: request.device_allocation,
         }],
         apply: (status) => {
           request.status = status;
@@ -3353,6 +3393,7 @@ function bindEvents() {
       returned_device: $("#spreadsheetReturnedColumnInput").value.trim(),
       pending_return: $("#spreadsheetPendingColumnInput").value.trim(),
       enabled: $("#spreadsheetEnabledColumnInput").value.trim(),
+      device_allocation: $("#spreadsheetDeviceAllocationColumnInput").value.trim(),
     };
     if (!columns.username || !columns.deployment_serial || !columns.pending_return) {
       toast("Set the username, deployment serial, and pending return columns.", "error");
@@ -3413,6 +3454,36 @@ function bindEvents() {
   $("#workbookInput").addEventListener("change", (event) => {
     if (event.target.files[0]) uploadWorkbook(event.target.files[0]);
   });
+  const queuePanel = $(".queue-panel");
+  const fileDrag = (event) => Array.from(event.dataTransfer?.types || []).includes("Files");
+  queuePanel.addEventListener("dragenter", (event) => {
+    if (!state.config?.spreadsheet_import_enabled || !fileDrag(event)) return;
+    event.preventDefault();
+    state.queueDropDepth += 1;
+    setQueueWorkbookDropActive(true);
+  });
+  queuePanel.addEventListener("dragover", (event) => {
+    if (!state.config?.spreadsheet_import_enabled || !fileDrag(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  });
+  queuePanel.addEventListener("dragleave", (event) => {
+    if (!fileDrag(event)) return;
+    state.queueDropDepth = Math.max(0, state.queueDropDepth - 1);
+    if (!state.queueDropDepth) setQueueWorkbookDropActive(false);
+  });
+  queuePanel.addEventListener("drop", (event) => {
+    if (!state.config?.spreadsheet_import_enabled || !fileDrag(event)) return;
+    event.preventDefault();
+    state.queueDropDepth = 0;
+    setQueueWorkbookDropActive(false);
+    const files = Array.from(event.dataTransfer?.files || []);
+    if (files.length !== 1) {
+      toast("Drop one ALM Workbook at a time.", "error");
+      return;
+    }
+    importDroppedWorkbook(files[0]);
+  });
   $("#changeFileButton").addEventListener("click", resetImportDialog);
   $("#changeMappedFileButton").addEventListener("click", resetImportDialog);
   $("#changeColumnsButton").addEventListener("click", openImportColumnMapping);
@@ -3423,6 +3494,7 @@ function bindEvents() {
     "#importMapReturned",
     "#importMapPending",
     "#importMapEnabled",
+    "#importMapDeviceAllocation",
   ].forEach((selector) => $(selector).addEventListener("change", updateImportColumnMapButton));
   $("#sheetInput").addEventListener("change", () => {
     $("#importGroupInput").value = "";

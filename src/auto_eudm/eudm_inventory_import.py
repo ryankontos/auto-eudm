@@ -52,6 +52,7 @@ class ImportColumns:
     returned_device: str = "Returned Device SN"
     pending_return: str = "OLD Device SN"
     enabled: str = ""
+    device_allocation: str = "Device(s) Allocation"
 
 
 @dataclass(frozen=True)
@@ -66,6 +67,7 @@ class SheetRow:
     enabled: bool
     date_group: int = 1
     returned_device_column_present: bool = True
+    device_allocation: str | None = None
 
 
 @dataclass(frozen=True)
@@ -76,6 +78,7 @@ class Action:
     serial: str
     status: str
     kind: str = "user"
+    device_allocation: str | None = None
 
 
 def normalized_header(value: Any) -> str:
@@ -90,6 +93,7 @@ def columns_from_mapping(raw: dict[str, Any] | None = None) -> ImportColumns:
         returned_device=clean_text(raw.get("returned_device")) or "",
         pending_return=clean_text(raw.get("pending_return")) or "OLD Device SN",
         enabled=clean_text(raw.get("enabled")) or "",
+        device_allocation=clean_text(raw.get("device_allocation")) or "",
     )
 
 
@@ -101,6 +105,7 @@ def find_column_indexes(sheet: Any, columns: ImportColumns) -> tuple[int, dict[s
         "returned_device": columns.returned_device,
         "pending_return": columns.pending_return,
         "enabled": columns.enabled,
+        "device_allocation": columns.device_allocation,
     }
     targets = {key: normalized_header(value) for key, value in desired.items()}
     date_titles = {"date", "deployment date", "booking date"}
@@ -344,6 +349,7 @@ def load_sheet(path: Path, columns: ImportColumns | None = None) -> tuple[str, l
                     ) if indexes["enabled"] else True,
                     date_group=date_group,
                     returned_device_column_present=bool(indexes["returned_device"]),
+                    device_allocation=clean_text(values[indexes["device_allocation"] - 1].value) if indexes["device_allocation"] else None,
                 )
             )
         if not rows:
@@ -478,7 +484,14 @@ def build_actions(
             continue
         if "deployments" in selected_modes:
             if looks_like_serial(row.deployment_serial):
-                actions.append(Action("Deployments", row.row_number, row.username, row.deployment_serial, NEW_STOCK))
+                actions.append(Action(
+                    "Deployments",
+                    row.row_number,
+                    row.username,
+                    row.deployment_serial,
+                    NEW_STOCK,
+                    device_allocation=row.device_allocation,
+                ))
             else:
                 ignored["no usable deployment serial"] += 1
         if "returned_devices" in selected_modes:

@@ -58,6 +58,12 @@
         </div>
       </div>
 
+      <div id="queueWorkbookDrop" class="queue-workbook-drop" aria-hidden="true" hidden>
+        <span class="tool-icon import-icon" aria-hidden="true">↓</span>
+        <strong>Import ALM Workbook</strong>
+        <small>Drop an .xlsx or .xlsm file into the queue</small>
+      </div>
+
       <div id="connectionGate" class="connection-gate queue-alert" role="alert" hidden>
         <div class="connection-gate-icon queue-alert-icon" aria-hidden="true">!</div>
         <div class="connection-gate-copy">
@@ -330,6 +336,7 @@
             <label>Returned-device serial <small>Optional</small><select id="importMapReturned"></select></label>
             <label>Pending-return serial <em>Required</em><select id="importMapPending"></select></label>
             <label>TRUE/FALSE <small>Optional</small><select id="importMapEnabled"></select></label>
+            <label>Device allocation <small>Optional</small><select id="importMapDeviceAllocation"></select></label>
           </div>
         </div>
       </div>
@@ -430,6 +437,7 @@
           <label>Returned device column<input id="spreadsheetReturnedColumnInput" type="text" placeholder="Optional"></label>
           <label>Pending return column<input id="spreadsheetPendingColumnInput" type="text" placeholder="OLD Device SN"></label>
           <label>TRUE/FALSE column<input id="spreadsheetEnabledColumnInput" type="text" placeholder="Optional"></label>
+          <label>Device allocation column<input id="spreadsheetDeviceAllocationColumnInput" type="text" placeholder="Device(s) Allocation"></label>
         </div>
       </section>
       <section data-settings-panel="models" hidden>
