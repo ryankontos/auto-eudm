@@ -334,9 +334,6 @@ function renderDeviceModelMappings(mappings = deviceModelMappings()) {
     container.innerHTML = '<p class="device-model-mappings-empty">No model mappings yet. Add the model numbers you use during imports.</p>';
     return;
   }
-  const optionsFor = (kind, selected) => modelStatusOptions(kind).map((option) =>
-    `<option value="${escapeHtml(option.value)}" ${option.value === selected ? "selected" : ""}>${escapeHtml(option.label)}</option>`,
-  ).join("") + `<option value="" ${selected ? "" : "selected"}>No suggestion</option>`;
   container.innerHTML = mappings.map((mapping, index) => `
     <div class="device-model-mapping" data-model-mapping-row="${index}">
       <label>Model number
@@ -344,17 +341,23 @@ function renderDeviceModelMappings(mappings = deviceModelMappings()) {
       </label>
       <label>User deployments
         <select data-model-mapping-user>
-          ${optionsFor("user", mapping.user_status)}
+          ${modelStatusSelectOptions("user", mapping.user_status)}
         </select>
       </label>
       <label>Location deployments
         <select data-model-mapping-location>
-          ${optionsFor("location", mapping.location_status)}
+          ${modelStatusSelectOptions("location", mapping.location_status)}
         </select>
       </label>
       <button class="icon-button" data-model-mapping-remove="${index}" type="button" aria-label="Remove model mapping" title="Remove model mapping">×</button>
     </div>
   `).join("");
+}
+
+function modelStatusSelectOptions(kind, selected = "") {
+  return modelStatusOptions(kind).map((option) =>
+    `<option value="${escapeHtml(option.value)}" ${option.value === selected ? "selected" : ""}>${escapeHtml(option.label)}</option>`,
+  ).join("") + `<option value="" ${selected ? "" : "selected"}>No suggestion</option>`;
 }
 
 function readDeviceModelMappings() {
@@ -443,6 +446,41 @@ function updateModelStatusDialog() {
   applyButton.disabled = false;
 }
 
+async function saveModelMappingFromStatusDialog(index) {
+  const context = state.modelStatusContext;
+  const target = context?.targets[index];
+  if (!context || !target?.almDeviceType) return;
+  const userStatus = $(`[data-model-status-new-user="${index}"]`)?.value || "";
+  const locationStatus = $(`[data-model-status-new-location="${index}"]`)?.value || "";
+  if (!userStatus && !locationStatus) {
+    setModelStatusError("Choose at least one suggested deployment status, or close this editor.");
+    return;
+  }
+  const mappings = [...deviceModelMappings(), {
+    model_name: normaliseModelName(target.almDeviceType),
+    user_status: userStatus,
+    location_status: locationStatus,
+  }];
+  const mappingError = validateDeviceModelMappings(mappings);
+  if (mappingError) {
+    setModelStatusError(mappingError);
+    return;
+  }
+  const button = $(`[data-model-status-add-mapping="${index}"]`);
+  if (button) button.disabled = true;
+  try {
+    state.preferences = await api("/api/preferences", {
+      method: "POST",
+      body: JSON.stringify({ device_model_mappings: mappings }),
+    });
+    renderModelStatusDialog();
+    toast(`Added ${normaliseModelName(target.almDeviceType)} to device model mappings.`, "success");
+  } catch (error) {
+    if (button) button.disabled = false;
+    setModelStatusError(error.message);
+  }
+}
+
 function renderModelStatusDialog() {
   const context = state.modelStatusContext;
   if (!context) return;
@@ -473,12 +511,28 @@ function renderModelStatusDialog() {
         return `<option value="${escapeHtml(name)}" ${name === selectedName ? "selected" : ""}>${escapeHtml(name)}</option>`;
       }),
     ].join("");
+    const exactMatch = Boolean(exactMapping);
+    const addMapping = target.almDeviceType && !exactMatch
+      ? `<div class="model-status-add-mapping">
+          <small>No exact mapping for this ALM model. Add it here with optional status suggestions.</small>
+          <div class="model-status-add-fields">
+            <select data-model-status-new-user="${index}" aria-label="New user deployment suggestion for ${escapeHtml(target.almDeviceType)}">
+              ${modelStatusSelectOptions("user")}
+            </select>
+            <select data-model-status-new-location="${index}" aria-label="New location deployment suggestion for ${escapeHtml(target.almDeviceType)}">
+              ${modelStatusSelectOptions("location")}
+            </select>
+            <button class="button secondary compact" type="button" data-model-status-add-mapping="${index}">Add mapping</button>
+          </div>
+        </div>`
+      : "";
     return `
       <label class="model-status-model-row">
         <span><strong>${escapeHtml(target.serial || "Serial number")}</strong>${target.currentStatus ? `<small>Current: ${escapeHtml(target.currentStatus)}</small>` : ""}${target.almDeviceType ? `<small class="model-status-alm-hint">ALM allocation: ${escapeHtml(target.almDeviceType)}</small>` : ""}${target.deviceType ? `<small class="model-status-eudm-hint">EUDM indication: ${escapeHtml(target.deviceType)}</small>` : ""}</span>
         <select data-model-status-model="${index}" aria-label="Model number for ${escapeHtml(target.serial || "serial number")}" ${mappings.length ? "" : "disabled"}>
           ${options}
         </select>
+        ${addMapping}
       </label>`;
   }).join("");
   container.innerHTML = noMappings + targetRows;
@@ -3467,6 +3521,10 @@ function bindEvents() {
     }
   });
   $("#modelStatusModelChoices").addEventListener("change", updateModelStatusDialog);
+  $("#modelStatusModelChoices").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-model-status-add-mapping]");
+    if (button) saveModelMappingFromStatusDialog(Number(button.dataset.modelStatusAddMapping));
+  });
   $$('input[name="modelStatusDestination"]').forEach((input) => input.addEventListener("change", updateModelStatusDialog));
   $("#applyModelStatusButton").addEventListener("click", () => {
     const context = state.modelStatusContext;

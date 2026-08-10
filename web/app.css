@@ -1174,6 +1174,10 @@ fieldset { margin: 0; padding: 0; border: 0; }
 .model-status-model-row .model-status-eudm-hint { color: var(--subtle); font-style: italic; }
 .model-status-model-row .model-status-alm-hint { color: var(--blue); font-weight: 650; }
 .model-status-model-row select { min-width: 0; }
+.model-status-add-mapping { grid-column: 1 / -1; display: grid; gap: 6px; padding: 8px 9px; border-left: 3px solid var(--blue); background: var(--blue-soft); }
+.model-status-add-mapping small { margin: 0; color: var(--muted); }
+.model-status-add-fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 6px; align-items: center; }
+.model-status-add-fields select { min-width: 0; font-size: 11px; }
 .model-status-suggestion { min-height: 22px; margin-top: 13px; color: var(--ink); font-size: 13px; }
 .model-status-suggestion strong { color: var(--blue); }
 .model-status-card .inline-error { margin-top: 10px; }
