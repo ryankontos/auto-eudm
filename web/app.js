@@ -417,7 +417,9 @@ function updateModelStatusDialog() {
     return;
   }
   if (!deviceModelMappings().length) {
-    suggestion.textContent = "Add a model mapping in Settings → Device models first.";
+    suggestion.textContent = context.targets.some((target) => target.almDeviceType)
+      ? "Create a mapping from the ALM model above to continue."
+      : "Add a model mapping in Settings → Device models first.";
     return;
   }
   if (context.selections.length !== context.targets.length || context.selections.some((selection) => !selection)) {
@@ -500,7 +502,7 @@ function renderModelStatusDialog() {
   const container = $("#modelStatusModelChoices");
   const noMappings = mappings.length
     ? ""
-    : '<p class="device-model-mappings-empty">No model mappings are configured. Add them in Settings → Device models first.</p>';
+    : '<p class="device-model-mappings-empty">No model mappings are configured yet. You can create one from an ALM model below.</p>';
   const targetRows = context.targets.map((target, index) => {
     const exactMapping = exactModelMappingForHint(target.almDeviceType);
     const selectedName = normaliseModelName(exactMapping?.model_name);
@@ -516,24 +518,28 @@ function renderModelStatusDialog() {
       ? `<div class="model-status-add-mapping">
           <small>No exact mapping for this ALM model. Add it here with optional status suggestions.</small>
           <div class="model-status-add-fields">
-            <select data-model-status-new-user="${index}" aria-label="New user deployment suggestion for ${escapeHtml(target.almDeviceType)}">
-              ${modelStatusSelectOptions("user")}
-            </select>
-            <select data-model-status-new-location="${index}" aria-label="New location deployment suggestion for ${escapeHtml(target.almDeviceType)}">
-              ${modelStatusSelectOptions("location")}
-            </select>
+            <label><span>User deployments</span>
+              <select data-model-status-new-user="${index}" aria-label="New user deployment suggestion for ${escapeHtml(target.almDeviceType)}">
+                ${modelStatusSelectOptions("user")}
+              </select>
+            </label>
+            <label><span>Location deployments</span>
+              <select data-model-status-new-location="${index}" aria-label="New location deployment suggestion for ${escapeHtml(target.almDeviceType)}">
+                ${modelStatusSelectOptions("location")}
+              </select>
+            </label>
             <button class="button secondary compact" type="button" data-model-status-add-mapping="${index}">Add mapping</button>
           </div>
         </div>`
       : "";
     return `
-      <label class="model-status-model-row">
+      <div class="model-status-model-row">
         <span><strong>${escapeHtml(target.serial || "Serial number")}</strong>${target.currentStatus ? `<small>Current: ${escapeHtml(target.currentStatus)}</small>` : ""}${target.almDeviceType ? `<small class="model-status-alm-hint">ALM allocation: ${escapeHtml(target.almDeviceType)}</small>` : ""}${target.deviceType ? `<small class="model-status-eudm-hint">EUDM indication: ${escapeHtml(target.deviceType)}</small>` : ""}</span>
         <select data-model-status-model="${index}" aria-label="Model number for ${escapeHtml(target.serial || "serial number")}" ${mappings.length ? "" : "disabled"}>
           ${options}
         </select>
         ${addMapping}
-      </label>`;
+      </div>`;
   }).join("");
   container.innerHTML = noMappings + targetRows;
   updateModelStatusDialog();

@@ -8,6 +8,7 @@ right owner and avoids scanning the whole repository.
 | Need | Primary file |
 | --- | --- |
 | Launch the local web app | `eudm_web.py` → `src/auto_eudm/eudm_web.py` |
+| Launcher setup, running-server detection and restart | `start_auto_eudm.py` |
 | Shared environment/configuration | `src/auto_eudm/eudm_config.py` |
 | EUDM API workflow and request submission | `src/auto_eudm/eudm_request.py` |
 | Browser SSO/cookie setup | `src/auto_eudm/eudm_request.py` and `src/auto_eudm/bootstrap.py` |
@@ -47,7 +48,8 @@ rules in `web_runtime.py` and request-shape rules in `web_models.py`.
 
 1. Make the smallest change in the owning module above.
 2. Keep the HTTP route stable unless the browser code changes in the same task.
-3. Run `python3 -m py_compile src/auto_eudm/*.py`, `node --check web/app.js`,
-   and `git diff --check` after structural changes.
+3. Run `python3 -m unittest discover -v`,
+   `python3 -m compileall -q src start_auto_eudm.py tests`,
+   `node --check web/app.js`, and `git diff --check` after structural changes.
 4. Network and SSO workflows cannot be fully verified on a personal machine;
    preserve detailed logs in `logs/` for a work-machine capture.

@@ -86,6 +86,8 @@ def normalized_header(value: Any) -> str:
 
 
 def columns_from_mapping(raw: dict[str, Any] | None = None) -> ImportColumns:
+    if raw is None:
+        return ImportColumns()
     raw = raw or {}
     return ImportColumns(
         username=clean_text(raw.get("username")) or "Username",
@@ -135,9 +137,15 @@ def find_column_indexes(sheet: Any, columns: ImportColumns) -> tuple[int, dict[s
             continue
         # The returned-device column is intentionally optional until a team adds it.
         return row[0].row, {key: value or 0 for key, value in indexes.items()}, date_index
-    missing = ", ".join(f"{name!r}" for name in desired.values())
+    required = (
+        columns.username,
+        columns.deployment_serial,
+        columns.pending_return,
+        "Date",
+    )
+    missing = ", ".join(f"{name!r}" for name in required)
     raise eudm.EUDMError(
-        "Could not find the spreadsheet headers. Check Spreadsheet import settings: " + missing
+        "Could not find the required spreadsheet headers. Check ALM Workbook settings: " + missing
     )
 
 

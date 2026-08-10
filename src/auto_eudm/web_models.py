@@ -83,6 +83,7 @@ CITIES: tuple[str, ...] = (
 )
 
 SERIAL_PATTERN = re.compile(r"[A-Za-z0-9._-]+")
+LOGIN_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9._-]*")
 
 
 def clean(value: Any) -> str:
@@ -222,18 +223,21 @@ class RequestSpec:
         ]
         if duplicate_serials:
             errors.append("Remove duplicate serial numbers from this request.")
-        for serial in self.serials:
-            # Serial format guidance is rendered beside the editor field.
-            # Keep the request invalid without duplicating that guidance in the
-            # summary list.
-            if not SERIAL_PATTERN.fullmatch(serial) or len(serial) < 6:
-                break
+        if any(
+            not SERIAL_PATTERN.fullmatch(serial) or len(serial) < 6
+            for serial in self.serials
+        ):
+            errors.append(
+                "Serial numbers must be at least 6 characters and contain only letters, numbers, periods, underscores, or hyphens."
+            )
 
         if self.kind == "user":
             allowed = user_statuses or {value for _, value in USER_STATUSES}
             if self.status not in allowed:
                 errors.append("Choose a valid status for Deploy to user.")
-            if self.user and not re.fullmatch(r"[A-Za-z][A-Za-z0-9._-]*", self.user):
+            if not self.user:
+                errors.append("Choose the receiving user.")
+            elif not LOGIN_PATTERN.fullmatch(self.user):
                 errors.append("The receiving user must be a login ID, not a display name or email address.")
             if self.returning_requested:
                 errors.append("Deploy to user cannot have a returning user.")
@@ -260,10 +264,12 @@ class RequestSpec:
                 errors.append("Choose both the city and the location.")
             if self.returning_requested and not self.returning_user:
                 errors.append("Choose the returning user or turn off the return option.")
-            elif self.returning_user and not re.fullmatch(r"[A-Za-z][A-Za-z0-9._-]*", self.returning_user):
+            elif self.returning_user and not LOGIN_PATTERN.fullmatch(self.returning_user):
                 errors.append("The returning user must be a login ID, not a display name or email address.")
             if self.returning_user and not self.returning_user_info:
                 errors.append("Search and verify the returning user's details before submitting; an email will be sent to them.")
+            elif self.returning_user and clean(self.returning_user_info.get("login")).casefold() != self.returning_user.casefold():
+                errors.append("Verify the returning user again because the saved user details do not match.")
             if self.kind == "bulk_location" and self.returning_requested:
                 errors.append(
                     "Bulk add to location stock cannot include a returning user."
@@ -316,8 +322,8 @@ def validate_queue(
     requester = clean(request_for)
     if not requester:
         errors["_queue"] = ["Set EUDM_REQUEST_FOR or enter a requesting login ID."]
-    elif any(character.isspace() for character in requester):
-        errors["_queue"] = ["The requesting login ID cannot contain whitespace."]
+    elif not LOGIN_PATTERN.fullmatch(requester):
+        errors["_queue"] = ["The requesting user must be a login ID, not a display name or email address."]
     if not specs:
         errors.setdefault("_queue", []).append("Add at least one request.")
 

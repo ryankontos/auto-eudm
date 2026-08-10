@@ -141,7 +141,7 @@ def wait_for_web_server_stop(url: str) -> bool:
     return False
 
 
-def stop_server_process(port: int, pid: object = None) -> None:
+def stop_server_process(port: int, pid: object = None) -> bool:
     """Stop a stale local server, including servers predating /api/runtime."""
     try:
         process_id = int(pid) if pid is not None else None
@@ -150,47 +150,61 @@ def stop_server_process(port: int, pid: object = None) -> None:
     if process_id and process_id != os.getpid():
         try:
             if os.name == "nt":
-                subprocess.run(
+                completed = subprocess.run(
                     ["taskkill", "/PID", str(process_id), "/T", "/F"],
                     check=False,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
+                if completed.returncode == 0:
+                    return True
             else:
                 os.kill(process_id, signal.SIGTERM)
-            return
+                return True
         except (OSError, ValueError):
             pass
     if os.name == "nt":
-        result = subprocess.run(
-            ["netstat", "-ano", "-p", "tcp"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        try:
+            result = subprocess.run(
+                ["netstat", "-ano", "-p", "tcp"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError:
+            return False
         for line in result.stdout.splitlines():
             fields = line.split()
             if len(fields) >= 5 and fields[1].rsplit(":", 1)[-1] == str(port) and fields[3] == "LISTENING":
-                subprocess.run(
+                completed = subprocess.run(
                     ["taskkill", "/PID", fields[4], "/T", "/F"],
                     check=False,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
+                if completed.returncode == 0:
+                    return True
     else:
-        result = subprocess.run(
-            ["lsof", "-tiTCP:" + str(port), "-sTCP:LISTEN"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        try:
+            result = subprocess.run(
+                ["lsof", "-tiTCP:" + str(port), "-sTCP:LISTEN"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError:
+            return False
+        stopped = False
         for value in result.stdout.split():
             try:
                 process_id = int(value)
                 if process_id != os.getpid():
                     os.kill(process_id, signal.SIGTERM)
+                    stopped = True
             except (OSError, ValueError):
                 continue
+        return stopped
+    return False
 
 
 def open_existing_web_ui(arguments: list[str]) -> bool:
@@ -218,11 +232,12 @@ def open_existing_web_ui(arguments: list[str]) -> bool:
         return True
     say("The running web workspace is from an older commit; restarting it…")
     shutdown = request_json(f"{url.rstrip('/')}/api/shutdown", method="POST")
-    if shutdown is None:
-        stop_server_process(port, runtime.get("pid") if runtime else None)
+    if shutdown is None and not stop_server_process(port, runtime.get("pid") if runtime else None):
+        raise ValueError("Could not stop the older AutoEUDM server. Close its launcher window, then try again.")
     if not wait_for_web_server_stop(url):
-        stop_server_process(port, runtime.get("pid") if runtime else None)
-        wait_for_web_server_stop(url)
+        stopped = stop_server_process(port, runtime.get("pid") if runtime else None)
+        if not stopped or not wait_for_web_server_stop(url):
+            raise ValueError("Could not stop the older AutoEUDM server. Close its launcher window, then try again.")
     return False
 
 
