@@ -1118,7 +1118,7 @@ fieldset { margin: 0; padding: 0; border: 0; }
 .toast.error { border-left-color: var(--red); }
 .toast.success { border-left-color: var(--green); }
 
-#settingsDialog { width: min(640px, calc(100vw - 32px)); }
+#settingsDialog { width: min(760px, calc(100vw - 32px)); }
 .settings-card { width: 100%; }
 .shortcuts-card { width: 100%; }
 .shortcuts-note { margin: -4px 0 14px !important; font-size: 12px; }
