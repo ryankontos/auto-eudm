@@ -2867,8 +2867,8 @@ function renderImportPreview() {
           <input type="checkbox" data-import-include="${escapeHtml(request.id)}" ${isIncluded ? "checked" : ""}>
           <span>${index + 1}</span>
         </label>
-        <div><strong>${escapeHtml(request.serials[0])}</strong><small>${isDeployment ? "Deployment serial" : isReturnedDevice ? "Returned device" : "Pending return"}</small>${request.device_allocation ? `<small class="import-device-allocation">${escapeHtml(request.device_allocation)}</small>` : ""}</div>
-        <div><strong>${escapeHtml(request.user || request.returning_user || "No user")}</strong><small>${isReturnedDevice ? "Returning user" : "User"}</small></div>
+        <div><small class="import-field-title">${isDeployment ? "Deployment serial" : isReturnedDevice ? "Returned device" : "Pending return"}</small><strong>${escapeHtml(request.serials[0])}</strong>${request.device_allocation ? `<small class="import-device-allocation">${escapeHtml(request.device_allocation)}</small>` : ""}</div>
+        <div><small class="import-field-title">${isReturnedDevice ? "Returning user" : "User"}</small><strong>${escapeHtml(request.user || request.returning_user || "No user")}</strong></div>
         <div>${statusControl}${isIncluded ? validation : "<small>Do not deploy</small>"}${returnDetails}${editable}</div>
       </div>`;
     }).join("");

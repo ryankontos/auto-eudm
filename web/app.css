@@ -964,6 +964,7 @@ fieldset { margin: 0; padding: 0; border: 0; }
 .import-preview-row strong,
 .import-preview-row small { display: block; min-width: 0; overflow-wrap: anywhere; }
 .import-preview-row small { color: var(--muted); font-size: 10px; }
+.import-preview-row .import-field-title { margin-bottom: 3px; color: var(--ink); font-size: 9px; font-weight: 750; letter-spacing: .04em; text-transform: uppercase; }
 .import-preview-row .import-device-allocation { margin-top: 3px; color: var(--blue); font-weight: 650; }
 .import-preview-row select { width: 100%; min-height: 32px; font-size: 11px; }
 .import-status-control { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px; align-items: center; }
