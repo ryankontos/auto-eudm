@@ -4,11 +4,14 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 import webbrowser
@@ -59,9 +62,25 @@ def package_available(python: Path, package: str) -> bool:
     ).returncode == 0
 
 
+def current_commit_id() -> str | None:
+    """Read the checkout commit used to launch the server."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+            capture_output=True,
+            check=True,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    commit = result.stdout.strip()
+    return commit or None
+
+
 def web_target(arguments: list[str]) -> tuple[str, int] | None:
     """Read the web command's host/port without importing the web app."""
-    if "--help" in arguments or "-h" in arguments or "--no-open" in arguments:
+    if "--help" in arguments or "-h" in arguments:
         return None
     host = "127.0.0.1"
     port = 8765
@@ -87,24 +106,124 @@ def web_target(arguments: list[str]) -> tuple[str, int] | None:
     return host, port
 
 
+def web_ui_is_running(url: str) -> bool:
+    try:
+        request = urllib.request.Request(url, headers={"User-Agent": "AutoEUDM launcher"})
+        with urllib.request.urlopen(request, timeout=0.8) as response:
+            body = response.read(4096).decode("utf-8", errors="ignore")
+        return response.status < 400 and "AutoEUDM" in body
+    except (OSError, urllib.error.URLError):
+        return False
+
+
+def request_json(url: str, *, method: str = "GET") -> dict[str, object] | None:
+    try:
+        request = urllib.request.Request(
+            url,
+            method=method,
+            headers={"User-Agent": "AutoEUDM launcher"},
+        )
+        with urllib.request.urlopen(request, timeout=0.8) as response:
+            if response.status >= 400:
+                return None
+            payload = json.loads(response.read(4096).decode("utf-8", errors="ignore"))
+        return payload if isinstance(payload, dict) else None
+    except (OSError, urllib.error.URLError, ValueError):
+        return None
+
+
+def wait_for_web_server_stop(url: str) -> bool:
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if not web_ui_is_running(url):
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def stop_server_process(port: int, pid: object = None) -> None:
+    """Stop a stale local server, including servers predating /api/runtime."""
+    try:
+        process_id = int(pid) if pid is not None else None
+    except (TypeError, ValueError):
+        process_id = None
+    if process_id and process_id != os.getpid():
+        try:
+            if os.name == "nt":
+                subprocess.run(
+                    ["taskkill", "/PID", str(process_id), "/T", "/F"],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            else:
+                os.kill(process_id, signal.SIGTERM)
+            return
+        except (OSError, ValueError):
+            pass
+    if os.name == "nt":
+        result = subprocess.run(
+            ["netstat", "-ano", "-p", "tcp"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        for line in result.stdout.splitlines():
+            fields = line.split()
+            if len(fields) >= 5 and fields[1].rsplit(":", 1)[-1] == str(port) and fields[3] == "LISTENING":
+                subprocess.run(
+                    ["taskkill", "/PID", fields[4], "/T", "/F"],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+    else:
+        result = subprocess.run(
+            ["lsof", "-tiTCP:" + str(port), "-sTCP:LISTEN"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        for value in result.stdout.split():
+            try:
+                process_id = int(value)
+                if process_id != os.getpid():
+                    os.kill(process_id, signal.SIGTERM)
+            except (OSError, ValueError):
+                continue
+
+
 def open_existing_web_ui(arguments: list[str]) -> bool:
-    """Open an already-running AutoEUDM server instead of starting a duplicate."""
+    """Open a matching server or replace one launched from an older commit."""
     target = web_target(arguments)
     if target is None:
         return False
     host, port = target
     url = f"http://{host}:{port}/"
-    try:
-        request = urllib.request.Request(url, headers={"User-Agent": "AutoEUDM launcher"})
-        with urllib.request.urlopen(request, timeout=0.8) as response:
-            body = response.read(4096).decode("utf-8", errors="ignore")
-        if response.status >= 400 or "AutoEUDM" not in body:
-            return False
-    except (OSError, urllib.error.URLError):
+    if not web_ui_is_running(url):
         return False
-    webbrowser.open(url)
-    say(f"The web workspace is already running; opening {url}")
-    return True
+    current = current_commit_id()
+    runtime = request_json(f"{url.rstrip('/')}/api/runtime")
+    running = runtime.get("commit_id") if runtime else None
+    open_ui = "--no-open" not in arguments
+    if current is None:
+        if open_ui:
+            webbrowser.open(url)
+        say(f"The web workspace is already running; opening {url}" if open_ui else "The web workspace is already running.")
+        return True
+    if current and running == current:
+        if open_ui:
+            webbrowser.open(url)
+        say(f"The web workspace is already running; opening {url}" if open_ui else "The web workspace is already running.")
+        return True
+    say("The running web workspace is from an older commit; restarting it…")
+    shutdown = request_json(f"{url.rstrip('/')}/api/shutdown", method="POST")
+    if shutdown is None:
+        stop_server_process(port, runtime.get("pid") if runtime else None)
+    if not wait_for_web_server_stop(url):
+        stop_server_process(port, runtime.get("pid") if runtime else None)
+        wait_for_web_server_stop(url)
+    return False
 
 
 def ensure_environment() -> Path:

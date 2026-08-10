@@ -6,7 +6,10 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import mimetypes
+import os
 from pathlib import Path
+import subprocess
+import threading
 from typing import Any
 import urllib.parse
 
@@ -19,6 +22,22 @@ WEB_ROOT = ROOT / "web"
 # Workbook uploads are base64 encoded in JSON, so allow headroom for the
 # roughly 4/3 expansion of a 100 MB workbook plus the surrounding payload.
 MAX_BODY = 140 * 1024 * 1024
+
+
+def repository_commit_id() -> str:
+    """Return the checkout commit that launched this server."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+            capture_output=True,
+            check=True,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    commit = result.stdout.strip()
+    return commit or "unknown"
 
 
 class AutoEUDMHandler(BaseHTTPRequestHandler):
@@ -98,6 +117,14 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
     def _do_get(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        if path == "/api/runtime":
+            self._json(
+                {
+                    "commit_id": self.server.commit_id,  # type: ignore[attr-defined]
+                    "pid": os.getpid(),
+                }
+            )
+            return
         if path == "/api/config":
             self._json(self.app.config_json())
             return
@@ -173,6 +200,14 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         payload = self._read_json()
+        if path == "/api/shutdown":
+            self._json({"stopping": True}, 202)
+            threading.Thread(
+                target=self.server.shutdown,
+                name="auto-eudm-shutdown",
+                daemon=True,
+            ).start()
+            return
         if path == "/api/connect":
             self.app.clients.connect_async()
             self._json(self.app.clients.status(), 202)
@@ -283,3 +318,4 @@ class AutoEUDMServer(ThreadingHTTPServer):
     def __init__(self, address: tuple[str, int], app: Any) -> None:
         super().__init__(address, AutoEUDMHandler)
         self.app = app
+        self.commit_id = repository_commit_id()
