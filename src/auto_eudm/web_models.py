@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 from collections import Counter
 from dataclasses import dataclass
 from datetime import date
@@ -84,6 +85,7 @@ CITIES: tuple[str, ...] = (
 
 SERIAL_PATTERN = re.compile(r"[A-Za-z0-9._-]+")
 LOGIN_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9._-]*")
+MAX_WORKBOOK_BYTES = 100 * 1024 * 1024
 
 
 def clean(value: Any) -> str:
@@ -164,6 +166,22 @@ class RequestSpec:
         if not isinstance(raw, dict):
             raise eudm.EUDMError("Each queue entry must be an object.")
         kind = clean(raw.get("kind"))
+        returning = raw.get("returning", False)
+        if not isinstance(returning, bool):
+            raise eudm.EUDMError("The returning-user toggle must be true or false.")
+        returning_user = clean(raw.get("returning_user")) or None
+        raw_returning_info = raw.get("returning_user_info")
+        if raw_returning_info is not None and not isinstance(raw_returning_info, dict):
+            raise eudm.EUDMError("Returning-user details must be an object.")
+        returning_user_info = None
+        if isinstance(raw_returning_info, dict):
+            raw_columns = raw_returning_info.get("columns", [])
+            if not isinstance(raw_columns, list):
+                raise eudm.EUDMError("Returning-user detail columns must be a list.")
+            returning_user_info = {
+                "login": clean(raw_returning_info.get("login")),
+                "columns": [clean(value) for value in raw_columns if clean(value)],
+            }
         location = (
             Location.from_json(raw.get("location"))
             if kind in {"location", "bulk_location"}
@@ -175,23 +193,14 @@ class RequestSpec:
             serials=tuple(parse_serials(raw.get("serials"))),
             status=clean(raw.get("status")),
             user=clean(raw.get("user")) or None,
-            returning_requested=bool(
-                raw.get("returning") or clean(raw.get("returning_user"))
-            ),
-            returning_user=clean(raw.get("returning_user")) or None,
+            returning_requested=returning or bool(returning_user),
+            returning_user=returning_user,
             # The web UI shows return details in the request editor and again
             # in final review. That visible review replaces the old per-row
             # confirmation checkbox while the core API still receives the
             # explicit confirmation flag it requires.
             return_confirmed=True,
-            returning_user_info=(
-                {
-                    "login": clean(raw.get("returning_user_info", {}).get("login")),
-                    "columns": [clean(value) for value in raw.get("returning_user_info", {}).get("columns", []) if clean(value)],
-                }
-                if isinstance(raw.get("returning_user_info"), dict)
-                else None
-            ),
+            returning_user_info=returning_user_info,
             location=location,
             group=clean(raw.get("group")) or "Requests",
             source=clean(raw.get("source")) or None,
@@ -312,26 +321,52 @@ def validate_queue(
     location_statuses: set[str] | None = None,
 ) -> dict[str, list[str]]:
     errors: dict[str, list[str]] = {}
+
+    def add_error(key: str, message: str) -> None:
+        messages = errors.setdefault(key, [])
+        if message not in messages:
+            messages.append(message)
+
     for spec in specs:
         spec_errors = spec.validate(
             user_statuses=user_statuses,
             location_statuses=location_statuses,
         )
-        if spec_errors:
-            errors[spec.client_id] = spec_errors
+        for message in spec_errors:
+            add_error(spec.client_id, message)
+
     requester = clean(request_for)
     if not requester:
-        errors["_queue"] = ["Set EUDM_REQUEST_FOR or enter a requesting login ID."]
+        add_error("_queue", "Set EUDM_REQUEST_FOR or enter a requesting login ID.")
     elif not LOGIN_PATTERN.fullmatch(requester):
-        errors["_queue"] = ["The requesting user must be a login ID, not a display name or email address."]
+        add_error(
+            "_queue",
+            "The requesting user must be a login ID, not a display name or email address.",
+        )
     if not specs:
-        errors.setdefault("_queue", []).append("Add at least one request.")
+        add_error("_queue", "Add at least one request.")
+
+    client_id_counts = Counter(spec.client_id for spec in specs)
+    if any(count > 1 for count in client_id_counts.values()):
+        add_error(
+            "_queue",
+            "The request queue contains duplicate internal IDs. Reopen AutoEUDM and rebuild the queue.",
+        )
+    if "_queue" in client_id_counts:
+        add_error(
+            "_queue",
+            "A request used a reserved internal ID. Reopen AutoEUDM and rebuild the queue.",
+        )
 
     owners: dict[str, list[str]] = {}
     spellings: dict[str, str] = {}
     for spec in specs:
+        seen_in_request: set[str] = set()
         for serial in spec.serials:
             key = serial.casefold()
+            if key in seen_in_request:
+                continue
+            seen_in_request.add(key)
             owners.setdefault(key, []).append(spec.client_id)
             spellings.setdefault(key, serial)
     for key, client_ids in owners.items():
@@ -339,8 +374,8 @@ def validate_queue(
             message = (
                 f"Serial {spellings[key]} appears in more than one queued request."
             )
-            for client_id in client_ids:
-                errors.setdefault(client_id, []).append(message)
+            for client_id in dict.fromkeys(client_ids):
+                add_error(client_id, message)
     return errors
 
 
@@ -351,12 +386,24 @@ class WorkbookImport:
     sheets: dict[str, list[inventory.SheetRow]]
 
     @staticmethod
-    def inspect_upload(filename: str, encoded: str) -> dict[str, Any]:
-        """Return selectable headings before committing to a column mapping."""
+    def decode_upload(filename: str, encoded: str) -> bytes:
+        """Validate and decode one browser workbook upload exactly once."""
         if not filename.lower().endswith((".xlsx", ".xlsm")):
             raise eudm.EUDMError("Choose an .xlsx or .xlsm workbook.")
         try:
             payload = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise eudm.EUDMError("The uploaded workbook data was invalid.") from exc
+        if not payload:
+            raise eudm.EUDMError("The uploaded workbook was empty.")
+        if len(payload) > MAX_WORKBOOK_BYTES:
+            raise eudm.EUDMError("The workbook is larger than the 100 MB local limit.")
+        return payload
+
+    @staticmethod
+    def inspect_payload(filename: str, payload: bytes) -> dict[str, Any]:
+        """Return selectable headings before committing to a column mapping."""
+        try:
             from openpyxl import load_workbook
             workbook = load_workbook(BytesIO(payload), data_only=True, read_only=True)
         except Exception as exc:
@@ -381,24 +428,14 @@ class WorkbookImport:
             workbook.close()
 
     @classmethod
-    def from_upload(
+    def from_payload(
         cls,
         filename: str,
-        encoded: str,
+        payload: bytes,
         *,
         columns: inventory.ImportColumns | None = None,
         on_progress: Callable[[str, int, int], None] | None = None,
     ) -> "WorkbookImport":
-        if not filename.lower().endswith((".xlsx", ".xlsm")):
-            raise eudm.EUDMError("Choose an .xlsx or .xlsm workbook.")
-        try:
-            payload = base64.b64decode(encoded, validate=True)
-        except Exception as exc:
-            raise eudm.EUDMError("The uploaded workbook data was invalid.") from exc
-        if not payload:
-            raise eudm.EUDMError("The uploaded workbook was empty.")
-        if len(payload) > 100 * 1024 * 1024:
-            raise eudm.EUDMError("The workbook is larger than the 100 MB local limit.")
         try:
             from openpyxl import load_workbook
             workbook = load_workbook(
@@ -534,7 +571,7 @@ class WorkbookImport:
                 dates.append(
                     {
                         "value": selected.isoformat(),
-                        "label": selected.strftime("%A %-d %B %Y"),
+                        "label": inventory.format_date_label(selected),
                         "deployment_count": deployment_count,
                         "returned_device_count": returned_device_count,
                         "pending_return_count": pending_return_count,

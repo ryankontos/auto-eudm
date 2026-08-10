@@ -7,6 +7,30 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from typing import Sequence
+
+
+def browser_runtime_required(
+    arguments: Sequence[str],
+    *,
+    default_simulate: bool,
+    dry_run_flags: Sequence[str] = (),
+) -> bool:
+    """Return whether CLI arguments can reach the live browser workflow.
+
+    BooleanOptionalAction honours the last ``--simulate``/``--no-simulate``
+    switch, so mirror that behavior before argparse and optional dependency
+    setup run. Preview-only modes never need Playwright.
+    """
+    if any(flag in arguments for flag in dry_run_flags):
+        return False
+    simulate = default_simulate
+    for argument in arguments:
+        if argument == "--simulate":
+            simulate = True
+        elif argument == "--no-simulate":
+            simulate = False
+    return not simulate
 
 
 def _venv_python(venv: Path) -> Path:

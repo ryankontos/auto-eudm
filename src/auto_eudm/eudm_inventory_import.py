@@ -18,7 +18,7 @@ import re
 import sys
 from typing import Any, Iterable
 
-from .bootstrap import ensure_runtime
+from .bootstrap import browser_runtime_required, ensure_runtime
 from . import eudm_request as eudm
 from .cli_common import (
     add_runtime_arguments,
@@ -41,6 +41,7 @@ NEW_STOCK = "Deployed - New Stock"
 EXISTING_STOCK = "Deployed - Existing Stock"
 PENDING_RETURN = "Pending Return"
 FILE_PREFIX = "Inventory Tracking - Sydney"
+CLI_GROUPS = ("Deployments", "Pending returns")
 
 
 @dataclass(frozen=True)
@@ -275,6 +276,11 @@ def normalize_date(value: Any, epoch: datetime) -> date | None:
             except ValueError:
                 pass
     return None
+
+
+def format_date_label(value: date) -> str:
+    """Format an ALM date without platform-specific ``strftime`` directives."""
+    return f"{value.strftime('%A')} {value.day} {value.strftime('%B %Y')}"
 
 
 def username_for(row: tuple[Any, ...], index: int = 4) -> str | None:
@@ -528,10 +534,13 @@ def build_actions(
 
 
 def override_new_statuses(actions: list[Action]) -> list[Action]:
-    new_indexes = [index for index, action in enumerate(actions) if action.group == "New deployments"]
+    new_indexes = [
+        index for index, action in enumerate(actions)
+        if action.group == "Deployments"
+    ]
     if not new_indexes:
         return actions
-    print("\nNew deployments (default: Deployed - New Stock)")
+    print("\nDeployments (default: Deployed - New Stock)")
     for display_index, action_index in enumerate(new_indexes, 1):
         action = actions[action_index]
         print(f"  {display_index}. {action.serial} → {action.username}")
@@ -562,8 +571,8 @@ def print_preview(
     print("\nPreview")
     print(f"  File: {path}")
     print(f"  Sheet: {sheet_name}")
-    print(f"  Date: {selected_date.strftime('%A %-d %B %Y')}")
-    for group in ("New deployments", "Pending returns"):
+    print(f"  Date: {format_date_label(selected_date)}")
+    for group in CLI_GROUPS:
         grouped = [action for action in actions if action.group == group]
         print(f"\n{group} ({len(grouped)})")
         if not grouped:
@@ -599,7 +608,7 @@ def execute(
 
 def print_results(outcomes: list[DeploymentOutcome]) -> None:
     print_grouped_results(
-        outcomes, ("New deployments", "Pending returns"), command="eudm-inventory-import"
+        outcomes, CLI_GROUPS, command="eudm-inventory-import"
     )
 
 
@@ -609,8 +618,10 @@ def main() -> int:
         config = AppConfig.load()
     except ValueError as exc:
         raise eudm.EUDMError(f"Could not load shared configuration: {exc}") from exc
-    if "--no-simulate" in sys.argv[1:] or (
-        "--simulate" not in sys.argv[1:] and not config.simulate
+    if browser_runtime_required(
+        sys.argv[1:],
+        default_simulate=config.simulate,
+        dry_run_flags=("--dry-run",),
     ):
         ensure_runtime(requirement_file="requirements-browser.txt", import_name="playwright")
     parser = argparse.ArgumentParser(
@@ -619,9 +630,10 @@ def main() -> int:
         epilog="""Workbook rules:
   The newest 'Inventory Tracking - Sydney*.xlsx' or .xlsm in Downloads is used
   when FILE is omitted. 'Bookings 2026' is selected automatically; otherwise
-  you choose a sheet. A=deployment date, D=username, J=new serial, L=old serial.
-  Red rows and rows without a username in D are excluded before EUDM. New and
-  return serials are assessed independently from columns J and L.
+  you choose a sheet. Columns are identified by their configured headings.
+  Red rows, non-attendees, and rows without a valid username are excluded.
+  The standalone importer submits deployments and pending returns; use the web
+  importer when returned devices also need to be moved into location stock.
 
 Modes:
   --dry-run ends after the preview with zero browser or EUDM API activity.
@@ -651,12 +663,12 @@ Modes:
     dates = sorted({row.deployment_date for row in rows}, reverse=True)
     date_options = []
     for candidate in dates:
-        new_count, return_count = eligible_counts(
+        deployment_count, _, pending_return_count = eligible_counts(
             row for row in rows if row.deployment_date == candidate
         )
         date_options.append(
-            f"{candidate.strftime('%A %-d %B %Y')} "
-            f"({new_count} new, {return_count} returns)"
+            f"{format_date_label(candidate)} "
+            f"({deployment_count} deployments, {pending_return_count} pending returns)"
         )
     selected_date = dates[choose_number("Deployment date", date_options)]
     selected_counts = eligible_counts(
@@ -665,12 +677,16 @@ Modes:
     mode_index = choose_number(
         "What should be deployed?",
         [
-            f"New serials from column J [{selected_counts[0]}]",
-            f"Returns from column L [{selected_counts[1]}]",
-            f"Both new serials and returns [{sum(selected_counts)}]",
+            f"Deployment serials [{selected_counts[0]}]",
+            f"Pending-return serials [{selected_counts[2]}]",
+            f"Both [{selected_counts[0] + selected_counts[2]}]",
         ],
     )
-    mode = ("new", "returns", "both")[mode_index]
+    mode = (
+        "deployments",
+        "pending_returns",
+        "deployments,pending_returns",
+    )[mode_index]
     actions, ignored = build_actions(rows, selected_date, mode)
     if not actions:
         raise eudm.EUDMError("No deployable rows remain for that date and selection.")

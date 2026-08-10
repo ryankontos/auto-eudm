@@ -12,7 +12,7 @@ import argparse
 import sys
 from typing import Any
 
-from .bootstrap import ensure_runtime
+from .bootstrap import browser_runtime_required, ensure_runtime
 from . import eudm_request as eudm
 from . import run_reporting
 from . import presentation
@@ -96,8 +96,8 @@ def main() -> int:
         config = AppConfig.load()
     except ValueError as exc:
         raise eudm.EUDMError(f"Could not load shared configuration: {exc}") from exc
-    if "--no-simulate" in sys.argv[1:] or (
-        "--simulate" not in sys.argv[1:] and not config.simulate
+    if browser_runtime_required(
+        sys.argv[1:], default_simulate=config.simulate
     ):
         ensure_runtime(requirement_file="requirements-browser.txt", import_name="playwright")
     parser = argparse.ArgumentParser(

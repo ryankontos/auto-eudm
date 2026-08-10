@@ -12,7 +12,7 @@ import argparse
 from pathlib import Path
 import sys
 
-from .bootstrap import ensure_runtime
+from .bootstrap import browser_runtime_required, ensure_runtime
 from . import eudm_request as eudm
 from .cli_common import add_runtime_arguments, console, open_client, request_for, start_run, validate_runtime_args
 from .eudm_config import AppConfig
@@ -170,8 +170,10 @@ or --simulate for a complete local rehearsal.
 
 def main() -> int:
     config = AppConfig.load()
-    if "--no-simulate" in sys.argv[1:] or (
-        "--simulate" not in sys.argv[1:] and not config.simulate
+    if browser_runtime_required(
+        sys.argv[1:],
+        default_simulate=config.simulate,
+        dry_run_flags=("--dry-run",),
     ):
         ensure_runtime(requirement_file="requirements-browser.txt", import_name="playwright")
     return SerialUserCLI(config).run()

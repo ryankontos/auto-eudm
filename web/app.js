@@ -35,6 +35,7 @@ const IMPORT_LOCATION_STORAGE_KEY = "auto-eudm-import-location";
 const VALIDATION_DEBOUNCE_MS = 1500;
 const MAX_RECENT_LOCATIONS = 8;
 const IMPORT_PREVIEW_ROW_LIMIT = 80;
+const MAX_WORKBOOK_BYTES = 100 * 1024 * 1024;
 const ALM_IMPORT_STATUS_OPTIONS = {
   Deployments: [
     { value: "Deployed - New Stock", label: "Deployed - New Stock" },
@@ -789,16 +790,17 @@ function queueValidation() {
   const errors = new Map(state.queue.map((request) => [request.id, validateRequest(request)]));
   const owners = new Map();
   for (const request of state.queue) {
-    for (const serial of request.serials) {
-      const key = serial.toLowerCase();
+    const uniqueSerials = new Set(request.serials.map((serial) => serial.toLowerCase()));
+    for (const key of uniqueSerials) {
       if (!owners.has(key)) owners.set(key, []);
       owners.get(key).push(request.id);
     }
   }
   for (const [serial, ids] of owners) {
     if (ids.length > 1) {
-      for (const id of ids) {
-        errors.get(id).push(`Serial ${serial.toUpperCase()} appears in more than one request.`);
+      for (const id of new Set(ids)) {
+        const requestErrors = errors.get(id);
+        if (requestErrors) requestErrors.push(`Serial ${serial.toUpperCase()} appears in more than one request.`);
       }
     }
   }
@@ -2737,6 +2739,18 @@ async function uploadWorkbook(file) {
   state.importUploadToken = token;
   $("#importError").hidden = true;
   $("#prepareImportButton").disabled = true;
+  if (!/\.(xlsx|xlsm)$/i.test(file.name)) {
+    $("#importError").textContent = "Choose an .xlsx or .xlsm ALM Workbook.";
+    $("#importError").hidden = false;
+    setImportBusy(false);
+    return;
+  }
+  if (file.size > MAX_WORKBOOK_BYTES) {
+    $("#importError").textContent = "The ALM Workbook is larger than the 100 MB local limit.";
+    $("#importError").hidden = false;
+    setImportBusy(false);
+    return;
+  }
   setImportBusy(true, {
     percent: 0,
     title: "Reading ALM Workbook…",
@@ -3355,7 +3369,13 @@ async function submitQueue() {
     });
   } catch (error) {
     if (error.payload?.validation) {
-      toast("Some requests need attention. Return to the queue to correct them.", "error");
+      const queueErrors = error.payload.validation._queue || [];
+      toast(
+        queueErrors.length
+          ? queueErrors.join(" ")
+          : "Some requests need attention. Return to the queue to correct them.",
+        "error",
+      );
     } else {
       toast(error.message, "error");
     }

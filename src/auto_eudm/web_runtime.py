@@ -40,6 +40,9 @@ DEVICE_MODEL_LOCATION_STATUSES = frozenset({
     "Pending Decom",
     "Pending Rebuild",
 })
+MAX_IMPORT_JOBS = 12
+MAX_PENDING_IMPORTS = 2
+MAX_LIVE_SUBMISSION_JOBS = 100
 
 
 def populate_spec(
@@ -626,18 +629,34 @@ class SubmissionJob:
         step: int | None = None,
         request_id: str | None = None,
         order_id: str | None = None,
+        started_at: float | None = None,
+        finished_at: float | None = None,
     ) -> None:
         with self.lock:
-            if state:
+            if state is not None:
                 entry.state = state
-            if message:
+            if message is not None:
                 entry.message = message
             if step is not None:
                 entry.step = step
-            if request_id:
+            if request_id is not None:
                 entry.request_id = request_id
-            if order_id:
+            if order_id is not None:
                 entry.order_id = order_id
+            if started_at is not None:
+                entry.started_at = started_at
+            if finished_at is not None:
+                entry.finished_at = finished_at
+
+    def set_state(self, state: str, *, finished_at: str | None = None) -> None:
+        with self.lock:
+            self.state = state
+            if finished_at is not None:
+                self.finished_at = finished_at
+
+    def is_finished(self) -> bool:
+        with self.lock:
+            return self.state == "finished"
 
 
 class JobStore:
@@ -669,15 +688,35 @@ class JobStore:
             self.persisted_history.insert(0, snapshot)
             self.persisted_history = self.persisted_history[:100]
             payload = json.dumps(self.persisted_history, ensure_ascii=False, indent=2)
-        try:
-            self.history_path.parent.mkdir(parents=True, exist_ok=True)
-            temporary = self.history_path.with_suffix(".tmp")
-            temporary.write_text(payload + "\n", encoding="utf-8")
-            temporary.replace(self.history_path)
-        except OSError:
-            # History is a convenience feature; it must never affect a
-            # completed EUDM request.
-            pass
+            try:
+                # Serialize the atomic replacement with the in-memory update.
+                # Parallel jobs otherwise race through the shared .tmp path
+                # and an older snapshot can overwrite a newer completion.
+                self.history_path.parent.mkdir(parents=True, exist_ok=True)
+                temporary = self.history_path.with_suffix(".tmp")
+                temporary.write_text(payload + "\n", encoding="utf-8")
+                temporary.replace(self.history_path)
+            except OSError:
+                # History is a convenience feature; it must never affect a
+                # completed EUDM request.
+                pass
+
+    def _register_job(self, job: SubmissionJob) -> None:
+        """Bound completed live state while retaining every active run."""
+        with self.lock:
+            self.jobs[job.job_id] = job
+            while len(self.jobs) > MAX_LIVE_SUBMISSION_JOBS:
+                removable = next(
+                    (
+                        job_id
+                        for job_id, existing in self.jobs.items()
+                        if job_id != job.job_id and existing.is_finished()
+                    ),
+                    None,
+                )
+                if removable is None:
+                    break
+                self.jobs.pop(removable, None)
 
     def create(
         self, specs: list[RequestSpec], request_for: str, concurrency: int
@@ -689,8 +728,7 @@ class JobStore:
             concurrency,
             self.clients.config.simulate,
         )
-        with self.lock:
-            self.jobs[job.job_id] = job
+        self._register_job(job)
         threading.Thread(target=self._run, args=(job,), daemon=True).start()
         return job
 
@@ -711,15 +749,17 @@ class JobStore:
         return sorted(runs, key=lambda job: str(job.get("created_at", "")), reverse=True)[:limit]
 
     def _run(self, job: SubmissionJob) -> None:
-        job.state = "running"
+        job.set_state("running")
         workers = min(job.concurrency, len(job.entries))
         try:
             clients = self.clients.clients(workers)
         except eudm.EUDMError as exc:
             for entry in job.entries:
                 job.update(entry, state="failed", message=str(exc))
-            job.state = "finished"
-            job.finished_at = datetime.now().isoformat(timespec="seconds")
+            job.set_state(
+                "finished",
+                finished_at=datetime.now().isoformat(timespec="seconds"),
+            )
             self._write_results(job)
             return
         with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -741,22 +781,24 @@ class JobStore:
                         entry,
                         state="failed",
                         message=f"Unexpected failure: {type(exc).__name__}",
+                        finished_at=time.time(),
                     )
-                    entry.finished_at = time.time()
-        job.state = "finished"
-        job.finished_at = datetime.now().isoformat(timespec="seconds")
+        job.set_state(
+            "finished",
+            finished_at=datetime.now().isoformat(timespec="seconds"),
+        )
         self._write_results(job)
 
     def _run_one(
         self, job: SubmissionJob, entry: JobEntry, client: Any
     ) -> None:
-        entry.started_at = time.time()
         spec = entry.spec
         job.update(
             entry,
             state="running",
             step=1,
             message="Creating the EUDM request",
+            started_at=time.time(),
         )
 
         def created(request_id: str) -> None:
@@ -803,7 +845,7 @@ class JobStore:
                 message=str(exc),
             )
         finally:
-            entry.finished_at = time.time()
+            job.update(entry, finished_at=time.time())
 
     def _write_results(self, job: SubmissionJob) -> None:
         lines = []
@@ -824,7 +866,12 @@ class JobStore:
                     )
                 )
             )
-        run_reporting.write_result_file("eudm-web", lines)
+        try:
+            run_reporting.write_result_file("eudm-web", lines)
+        except OSError:
+            # A result text file is useful but must not prevent the durable
+            # history snapshot from being updated.
+            pass
         self._persist_history(job)
 
     def result_text(self, job_id: str) -> str:
@@ -888,6 +935,7 @@ class ImportJob:
                 self.processed_rows = processed_rows
             if total_rows is not None:
                 self.total_rows = total_rows
+
     def fail(self, error: str) -> None:
         with self._lock:
             self.state = "failed"
@@ -900,6 +948,10 @@ class ImportJob:
             self.message = "Workbook ready."
             self.workbook = workbook
             self.processed_rows = self.total_rows or self.processed_rows
+
+    def is_terminal(self) -> bool:
+        with self._lock:
+            return self.state in {"ready", "failed"}
 
     def to_json(self) -> dict[str, Any]:
         with self._lock:
@@ -922,7 +974,7 @@ class Application:
         self.clients = ClientManager(config)
         self.jobs = JobStore(self.clients)
         self.imports: dict[str, WorkbookImport] = {}
-        self.pending_imports: dict[str, tuple[str, str]] = {}
+        self.pending_imports: dict[str, tuple[str, bytes]] = {}
         self.import_jobs: dict[str, ImportJob] = {}
         self.import_lock = threading.Lock()
         self.preferences_path = ROOT / "results" / "web-settings.json"
@@ -1106,21 +1158,27 @@ class Application:
                 first = next(iter(self.imports))
                 self.imports.pop(first, None)
 
-    def start_import(self, filename: str, encoded: str) -> ImportJob:
-        job = ImportJob(job_id=uuid.uuid4().hex, filename=filename)
+    def _register_import_job(self, job: ImportJob) -> None:
+        """Retain bounded history without evicting jobs still being polled."""
         with self.import_lock:
             self.import_jobs[job.job_id] = job
-            if len(self.import_jobs) > 12:
-                finished = next(
+            while len(self.import_jobs) > MAX_IMPORT_JOBS:
+                removable = next(
                     (
                         job_id
                         for job_id, existing in self.import_jobs.items()
-                        if existing.state in {"ready", "failed"}
+                        if job_id != job.job_id
+                        and existing.is_terminal()
                     ),
-                    next(iter(self.import_jobs)),
+                    None,
                 )
-                if finished != job.job_id:
-                    self.import_jobs.pop(finished, None)
+                if removable is None:
+                    break
+                self.import_jobs.pop(removable, None)
+
+    def start_import(self, filename: str, encoded: str) -> ImportJob:
+        job = ImportJob(job_id=uuid.uuid4().hex, filename=filename)
+        self._register_import_job(job)
         threading.Thread(
             target=self._inspect_import,
             args=(job, encoded),
@@ -1137,28 +1195,37 @@ class Application:
             pending = self.pending_imports.pop(import_id, None)
         if not pending:
             raise eudm.EUDMError("That workbook import expired. Choose the file again.")
-        filename, encoded = pending
+        filename, payload = pending
         job = ImportJob(job_id=uuid.uuid4().hex, filename=filename)
-        with self.import_lock:
-            self.import_jobs[job.job_id] = job
-        threading.Thread(target=self._read_import, args=(job, encoded, inventory.columns_from_mapping(columns)), daemon=True).start()
+        self._register_import_job(job)
+        threading.Thread(
+            target=self._read_import,
+            args=(job, payload, inventory.columns_from_mapping(columns)),
+            daemon=True,
+        ).start()
         return job
 
     def _inspect_import(self, job: ImportJob, encoded: str) -> None:
         job.update(state="reading", message="Reading workbook headings…")
         try:
-            inspected = WorkbookImport.inspect_upload(job.filename, encoded)
+            payload = WorkbookImport.decode_upload(job.filename, encoded)
+            inspected = WorkbookImport.inspect_payload(job.filename, payload)
             import_id = uuid.uuid4().hex
             inspected["import_id"] = import_id
             with self.import_lock:
-                self.pending_imports[import_id] = (job.filename, encoded)
-                while len(self.pending_imports) > 8:
+                self.pending_imports[import_id] = (job.filename, payload)
+                while len(self.pending_imports) > MAX_PENDING_IMPORTS:
                     self.pending_imports.pop(next(iter(self.pending_imports)))
             job.finish(inspected)
         except eudm.EUDMError as exc:
             job.fail(str(exc))
 
-    def _read_import(self, job: ImportJob, encoded: str, columns: inventory.ImportColumns) -> None:
+    def _read_import(
+        self,
+        job: ImportJob,
+        payload: bytes,
+        columns: inventory.ImportColumns,
+    ) -> None:
         job.update(state="reading", message="Opening the workbook…")
 
         def progress(sheet: str, completed: int, total: int) -> None:
@@ -1171,8 +1238,8 @@ class Application:
             )
 
         try:
-            workbook = WorkbookImport.from_upload(
-                job.filename, encoded, columns=columns, on_progress=progress
+            workbook = WorkbookImport.from_payload(
+                job.filename, payload, columns=columns, on_progress=progress
             )
             self.add_import(workbook)
             job.finish(workbook.summary())
