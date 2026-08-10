@@ -1030,13 +1030,17 @@ class Application:
                 model_key = model_name.casefold()
                 if model_key in seen_models:
                     raise eudm.EUDMError(f"The device model '{model_name}' is listed more than once.")
-                if user_status not in DEVICE_MODEL_USER_STATUSES:
+                if user_status and user_status not in DEVICE_MODEL_USER_STATUSES:
                     raise eudm.EUDMError(
                         f"'{user_status or 'Blank'}' is not a valid user deployment status for {model_name}."
                     )
-                if location_status not in DEVICE_MODEL_LOCATION_STATUSES:
+                if location_status and location_status not in DEVICE_MODEL_LOCATION_STATUSES:
                     raise eudm.EUDMError(
                         f"'{location_status or 'Blank'}' is not a valid location deployment status for {model_name}."
+                    )
+                if not user_status and not location_status:
+                    raise eudm.EUDMError(
+                        f"Choose at least one suggested deployment status for {model_name}."
                     )
                 seen_models.add(model_key)
                 normalised_mappings.append({

@@ -298,6 +298,10 @@ function normaliseModelName(value) {
   return String(value || "").trim().replace(/\s+/g, " ");
 }
 
+function modelNameKey(value) {
+  return normaliseModelName(value).toLowerCase();
+}
+
 function deviceModelMappings() {
   return Array.isArray(state.preferences?.device_model_mappings)
     ? state.preferences.device_model_mappings.filter((mapping) => mapping && typeof mapping === "object")
@@ -305,8 +309,8 @@ function deviceModelMappings() {
 }
 
 function modelMappingForName(name) {
-  const key = normaliseModelName(name).toLowerCase();
-  return deviceModelMappings().find((mapping) => normaliseModelName(mapping.model_name).toLowerCase() === key) || null;
+  const key = modelNameKey(name);
+  return deviceModelMappings().find((mapping) => modelNameKey(mapping.model_name) === key) || null;
 }
 
 function exactModelMappingForHint(value) {
@@ -332,7 +336,7 @@ function renderDeviceModelMappings(mappings = deviceModelMappings()) {
   }
   const optionsFor = (kind, selected) => modelStatusOptions(kind).map((option) =>
     `<option value="${escapeHtml(option.value)}" ${option.value === selected ? "selected" : ""}>${escapeHtml(option.label)}</option>`,
-  ).join("");
+  ).join("") + `<option value="" ${selected ? "" : "selected"}>No suggestion</option>`;
   container.innerHTML = mappings.map((mapping, index) => `
     <div class="device-model-mapping" data-model-mapping-row="${index}">
       <label>Model number
@@ -365,13 +369,16 @@ function validateDeviceModelMappings(mappings) {
   const seen = new Set();
   for (const mapping of mappings) {
     if (!mapping.model_name) return "Enter a model number for every device model mapping, or remove the empty row.";
-    const key = mapping.model_name.toLowerCase();
+    const key = modelNameKey(mapping.model_name);
     if (seen.has(key)) return `The device model '${mapping.model_name}' is listed more than once.`;
     seen.add(key);
-    if (!modelStatusOptions("user").some((option) => option.value === mapping.user_status)) {
+    if (!mapping.user_status && !mapping.location_status) {
+      return `Choose at least one suggested deployment status for ${mapping.model_name}.`;
+    }
+    if (mapping.user_status && !modelStatusOptions("user").some((option) => option.value === mapping.user_status)) {
       return `Choose a user deployment status for ${mapping.model_name}.`;
     }
-    if (!modelStatusOptions("location").some((option) => option.value === mapping.location_status)) {
+    if (mapping.location_status && !modelStatusOptions("location").some((option) => option.value === mapping.location_status)) {
       return `Choose a location deployment status for ${mapping.model_name}.`;
     }
   }
@@ -422,6 +429,10 @@ function updateModelStatusDialog() {
     return;
   }
   const statuses = mappings.map((mapping) => mapping[destination === "user" ? "user_status" : "location_status"]);
+  if (statuses.some((status) => !status)) {
+    suggestion.textContent = "No status suggestion is configured for this deployment type.";
+    return;
+  }
   const uniqueStatuses = [...new Set(statuses)];
   if (uniqueStatuses.length > 1) {
     setModelStatusError("These model mappings suggest different statuses. A request with multiple serials has one shared status, so choose models that agree or split the request.");
@@ -2802,7 +2813,7 @@ function renderImportPreview() {
           <input type="checkbox" data-import-include="${escapeHtml(request.id)}" ${isIncluded ? "checked" : ""}>
           <span>${index + 1}</span>
         </label>
-        <div><strong>${escapeHtml(request.serials[0])}</strong><small>${isDeployment ? "Deployment serial" : isReturnedDevice ? "Returned device" : "Pending return"}</small>${request.device_allocation ? `<small class="import-device-allocation">ALM model: ${escapeHtml(request.device_allocation)}</small>` : ""}</div>
+        <div><strong>${escapeHtml(request.serials[0])}</strong><small>${isDeployment ? "Deployment serial" : isReturnedDevice ? "Returned device" : "Pending return"}</small>${request.device_allocation ? `<small class="import-device-allocation">${escapeHtml(request.device_allocation)}</small>` : ""}</div>
         <div><strong>${escapeHtml(request.user || request.returning_user || "No user")}</strong><small>${isReturnedDevice ? "Returning user" : "User"}</small></div>
         <div>${statusControl}${isIncluded ? validation : "<small>Do not deploy</small>"}${returnDetails}${editable}</div>
       </div>`;
@@ -2814,11 +2825,21 @@ function renderImportPreview() {
           ${bulkStatusOptions.map((option) => `<option value="${escapeHtml(option.value)}">${escapeHtml(option.label)}</option>`).join("")}
         </select>`
       : "";
+    const suggestionTotal = selectedCount;
+    const suggestedCount = requests.filter((request) => {
+      if (request.included === false) return false;
+      const mapping = modelMappingForName(request.device_allocation);
+      return Boolean(mapping?.user_status);
+    }).length;
+    const applySuggestionsButton = group.key === "Deployments" && suggestionTotal
+      ? `<button class="button secondary compact" type="button" data-import-apply-suggestions="Deployments" title="Apply statuses for ALM model names that exactly match a configured device model mapping" ${suggestedCount ? "" : "disabled"}>Apply ${suggestedCount}/${suggestionTotal} suggested</button>`
+      : "";
     return `<section class="import-preview-section">
       <div class="import-group-heading">
         <div><strong>${group.title}</strong><small>${group.detail} · ${selectedCount} of ${requests.length} selected</small></div>
         <div class="import-group-actions">
           ${bulkStatusControl}
+          ${applySuggestionsButton}
           <button class="text-button" type="button" data-import-group="${escapeHtml(group.key)}" data-include="true">All</button>
           <button class="text-button" type="button" data-import-group="${escapeHtml(group.key)}" data-include="false">None</button>
         </div>
@@ -2862,6 +2883,23 @@ function renderImportPreview() {
       .forEach((request) => { request.status = status; });
     renderImportPreview();
     updateImportPrepareButton(payload);
+  }));
+  $("#importPreviewList").querySelectorAll("[data-import-apply-suggestions]").forEach((button) => button.addEventListener("click", () => {
+    const group = button.dataset.importApplySuggestions;
+    let applied = 0;
+    payload.requests
+      .filter((request) => request.group === group && request.included !== false)
+      .forEach((request) => {
+        const mapping = modelMappingForName(request.device_allocation);
+        if (!mapping) return;
+        const status = mapping.user_status;
+        if (!status || request.status === status) return;
+        request.status = status;
+        applied += 1;
+      });
+    renderImportPreview();
+    updateImportPrepareButton(payload);
+    toast(applied ? `Applied ${applied} model suggestion${applied === 1 ? "" : "s"}.` : "No exact model mappings matched the ALM allocation names.", applied ? "success" : "info");
   }));
   $("#importPreviewList").querySelectorAll("[data-import-include]").forEach((checkbox) => {
     checkbox.addEventListener("change", () => {
