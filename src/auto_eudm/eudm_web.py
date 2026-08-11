@@ -18,20 +18,6 @@ from .web_server import AutoEUDMServer
 
 
 def main() -> int:
-    ensure_runtime(
-        requirement_file="requirements-sheet.txt", import_name="openpyxl"
-    )
-    try:
-        config = AppConfig.load()
-    except ValueError as exc:
-        raise eudm.EUDMError(
-            f"Could not load shared configuration: {exc}"
-        ) from exc
-    if not config.simulate or config.spreadsheet_import_enabled:
-        ensure_runtime(
-            requirement_file="requirements-browser.txt",
-            import_name="playwright",
-        )
     parser = argparse.ArgumentParser(
         description="Run the local AutoEUDM request workspace.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -60,6 +46,21 @@ Examples:
     args = parser.parse_args()
     if args.port < 1024 or args.port > 65535:
         raise eudm.EUDMError("--port must be between 1024 and 65535.")
+
+    ensure_runtime(
+        requirement_file="requirements-sheet.txt", import_name="openpyxl"
+    )
+    try:
+        config = AppConfig.load()
+    except ValueError as exc:
+        raise eudm.EUDMError(
+            f"Could not load shared configuration: {exc}"
+        ) from exc
+    if not config.simulate or config.spreadsheet_import_enabled:
+        ensure_runtime(
+            requirement_file="requirements-browser.txt",
+            import_name="playwright",
+        )
 
     run_reporting.configure_logging(
         enabled=config.logging, command="eudm-web"
@@ -93,12 +94,20 @@ Examples:
     return 0
 
 
-if __name__ == "__main__":
+def cli() -> None:
+    """Run the web server with stable, user-facing startup errors."""
     try:
         raise SystemExit(main())
+    except KeyboardInterrupt:
+        print("\nAutoEUDM stopped.")
+        raise SystemExit(130)
     except eudm.EUDMError as exc:
         print(f"Error: {exc}")
         raise SystemExit(2)
     except (socket.error, OSError) as exc:
         print(f"Error: Could not start the local web server: {exc}")
         raise SystemExit(2)
+
+
+if __name__ == "__main__":
+    cli()

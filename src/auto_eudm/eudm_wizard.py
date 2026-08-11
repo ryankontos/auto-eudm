@@ -25,6 +25,7 @@ from .cli_common import (
     validate_runtime_args,
 )
 from .eudm_config import AppConfig
+from .identifiers import is_serial
 
 
 def prompt_text(label: str) -> str:
@@ -134,12 +135,20 @@ Review:
         serials = [value.strip() for value in raw_serials]
         if any(not value for value in serials):
             raise eudm.EUDMError("The batch serial list contains an empty entry")
-        if any(any(character.isspace() for character in value) for value in serials):
-            raise eudm.EUDMError("Serial numbers cannot contain whitespace")
+        if any(not is_serial(value) for value in serials):
+            raise eudm.EUDMError(
+                "Serial numbers must be at least 6 characters and contain only letters, "
+                "numbers, periods, underscores, or hyphens"
+            )
         if len({value.casefold() for value in serials}) != len(serials):
             raise eudm.EUDMError("The batch serial list contains duplicates")
     else:
         serials = [prompt_text("Hostname or serial number")]
+        if not is_serial(serials[0]):
+            raise eudm.EUDMError(
+                "The hostname or serial must be at least 6 characters and contain only letters, "
+                "numbers, periods, underscores, or hyphens"
+            )
 
     print(f"\nStarting {mode_display.lower()} for {', '.join(serials)}.")
     client = open_client(args)
@@ -336,7 +345,8 @@ Review:
     return 0
 
 
-if __name__ == "__main__":
+def cli() -> None:
+    """Run the command with stable, user-facing error handling."""
     try:
         raise SystemExit(main())
     except KeyboardInterrupt:
@@ -357,3 +367,7 @@ if __name__ == "__main__":
     except Exception:
         print("Error: An unexpected problem occurred. Re-run with --verbose and report the step shown before it.")
         raise SystemExit(2)
+
+
+if __name__ == "__main__":
+    cli()

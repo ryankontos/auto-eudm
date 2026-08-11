@@ -29,6 +29,7 @@ from .cli_common import (
     validate_runtime_args,
 )
 from .eudm_config import AppConfig
+from .identifiers import is_login_id, is_serial
 from .user_assignments import (
     DeploymentOutcome,
     UserDeployment,
@@ -182,17 +183,12 @@ def enabled_column_allows(value: Any) -> bool:
 
 def looks_like_serial(value: str | None) -> bool:
     """Reject blanks and obvious sheet markers such as 1-5 without overfitting vendors."""
-    return bool(
-        value
-        and len(value) >= 6
-        and not any(character.isspace() for character in value)
-        and re.fullmatch(r"[A-Za-z0-9._-]+", value)
-    )
+    return is_serial(value)
 
 
 def looks_like_username(value: str | None) -> bool:
     """Accept a login ID from column D, never a display name or email address."""
-    return bool(value and re.fullmatch(r"[A-Za-z][A-Za-z0-9._-]*", value))
+    return is_login_id(value)
 
 
 def cell_is_red(cell: Any) -> bool:
@@ -707,7 +703,8 @@ Modes:
     return 1 if any(outcome.error for outcome in outcomes) else 0
 
 
-if __name__ == "__main__":
+def cli() -> None:
+    """Run the command with stable, user-facing error handling."""
     try:
         raise SystemExit(main())
     except KeyboardInterrupt:
@@ -726,3 +723,7 @@ if __name__ == "__main__":
             file=sys.stderr,
         )
         raise SystemExit(2)
+
+
+if __name__ == "__main__":
+    cli()

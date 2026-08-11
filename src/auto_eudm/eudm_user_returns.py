@@ -9,6 +9,7 @@ one serial number, whitespace, and one username.
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from pathlib import Path
 import sys
 
@@ -16,6 +17,7 @@ from .bootstrap import browser_runtime_required, ensure_runtime
 from . import eudm_request as eudm
 from .cli_common import add_runtime_arguments, console, open_client, request_for, start_run, validate_runtime_args
 from .eudm_config import AppConfig
+from .identifiers import is_login_id, is_serial
 from .user_assignments import (
     USER_STATUSES,
     UserDeployment,
@@ -107,13 +109,24 @@ or --simulate for a complete local rehearsal.
                 errors.append(f"line {line_number} must contain exactly SERIAL USERNAME")
                 continue
             serial, username = fields
+            if not is_serial(serial):
+                errors.append(
+                    f"line {line_number} has an invalid serial; use at least 6 letters, "
+                    "numbers, periods, underscores, or hyphens"
+                )
+                continue
+            if not is_login_id(username):
+                errors.append(
+                    f"line {line_number} username must be a login ID, not a display name or email"
+                )
+                continue
             pairs.append((serial, username))
         if errors:
             raise eudm.EUDMError("Invalid input: " + "; ".join(errors))
         if not pairs:
             raise eudm.EUDMError("No SERIAL USERNAME pairs were supplied.")
-        serials = [serial.casefold() for serial, _ in pairs]
-        duplicates = sorted({serial for serial in serials if serials.count(serial) > 1})
+        serial_counts = Counter(serial.casefold() for serial, _ in pairs)
+        duplicates = sorted(serial for serial, count in serial_counts.items() if count > 1)
         if duplicates:
             raise eudm.EUDMError("Duplicate serial numbers: " + ", ".join(duplicates))
         return pairs
@@ -179,7 +192,8 @@ def main() -> int:
     return SerialUserCLI(config).run()
 
 
-if __name__ == "__main__":
+def cli() -> None:
+    """Run the command with stable, user-facing error handling."""
     try:
         raise SystemExit(main())
     except KeyboardInterrupt:
@@ -194,3 +208,7 @@ if __name__ == "__main__":
     except Exception:
         print("Error: An unexpected problem occurred. Re-run with --verbose.", file=sys.stderr)
         raise SystemExit(2)
+
+
+if __name__ == "__main__":
+    cli()

@@ -6,7 +6,7 @@ from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT_DIR / "src"))
-from auto_eudm.eudm_location_batch import main
+from auto_eudm.eudm_location_batch import cli
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    cli()

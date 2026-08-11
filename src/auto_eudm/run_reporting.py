@@ -37,6 +37,11 @@ def event(message: str, *args: object) -> None:
     LOGGER.info(message, *args)
 
 
+def exception(message: str, *args: object) -> None:
+    """Record the active exception without exposing it in the browser response."""
+    LOGGER.exception(message, *args)
+
+
 def network(
     method: str,
     path: str,

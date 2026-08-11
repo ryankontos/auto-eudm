@@ -14,6 +14,7 @@ import uuid
 
 from . import eudm_inventory_import as inventory
 from . import eudm_request as eudm
+from .identifiers import is_login_id, is_serial
 
 
 USER_STATUSES: tuple[tuple[str, str], ...] = (
@@ -83,8 +84,6 @@ CITIES: tuple[str, ...] = (
     "Toronto, CA",
 )
 
-SERIAL_PATTERN = re.compile(r"[A-Za-z0-9._-]+")
-LOGIN_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9._-]*")
 MAX_WORKBOOK_BYTES = 100 * 1024 * 1024
 
 
@@ -232,10 +231,7 @@ class RequestSpec:
         ]
         if duplicate_serials:
             errors.append("Remove duplicate serial numbers from this request.")
-        if any(
-            not SERIAL_PATTERN.fullmatch(serial) or len(serial) < 6
-            for serial in self.serials
-        ):
+        if any(not is_serial(serial) for serial in self.serials):
             errors.append(
                 "Serial numbers must be at least 6 characters and contain only letters, numbers, periods, underscores, or hyphens."
             )
@@ -246,7 +242,7 @@ class RequestSpec:
                 errors.append("Choose a valid status for Deploy to user.")
             if not self.user:
                 errors.append("Choose the receiving user.")
-            elif not LOGIN_PATTERN.fullmatch(self.user):
+            elif not is_login_id(self.user):
                 errors.append("The receiving user must be a login ID, not a display name or email address.")
             if self.returning_requested:
                 errors.append("Deploy to user cannot have a returning user.")
@@ -273,7 +269,7 @@ class RequestSpec:
                 errors.append("Choose both the city and the location.")
             if self.returning_requested and not self.returning_user:
                 errors.append("Choose the returning user or turn off the return option.")
-            elif self.returning_user and not LOGIN_PATTERN.fullmatch(self.returning_user):
+            elif self.returning_user and not is_login_id(self.returning_user):
                 errors.append("The returning user must be a login ID, not a display name or email address.")
             if self.returning_user and not self.returning_user_info:
                 errors.append("Search and verify the returning user's details before submitting; an email will be sent to them.")
@@ -338,7 +334,7 @@ def validate_queue(
     requester = clean(request_for)
     if not requester:
         add_error("_queue", "Set EUDM_REQUEST_FOR or enter a requesting login ID.")
-    elif not LOGIN_PATTERN.fullmatch(requester):
+    elif not is_login_id(requester):
         add_error(
             "_queue",
             "The requesting user must be a login ID, not a display name or email address.",

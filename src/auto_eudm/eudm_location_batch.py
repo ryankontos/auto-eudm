@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import os
 from pathlib import Path
 import subprocess
@@ -10,8 +11,15 @@ import sys
 
 from . import eudm_request as eudm
 from . import run_reporting
-from .cli_common import add_runtime_arguments, console, start_run, validate_runtime_args
+from .cli_common import (
+    add_runtime_arguments,
+    console,
+    request_for,
+    start_run,
+    validate_runtime_args,
+)
 from .eudm_config import AppConfig
+from .identifiers import is_serial
 
 
 LOCATION_STATUSES = ("New Stock", "Used Stock", "Pending Pickup")
@@ -21,9 +29,13 @@ def parse_serials(raw: str) -> list[str]:
     serials = [value.strip() for value in raw.replace(",", "\n").splitlines() if value.strip()]
     if not serials:
         raise eudm.EUDMError("Enter at least one serial number.")
-    if any(any(character.isspace() for character in serial) for serial in serials):
-        raise eudm.EUDMError("Each serial number must be on its own line or separated by commas.")
-    duplicates = sorted({serial for serial in serials if sum(x.casefold() == serial.casefold() for x in serials) > 1})
+    if any(not is_serial(serial) for serial in serials):
+        raise eudm.EUDMError(
+            "Serial numbers must be at least 6 characters and contain only letters, numbers, "
+            "periods, underscores, or hyphens."
+        )
+    serial_counts = Counter(serial.casefold() for serial in serials)
+    duplicates = sorted(serial for serial, count in serial_counts.items() if count > 1)
     if duplicates:
         raise eudm.EUDMError("Duplicate serial numbers: " + ", ".join(duplicates))
     return serials
@@ -68,9 +80,6 @@ def main() -> int:
     args = parser.parse_args()
     validate_runtime_args(args)
     start_run(args, "eudm-location-batch")
-    if not args.request_for:
-        args.request_for = console.text("Request-for login ID")
-
     default = LOCATION_STATUSES.index(config.default_location_status) + 1 if config.default_location_status in LOCATION_STATUSES else 1
     print("\nLocation deployment type for every serial")
     for index, status in enumerate(LOCATION_STATUSES, 1):
@@ -95,6 +104,7 @@ def main() -> int:
         run_reporting.write_result_file("eudm-location-batch", [f"DRY RUN | status={status} | serials={','.join(serials)} | location={location}"])
         print("Dry run complete. No browser was opened and no EUDM requests were made.")
         return 0
+    args.request_for = request_for(args, config)
     if not console.yes_no("Create and submit this one batch request?"):
         print("Cancelled before authentication. No EUDM requests were made.")
         return 0
@@ -120,7 +130,8 @@ def main() -> int:
     return completed.returncode
 
 
-if __name__ == "__main__":
+def cli() -> None:
+    """Run the command with stable, user-facing error handling."""
     try:
         raise SystemExit(main())
     except (eudm.EUDMError, ValueError) as exc:
@@ -129,3 +140,7 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\nCancelled.")
         raise SystemExit(130)
+
+
+if __name__ == "__main__":
+    cli()

@@ -29,6 +29,7 @@ from typing import Any
 
 from .bootstrap import browser_runtime_required, ensure_runtime
 from .eudm_config import AppConfig
+from .identifiers import is_login_id, is_serial
 from . import run_reporting
 from . import presentation
 
@@ -1038,8 +1039,19 @@ def deploy_device_to_user(
     ):
         if not value or value != value.strip():
             raise EUDMError(f"The {label} cannot be empty or have surrounding whitespace.")
-    if any(character.isspace() for character in serial):
-        raise EUDMError(f"Serial number {serial!r} cannot contain whitespace.")
+    if not is_serial(serial):
+        raise EUDMError(
+            "The serial number must be at least 6 characters and contain only letters, "
+            "numbers, periods, underscores, or hyphens."
+        )
+    for label, value in (
+        ("request-for user", request_for),
+        ("deployed-to user", deployed_to),
+    ):
+        if not is_login_id(value):
+            raise EUDMError(
+                f"The {label} must be a login ID, not a display name or email address."
+            )
 
     created = request_step(
         client,
@@ -1203,8 +1215,11 @@ def deploy_device_to_location(
         raise EUDMError("A bulk location request must contain at least one serial number.")
     if len({serial.casefold() for serial in cleaned_serials}) != len(cleaned_serials):
         raise EUDMError("A location request cannot contain duplicate serial numbers.")
-    if any(any(character.isspace() for character in serial) for serial in cleaned_serials):
-        raise EUDMError("Serial numbers cannot contain whitespace.")
+    if any(not is_serial(serial) for serial in cleaned_serials):
+        raise EUDMError(
+            "Serial numbers must be at least 6 characters and contain only letters, "
+            "numbers, periods, underscores, or hyphens."
+        )
     if bulk and returning_user:
         raise EUDMError(
             "Bulk location requests cannot include a returning user; use individual requests."
@@ -1223,6 +1238,14 @@ def deploy_device_to_location(
     ):
         if not value or value != value.strip():
             raise EUDMError(f"The {label} cannot be empty or have surrounding whitespace.")
+    if not is_login_id(request_for):
+        raise EUDMError(
+            "The request-for user must be a login ID, not a display name or email address."
+        )
+    if returning_user and not is_login_id(returning_user):
+        raise EUDMError(
+            "The returning user must be a login ID, not a display name or email address."
+        )
 
     created = request_step(
         client,
@@ -1390,6 +1413,10 @@ def validate_args(args: argparse.Namespace) -> bool:
             raise EUDMError(f"--{name.replace('_', '-')} cannot be empty")
         if value != value.strip():
             raise EUDMError(f"--{name.replace('_', '-')} cannot begin or end with whitespace")
+    if not is_login_id(args.request_for):
+        raise EUDMError(
+            "--request-for must be a login ID, not a display name or email address"
+        )
     if args.batch:
         if args.serial:
             raise EUDMError("Batch mode uses --serials, not --serial")
@@ -1398,8 +1425,11 @@ def validate_args(args: argparse.Namespace) -> bool:
         serials = [value.strip() for value in args.serials.split(",")]
         if not serials or any(not value for value in serials):
             raise EUDMError("--serials must be a comma-separated list without empty entries")
-        if any(any(character.isspace() for character in value) for value in serials):
-            raise EUDMError("Serial numbers in --serials cannot contain whitespace")
+        if any(not is_serial(value) for value in serials):
+            raise EUDMError(
+                "Serial numbers in --serials must be at least 6 characters and contain only "
+                "letters, numbers, periods, underscores, or hyphens"
+            )
         if len({value.casefold() for value in serials}) != len(serials):
             raise EUDMError("--serials cannot contain duplicates")
         args.batch_serials = serials
@@ -1408,8 +1438,11 @@ def validate_args(args: argparse.Namespace) -> bool:
             raise EUDMError("--serials requires --batch")
         if not args.serial or not args.serial.strip():
             raise EUDMError("--serial is required outside batch mode")
-        if args.serial != args.serial.strip() or any(character.isspace() for character in args.serial):
-            raise EUDMError("--serial cannot contain leading, trailing, or embedded whitespace")
+        if not is_serial(args.serial):
+            raise EUDMError(
+                "--serial must be at least 6 characters and contain only letters, numbers, "
+                "periods, underscores, or hyphens"
+            )
 
     parsed_base = urllib.parse.urlparse(args.base)
     if parsed_base.scheme != "https" or not parsed_base.netloc or not parsed_base.path.rstrip("/").endswith("/rest"):
@@ -1422,6 +1455,10 @@ def validate_args(args: argparse.Namespace) -> bool:
             raise EUDMError("Batch mode supports --target location only")
         if not args.deployed_to or not args.deployed_to.strip():
             raise EUDMError("--deployed-to is required when --target user")
+        if not is_login_id(args.deployed_to):
+            raise EUDMError(
+                "--deployed-to must be a login ID, not a display name or email address"
+            )
         conflicting = [f"--{name.replace('_', '-')}" for name in location_names if getattr(args, name)]
         if conflicting:
             raise EUDMError(
@@ -1443,6 +1480,10 @@ def validate_args(args: argparse.Namespace) -> bool:
         for name in required:
             if not getattr(args, name).strip():
                 raise EUDMError(f"--{name.replace('_', '-')} cannot be empty")
+        if not args.batch and not is_login_id(args.dropped_by):
+            raise EUDMError(
+                "--dropped-by must be a login ID, not a display name or email address"
+            )
         if args.cabinet is not None and not args.cabinet.strip():
             raise EUDMError("--cabinet cannot be empty when supplied")
         if args.batch and args.dropped_by:
@@ -1747,7 +1788,8 @@ Safety:
     return 0
 
 
-if __name__ == "__main__":
+def cli() -> None:
+    """Run the command with stable, user-facing error handling."""
     try:
         raise SystemExit(main())
     except KeyboardInterrupt:
@@ -1774,3 +1816,7 @@ if __name__ == "__main__":
     except Exception:
         print("Error: An unexpected problem occurred. Re-run with --verbose and report the step shown before it.", file=sys.stderr)
         raise SystemExit(2)
+
+
+if __name__ == "__main__":
+    cli()

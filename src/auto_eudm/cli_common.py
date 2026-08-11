@@ -8,6 +8,7 @@ from typing import Any, Sequence, TypeVar
 
 from . import eudm_request as eudm
 from .eudm_config import AppConfig
+from .identifiers import is_login_id
 from . import run_reporting
 
 
@@ -153,6 +154,8 @@ def request_for(args: argparse.Namespace, config: AppConfig) -> str:
     value = (getattr(args, "request_for", None) or config.request_for or "").strip()
     if not value:
         value = console.text("Request-for login ID")
-    if any(character.isspace() for character in value):
-        raise eudm.EUDMError("The request-for login ID cannot contain whitespace.")
+    if not is_login_id(value):
+        raise eudm.EUDMError(
+            "The request-for user must be a login ID, not a display name or email address."
+        )
     return value
