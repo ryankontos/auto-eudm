@@ -3541,6 +3541,7 @@ function renderHistory(runs) {
         <div><strong>${escapeHtml(entry.serials.join(", ") || "No serial")}</strong><small>${escapeHtml(kindLabel(entry.kind))} · ${escapeHtml(entry.status)}</small></div>
         <div><strong>${escapeHtml(entry.destination || "No destination")}</strong><small>${escapeHtml(entry.message || "")}</small></div>
         <div>${requestLink}</div>
+        <div class="history-entry-actions"><button class="button secondary compact" type="button" data-history-readd="${escapeHtml(entry.id)}">Re-add to queue</button></div>
       </div>`;
     }).join("");
     return `<section class="history-run">
@@ -3551,6 +3552,47 @@ function renderHistory(runs) {
       <div class="history-entries">${entries}</div>
     </section>`;
   }).join("");
+  elements.historyList.querySelectorAll("[data-history-readd]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const run = runs.find((item) => (item.entries || []).some((entry) => entry.id === button.dataset.historyReadd));
+      const entry = run?.entries?.find((item) => item.id === button.dataset.historyReadd);
+      if (entry) reAddHistoryEntry(entry, run);
+    });
+  });
+}
+
+function reAddHistoryEntry(entry, run) {
+  const request = structuredClone(entry);
+  request.id = uid();
+  request.source = request.source
+    ? `${request.source} · re-added`
+    : `Re-added from history · ${formatHistoryDate(run?.created_at)}`;
+  request.serial_validation = request.serials?.length ? "valid" : "empty";
+  request.serial_validation_error = "";
+  request.eudm_device_type = "";
+  request.eudm_device_types = {};
+  request.user_validation = request.user ? "valid" : "empty";
+  request.user_validation_error = "";
+  request.returning_user_validation = request.returning_user ? "valid" : "empty";
+  request.returning_user_validation_error = "";
+  request.returning_user_loading = false;
+  request.bulk_validation = request.kind === "bulk_location" && request.serials?.length ? "valid" : "empty";
+  request.bulk_validation_error = "";
+  request.bulk_validation_missing = [];
+  delete request.request_id;
+  delete request.order_id;
+  delete request.result_state;
+  delete request.result_message;
+  delete request.state;
+  delete request.message;
+  delete request.step;
+  delete request.step_count;
+  delete request.progress_percent;
+  delete request.elapsed_seconds;
+  state.queue.push(request);
+  state.selectedId = request.id;
+  renderAll();
+  toast("Request re-added to the queue.", "success");
 }
 
 async function openHistory() {

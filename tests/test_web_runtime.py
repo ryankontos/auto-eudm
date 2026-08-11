@@ -269,6 +269,21 @@ class SubmissionJobRetentionTests(unittest.TestCase):
 
 
 class SubmissionHistoryTests(unittest.TestCase):
+    def test_legacy_history_is_migrated_to_the_canonical_file(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            canonical = root / "request-history.json"
+            legacy = root / "web-request-history.json"
+            history = [submission_job("legacy", "finished").to_json()]
+            legacy.write_text(json.dumps(history), encoding="utf-8")
+            store = bare_job_store(canonical)
+            store.legacy_history_paths = (legacy,)
+
+            loaded = store._load_history()
+
+            self.assertEqual([item["job_id"] for item in loaded], ["legacy"])
+            self.assertEqual(json.loads(canonical.read_text(encoding="utf-8")), history)
+
     def test_parallel_completions_are_all_persisted(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             history_path = Path(folder) / "web-request-history.json"

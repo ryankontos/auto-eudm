@@ -1096,7 +1096,7 @@ fieldset { margin: 0; padding: 0; border: 0; }
 .history-entries { padding: 0 12px; }
 .history-entry {
   display: grid;
-  grid-template-columns: minmax(100px, .8fr) minmax(120px, 1fr) auto;
+  grid-template-columns: minmax(100px, .8fr) minmax(120px, 1fr) auto auto;
   gap: 10px;
   align-items: center;
   min-height: 42px;
@@ -1109,6 +1109,8 @@ fieldset { margin: 0; padding: 0; border: 0; }
 .history-entry small { margin-top: 2px; color: var(--muted); }
 .history-entry a { color: var(--blue); font-weight: 700; text-decoration: none; white-space: nowrap; }
 .history-entry a:hover { text-decoration: underline; }
+.history-entry-actions { display: flex; justify-content: flex-end; }
+.history-entry-actions .button { white-space: nowrap; }
 .history-entry.failed strong { color: var(--red); }
 
 .progress-modal { width: min(960px, calc(100vw - 32px)); }
@@ -1292,4 +1294,5 @@ fieldset { margin: 0; padding: 0; border: 0; }
   .progress-row .request-id { grid-column: 2; text-align: left; }
   .history-entry { grid-template-columns: 1fr; gap: 3px; padding: 8px 0; }
   .history-entry a { display: inline-block; margin-top: 2px; }
+  .history-entry-actions { justify-content: flex-start; }
 }

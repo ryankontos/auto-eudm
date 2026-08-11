@@ -199,8 +199,9 @@ reconnect prompt. **Refresh connection** is also always available while EUDM
 is connected for an on-demand check.
 
 Completed web request runs remain available in **Request history** after the
-web app is restarted. They are stored locally in the git-ignored `results`
-folder.
+web app is restarted. They are stored locally in the git-ignored
+`results/request-history.json` file. If an older
+`results/web-request-history.json` file exists, AutoEUDM migrates it on startup.
 
 Do not put `EUDM_COOKIE` in `.env`; export short-lived cookies in the current shell or use the dedicated Chrome profile.
 

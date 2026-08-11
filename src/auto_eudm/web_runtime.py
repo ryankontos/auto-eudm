@@ -44,6 +44,8 @@ MAX_IMPORT_JOBS = 12
 MAX_PENDING_IMPORTS = 2
 MAX_LIVE_SUBMISSION_JOBS = 100
 MAX_ALM_IMPORT_DRAFTS = 10
+HISTORY_FILENAME = "request-history.json"
+LEGACY_HISTORY_FILENAMES = ("web-request-history.json",)
 
 
 def populate_spec(
@@ -665,18 +667,40 @@ class JobStore:
         self.clients = clients
         self.jobs: dict[str, SubmissionJob] = {}
         self.lock = threading.Lock()
-        self.history_path = ROOT / "results" / "web-request-history.json"
+        self.history_path = ROOT / "results" / HISTORY_FILENAME
+        self.legacy_history_paths = tuple(
+            ROOT / "results" / filename
+            for filename in LEGACY_HISTORY_FILENAMES
+        )
         self.persisted_history = self._load_history()
 
     def _load_history(self) -> list[dict[str, Any]]:
-        """Load completed web runs from prior server sessions, if available."""
-        try:
-            raw = json.loads(self.history_path.read_text(encoding="utf-8"))
+        """Load saved runs and migrate the pre-filesystem history location."""
+        paths = (self.history_path, *getattr(self, "legacy_history_paths", ()))
+        for path in paths:
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError):
+                continue
+            if isinstance(raw, dict):
+                raw = raw.get("runs")
             if not isinstance(raw, list):
-                return []
-            return [item for item in raw if isinstance(item, dict) and item.get("job_id")][:100]
-        except (OSError, ValueError, TypeError):
-            return []
+                continue
+            history = [
+                item for item in raw
+                if isinstance(item, dict) and item.get("job_id")
+            ][:100]
+            if path != self.history_path and history:
+                self._write_history(history)
+            return history
+        return []
+
+    def _write_history(self, history: list[dict[str, Any]]) -> None:
+        payload = json.dumps(history[:100], ensure_ascii=False, indent=2)
+        self.history_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.history_path.with_suffix(".tmp")
+        temporary.write_text(payload + "\n", encoding="utf-8")
+        temporary.replace(self.history_path)
 
     def _persist_history(self, job: SubmissionJob) -> None:
         snapshot = job.to_json()
@@ -688,15 +712,11 @@ class JobStore:
             ]
             self.persisted_history.insert(0, snapshot)
             self.persisted_history = self.persisted_history[:100]
-            payload = json.dumps(self.persisted_history, ensure_ascii=False, indent=2)
             try:
                 # Serialize the atomic replacement with the in-memory update.
                 # Parallel jobs otherwise race through the shared .tmp path
                 # and an older snapshot can overwrite a newer completion.
-                self.history_path.parent.mkdir(parents=True, exist_ok=True)
-                temporary = self.history_path.with_suffix(".tmp")
-                temporary.write_text(payload + "\n", encoding="utf-8")
-                temporary.replace(self.history_path)
+                self._write_history(self.persisted_history)
             except OSError:
                 # History is a convenience feature; it must never affect a
                 # completed EUDM request.
