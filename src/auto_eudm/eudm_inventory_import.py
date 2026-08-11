@@ -422,8 +422,40 @@ def parse_number_selection(raw: str, maximum: int) -> set[int]:
     return selected
 
 
-def eligible_counts(rows: Iterable[SheetRow]) -> tuple[int, int, int]:
-    eligible = [row for row in rows if row.enabled and not row.marked_red and row.username]
+def eligible_rows(
+    rows: Iterable[SheetRow],
+    *,
+    selected_date: date | None = None,
+    date_group: int | None = None,
+) -> list[SheetRow]:
+    """Return rows that can become imports for the requested date/section.
+
+    Keeping the date and section filtering here prevents summary counters from
+    accidentally looking at the whole workbook. A non-empty display name is
+    not enough: the importer eventually needs an exact login ID.
+    """
+    return [
+        row
+        for row in rows
+        if (selected_date is None or row.deployment_date == selected_date)
+        and (date_group is None or row.date_group == date_group)
+        and row.enabled
+        and not row.marked_red
+        and looks_like_username(row.username)
+    ]
+
+
+def eligible_counts(
+    rows: Iterable[SheetRow],
+    *,
+    selected_date: date | None = None,
+    date_group: int | None = None,
+) -> tuple[int, int, int]:
+    eligible = eligible_rows(
+        rows,
+        selected_date=selected_date,
+        date_group=date_group,
+    )
     return (
         sum(looks_like_serial(row.deployment_serial) for row in eligible),
         sum(looks_like_serial(row.returned_device_serial) for row in eligible),
@@ -438,7 +470,7 @@ def attended_rows_missing_return_serials(rows: Iterable[SheetRow]) -> list[Sheet
         for row in rows
         if row.enabled
         and not row.marked_red
-        and row.username
+        and looks_like_username(row.username)
         and (
             (
                 row.returned_device_column_present
@@ -487,10 +519,10 @@ def build_actions(
             continue
         if not row.username:
             if any(looks_like_serial(value) for value in (row.deployment_serial, row.returned_device_serial, row.pending_return_serial)):
-                ignored["serial has no username"] += 1
+                ignored["Username is blank but serial data is present"] += 1
             continue
         if not looks_like_username(row.username):
-            ignored["serial has an invalid username"] += 1
+            ignored["Username is not a valid login ID"] += 1
             continue
         if "deployments" in selected_modes:
             if looks_like_serial(row.deployment_serial):
@@ -503,28 +535,45 @@ def build_actions(
                     device_allocation=row.device_allocation,
                 ))
             else:
-                ignored["no usable deployment serial"] += 1
+                ignored["Deployment serial is blank or invalid"] += 1
         if "returned_devices" in selected_modes:
             if looks_like_serial(row.returned_device_serial):
                 actions.append(Action("Returned devices", row.row_number, row.username, row.returned_device_serial, "Used Stock", "location"))
             else:
-                ignored["no usable returned-device serial"] += 1
+                ignored["Returned-device serial is blank or invalid"] += 1
         if "pending_returns" in selected_modes:
             if looks_like_serial(row.pending_return_serial):
                 actions.append(Action("Pending returns", row.row_number, row.username, row.pending_return_serial, PENDING_RETURN))
             else:
-                ignored["no usable pending-return serial"] += 1
+                ignored["Pending-return serial is blank or invalid"] += 1
 
     serial_spellings: dict[str, str] = {}
     counts: Counter[str] = Counter()
+    occurrences: dict[str, list[Action]] = {}
     for action in actions:
         key = action.serial.casefold()
         counts[key] += 1
         serial_spellings.setdefault(key, action.serial)
-    duplicates = [serial_spellings[key] for key, count in counts.items() if count > 1]
-    if duplicates:
+        occurrences.setdefault(key, []).append(action)
+    duplicate_keys = [key for key, count in counts.items() if count > 1]
+    if duplicate_keys:
+        duplicate_details = []
+        for key in duplicate_keys[:12]:
+            actions_for_serial = occurrences[key]
+            locations = ", ".join(
+                f"{action.group} row {action.row_number} ({action.username})"
+                for action in actions_for_serial
+            )
+            duplicate_details.append(f"{serial_spellings[key]} — {locations}")
+        extra = len(duplicate_keys) - len(duplicate_details)
+        if extra:
+            duplicate_details.append(
+                f"and {extra} more duplicate serial{'' if extra == 1 else 's'}"
+            )
         raise eudm.EUDMError(
-            "The selected work contains duplicate serial numbers: " + ", ".join(duplicates)
+            "Duplicate serial numbers were found in the selected date/section. "
+            "Each serial can only be imported once; correct the workbook or exclude "
+            "one occurrence before continuing: " + "; ".join(duplicate_details)
         )
     return actions, ignored
 
@@ -660,16 +709,14 @@ Modes:
     date_options = []
     for candidate in dates:
         deployment_count, _, pending_return_count = eligible_counts(
-            row for row in rows if row.deployment_date == candidate
+            rows, selected_date=candidate
         )
         date_options.append(
             f"{format_date_label(candidate)} "
             f"({deployment_count} deployments, {pending_return_count} pending returns)"
         )
     selected_date = dates[choose_number("Deployment date", date_options)]
-    selected_counts = eligible_counts(
-        row for row in rows if row.deployment_date == selected_date
-    )
+    selected_counts = eligible_counts(rows, selected_date=selected_date)
     mode_index = choose_number(
         "What should be deployed?",
         [

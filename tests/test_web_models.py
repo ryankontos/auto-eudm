@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import base64
+from datetime import date
 from pathlib import Path
 import unittest
 from unittest import mock
 
+from auto_eudm import eudm_inventory_import as inventory
 from auto_eudm import eudm_request as eudm
 from auto_eudm import web_models
 from auto_eudm.web_models import RequestSpec, WorkbookImport, validate_queue
@@ -136,6 +138,77 @@ class RequestValidationTests(unittest.TestCase):
 
 
 class WorkbookUploadTests(unittest.TestCase):
+    def test_workbook_prepare_persists_device_allocation(self) -> None:
+        row = inventory.SheetRow(
+            row_number=2,
+            deployment_date=date(2025, 2, 3),
+            username="valid.user",
+            deployment_serial="SERIAL123",
+            returned_device_serial=None,
+            pending_return_serial=None,
+            marked_red=False,
+            enabled=True,
+            device_allocation="MacBookPro18,3",
+        )
+        workbook = WorkbookImport("import-1", "tracking.xlsx", {"Sheet": [row]})
+
+        payload = workbook.prepare("Sheet", "2025-02-03", "deployments")
+
+        self.assertEqual(
+            payload["requests"][0]["device_allocation"], "MacBookPro18,3"
+        )
+
+    def test_workbook_summary_counts_selected_date_and_valid_user_rows(self) -> None:
+        selected = inventory.SheetRow(
+            row_number=2,
+            deployment_date=date(2025, 2, 3),
+            username="valid.user",
+            deployment_serial="SERIAL123",
+            returned_device_serial=None,
+            pending_return_serial=None,
+            marked_red=False,
+            enabled=True,
+        )
+        other_date = inventory.SheetRow(
+            row_number=3,
+            deployment_date=date(2025, 2, 4),
+            username="other.user",
+            deployment_serial="SERIAL456",
+            returned_device_serial="RETURN456",
+            pending_return_serial="PENDING456",
+            marked_red=False,
+            enabled=True,
+        )
+        display_name = inventory.SheetRow(
+            row_number=4,
+            deployment_date=date(2025, 2, 3),
+            username="Jane Doe",
+            deployment_serial="SERIAL789",
+            returned_device_serial="RETURN789",
+            pending_return_serial="PENDING789",
+            marked_red=False,
+            enabled=True,
+        )
+        workbook = WorkbookImport(
+            "import-2", "tracking.xlsx", {"Sheet": [selected, other_date, display_name]}
+        )
+
+        dates = workbook.summary()["sheets"][0]["dates"]
+        selected_summary = next(item for item in dates if item["value"] == "2025-02-03")
+
+        self.assertEqual(selected_summary["deployment_count"], 1)
+        self.assertEqual(selected_summary["returned_device_count"], 0)
+        self.assertEqual(selected_summary["pending_return_count"], 0)
+        self.assertEqual(selected_summary["eligible_row_count"], 1)
+
+    def test_request_spec_preserves_device_allocation(self) -> None:
+        request = user_request(device_allocation="MacBookPro18,3")
+
+        restored = RequestSpec.from_json(request.to_json())
+
+        self.assertEqual(restored.device_allocation, "MacBookPro18,3")
+        self.assertEqual(restored.to_json()["device_allocation"], "MacBookPro18,3")
+
     def test_upload_is_decoded_to_bytes(self) -> None:
         encoded = base64.b64encode(b"workbook bytes").decode("ascii")
         self.assertEqual(

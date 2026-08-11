@@ -159,6 +159,7 @@ class RequestSpec:
     location: Location | None
     group: str
     source: str | None = None
+    device_allocation: str | None = None
 
     @classmethod
     def from_json(cls, raw: Any) -> "RequestSpec":
@@ -203,6 +204,7 @@ class RequestSpec:
             location=location,
             group=clean(raw.get("group")) or "Requests",
             source=clean(raw.get("source")) or None,
+            device_allocation=clean(raw.get("device_allocation")) or None,
         )
 
     def validate(
@@ -303,6 +305,7 @@ class RequestSpec:
             "location": self.location.to_json() if self.location else None,
             "group": self.group,
             "source": self.source or "",
+            "device_allocation": self.device_allocation or "",
             "errors": self.validate(),
             "destination": self.destination(),
             "device_count": self.device_count(),
@@ -549,15 +552,26 @@ class WorkbookImport:
                 {row.deployment_date for row in rows}, reverse=True
             ):
                 selected_rows = [row for row in rows if row.deployment_date == selected]
-                deployment_count, returned_device_count, pending_return_count = inventory.eligible_counts(selected_rows)
+                deployment_count, returned_device_count, pending_return_count = inventory.eligible_counts(
+                    rows, selected_date=selected
+                )
                 groups = []
                 for group_number in sorted({row.date_group for row in selected_rows}):
                     group_rows = [row for row in selected_rows if row.date_group == group_number]
-                    group_deployments, group_returned, group_pending = inventory.eligible_counts(group_rows)
+                    group_deployments, group_returned, group_pending = inventory.eligible_counts(
+                        rows, selected_date=selected, date_group=group_number
+                    )
                     groups.append(
                         {
                             "value": str(group_number),
                             "row_count": len(group_rows),
+                            "eligible_row_count": len(
+                                inventory.eligible_rows(
+                                    rows,
+                                    selected_date=selected,
+                                    date_group=group_number,
+                                )
+                            ),
                             "deployment_count": group_deployments,
                             "returned_device_count": group_returned,
                             "pending_return_count": group_pending,
@@ -571,6 +585,10 @@ class WorkbookImport:
                         "deployment_count": deployment_count,
                         "returned_device_count": returned_device_count,
                         "pending_return_count": pending_return_count,
+                        "row_count": len(selected_rows),
+                        "eligible_row_count": len(
+                            inventory.eligible_rows(rows, selected_date=selected)
+                        ),
                         "groups": groups,
                         "warnings": [
                             {
@@ -656,9 +674,8 @@ class WorkbookImport:
                 location=location if action.kind == "location" else None,
                 group=action.group,
                 source=f"{self.filename} · {sheet_name}",
+                device_allocation=action.device_allocation,
             ).to_json()
-            if action.device_allocation:
-                request["device_allocation"] = action.device_allocation
             requests.append(request)
         requests.sort(
             key=lambda request: 0

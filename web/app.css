@@ -882,7 +882,6 @@ fieldset { margin: 0; padding: 0; border: 0; }
 .choice-cards input:checked + span { border-color: var(--blue); background: var(--blue-soft); }
 .choice-cards strong, .choice-cards small { display: block; }
 .choice-cards small { color: var(--muted); white-space: nowrap; }
-.import-skip-note { margin: 16px 1px 0; color: var(--muted); font-size: 12px; }
 .column-map {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -965,7 +964,7 @@ fieldset { margin: 0; padding: 0; border: 0; }
 .import-preview-row small { display: block; min-width: 0; overflow-wrap: anywhere; }
 .import-preview-row small { color: var(--muted); font-size: 10px; }
 .import-preview-row .import-field-title { margin-bottom: 3px; color: var(--ink); font-size: 9px; font-weight: 750; letter-spacing: .04em; text-transform: uppercase; }
-.import-preview-row .import-device-allocation { margin-top: 3px; color: var(--blue); font-weight: 650; }
+.import-preview-row .import-device-allocation { margin-top: 3px; color: var(--muted); font-weight: 500; }
 .import-preview-row select { width: 100%; min-height: 32px; font-size: 11px; }
 .import-status-control { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px; align-items: center; }
 .import-status-control .button { min-width: 62px; padding-right: 8px; padding-left: 8px; font-size: 11px; }
@@ -1009,17 +1008,6 @@ fieldset { margin: 0; padding: 0; border: 0; }
   font-weight: 700;
 }
 .import-show-more:hover { border-color: var(--blue); background: var(--blue-soft); }
-.import-ignored {
-  margin-top: 10px;
-  padding: 9px 11px;
-  border: 1px solid var(--amber-border);
-  border-radius: 4px;
-  color: var(--amber-text);
-  background: var(--amber-surface);
-  font-size: 11px;
-}
-.import-ignored ul { margin: 4px 0 0; padding-left: 18px; }
-
 #importDialog .modal-actions {
   position: sticky;
   bottom: -20px;
@@ -1173,7 +1161,7 @@ fieldset { margin: 0; padding: 0; border: 0; }
 .model-status-model-row strong { overflow-wrap: anywhere; font-size: 12px; }
 .model-status-model-row small { display: block; margin-top: 2px; color: var(--muted); font-size: 10px; }
 .model-status-model-row .model-status-eudm-hint { color: var(--subtle); font-style: italic; }
-.model-status-model-row .model-status-alm-hint { color: var(--blue); font-weight: 650; }
+.model-status-model-row .model-status-alm-hint { color: var(--muted); font-weight: 500; }
 .model-status-model-row select { min-width: 0; }
 .model-status-add-mapping { grid-column: 1 / -1; display: grid; gap: 6px; padding: 8px 9px; border-left: 3px solid var(--blue); background: var(--blue-soft); }
 .model-status-add-mapping small { margin: 0; color: var(--muted); }

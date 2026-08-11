@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 import unittest
 from unittest import mock
@@ -104,6 +104,65 @@ class ImportActionTests(unittest.TestCase):
         self.assertEqual(
             inventory.format_date_label(self.selected_date),
             "Monday 3 February 2025",
+        )
+
+    def test_counts_only_selected_date_and_valid_usernames(self) -> None:
+        missing_returns = replace(
+            self.row,
+            returned_device_serial=None,
+            pending_return_serial=None,
+        )
+        other_date = replace(
+            self.row,
+            deployment_date=date(2025, 2, 4),
+        )
+        display_name = replace(
+            self.row,
+            username="Jane Doe",
+        )
+        blank_username = replace(
+            self.row,
+            username=None,
+        )
+
+        self.assertEqual(
+            inventory.eligible_counts(
+                [missing_returns, other_date, display_name, blank_username],
+                selected_date=self.selected_date,
+            ),
+            (1, 0, 0),
+        )
+
+    def test_duplicate_error_identifies_serial_and_source_rows(self) -> None:
+        duplicate = replace(
+            self.row,
+            row_number=9,
+            deployment_serial=self.row.deployment_serial,
+        )
+
+        with self.assertRaisesRegex(eudm.EUDMError, "selected date/section") as raised:
+            inventory.build_actions(
+                [self.row, duplicate],
+                self.selected_date,
+                "deployments",
+            )
+
+        message = str(raised.exception)
+        self.assertIn("DEPLOY123", message)
+        self.assertIn("Deployments row 2", message)
+        self.assertIn("Deployments row 9", message)
+        self.assertIn("correct the workbook or exclude", message)
+
+    def test_missing_return_warning_ignores_display_names(self) -> None:
+        display_name = replace(
+            self.row,
+            username="Jane Doe",
+            returned_device_serial=None,
+            pending_return_serial=None,
+        )
+
+        self.assertEqual(
+            inventory.attended_rows_missing_return_serials([display_name]), []
         )
 
 

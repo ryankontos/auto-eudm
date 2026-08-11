@@ -954,7 +954,7 @@ function renderQueue() {
     return `
       <tr data-id="${escapeHtml(request.id)}" class="${selected ? "selected" : ""} ${errors.length ? "invalid" : ""} ${request.result_state === "failed" ? "failed" : ""}" tabindex="0">
         <td class="index-column">${index + 1}</td>
-        <td><span class="cell-primary">${escapeHtml(serialDisplay)}</span>${request.kind === "bulk_location" ? `<span class="cell-secondary">${request.serials.length} devices</span>` : ""}${requestId}</td>
+        <td><span class="cell-primary">${escapeHtml(serialDisplay)}</span>${request.kind === "bulk_location" ? `<span class="cell-secondary">${request.serials.length} devices</span>` : ""}${request.device_allocation ? `<span class="cell-secondary">ALM model: ${escapeHtml(request.device_allocation)}</span>` : ""}${requestId}</td>
         <td><span class="cell-primary">${escapeHtml(kindLabel(request.kind))}</span>${secondary ? `<span class="cell-secondary">${escapeHtml(secondary)}</span>` : ""}</td>
         <td title="${escapeHtml(statusLabel(request))}">${escapeHtml(statusLabel(request))}</td>
         <td title="${escapeHtml(destinationLabel(request))}"><span class="cell-primary">${escapeHtml(destinationLabel(request))}</span>${request.returning_user ? `<span class="cell-secondary">Returned by ${escapeHtml(request.returning_user)}</span>` : ""}</td>
@@ -2397,7 +2397,7 @@ function updateImportDates() {
   const today = new Date();
   const todayValue = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
   const selected = dates.some((entry) => entry.value === todayValue) ? todayValue : dates.some((entry) => entry.value === previous) ? previous : dates[0]?.value;
-  $("#dateInput").innerHTML = dates.map((entry) => `<option value="${escapeHtml(entry.value)}" ${entry.value === selected ? "selected" : ""}>${escapeHtml(entry.label)} [${escapeHtml(relativeDateLabel(entry.value))}]</option>`).join("");
+  $("#dateInput").innerHTML = dates.map((entry) => `<option value="${escapeHtml(entry.value)}" ${entry.value === selected ? "selected" : ""}>${escapeHtml(entry.label)} (${escapeHtml(relativeDateLabel(entry.value))})</option>`).join("");
   if (selected !== previous) $("#importGroupInput").value = "";
   updateImportCounts();
 }
@@ -2431,7 +2431,7 @@ function updateImportGroupChoices(selected) {
   const validPrevious = previous === "all" || groups.some((group) => group.value === previous);
   selector.innerHTML = [
     '<option value="">Choose a section</option>',
-    ...groups.map((group, index) => `<option value="${escapeHtml(group.value)}">Section ${index + 1} · ${group.row_count} rows</option>`),
+    ...groups.map((group, index) => `<option value="${escapeHtml(group.value)}">Section ${index + 1} · ${group.eligible_row_count ?? 0} valid-user rows</option>`),
     '<option value="all">All sections</option>',
   ].join("");
   selector.value = validPrevious ? previous : "";
@@ -2447,10 +2447,15 @@ function updateImportWarnings(selected) {
     warning.innerHTML = "";
     return;
   }
-  const names = warnings.map((item) => item.username).filter(Boolean);
-  const shownNames = names.slice(0, 4).map(escapeHtml).join(", ");
-  const remainder = names.length > 4 ? ` and ${names.length - 4} more` : "";
-  warning.innerHTML = `<strong>Check ${warnings.length} attended row${warnings.length === 1 ? "" : "s"}</strong><span>These rows have no returned-device or pending-return serial${shownNames ? `: ${shownNames}${remainder}` : "."}</span>`;
+  const details = warnings.slice(0, 4).map((item) => {
+    const missing = [
+      item.missing_returned ? "returned-device" : "",
+      item.missing_pending ? "pending-return" : "",
+    ].filter(Boolean).join(" and ");
+    return `${item.username || `row ${item.row_number}`} (${missing || "serial"})`;
+  });
+  const remainder = warnings.length > details.length ? ` and ${warnings.length - details.length} more` : "";
+  warning.innerHTML = `<strong>Check ${warnings.length} attended row${warnings.length === 1 ? "" : "s"}</strong><span>Missing serials: ${details.map(escapeHtml).join(", ")}${remainder}. These rows are not counted until corrected.</span>`;
   warning.hidden = false;
 }
 
@@ -2881,7 +2886,12 @@ function renderImportPreview() {
             ? '<small class="import-check-ok">✓ Serial and user verified</small>'
             : "";
       const returnDetails = importReturnDetails(request, isReturnedDevice);
-      const editable = request.import_validation === "failed" ? `<div class="import-inline-edit"><input data-import-serial="${escapeHtml(request.id)}" value="${escapeHtml(request.serials[0])}" aria-label="Serial number"><input data-import-user="${escapeHtml(request.id)}" value="${escapeHtml(request.user || request.returning_user)}" aria-label="Username"><button class="text-button" data-import-retry="${escapeHtml(request.id)}" type="button">Retry</button></div>` : "";
+      const failedFields = request.import_failed_fields || ["serial", "username"];
+      const editable = request.import_validation === "failed" ? `<div class="import-inline-edit">
+        ${failedFields.includes("serial") ? `<input data-import-serial="${escapeHtml(request.id)}" value="${escapeHtml(request.serials[0])}" aria-label="Serial number" placeholder="Correct serial">` : ""}
+        ${failedFields.includes("username") ? `<input data-import-user="${escapeHtml(request.id)}" value="${escapeHtml(request.user || request.returning_user)}" aria-label="Username" placeholder="Correct username">` : ""}
+        <button class="text-button" data-import-retry="${escapeHtml(request.id)}" type="button">Retry</button>
+      </div>` : "";
       return `<div class="import-preview-row ${isIncluded ? "" : "excluded"}">
         <label class="include-control" title="${isIncluded ? "Included" : "Do not deploy"}">
           <input type="checkbox" data-import-include="${escapeHtml(request.id)}" ${isIncluded ? "checked" : ""}>
@@ -3004,16 +3014,16 @@ function renderImportPreview() {
     if (!request) return;
     const serial = $(`[data-import-serial="${button.dataset.importRetry}"]`);
     const user = $(`[data-import-user="${button.dataset.importRetry}"]`);
-    request.serials = [serial.value.trim()];
-    if (request.kind === "location") {
-      request.returning_user = user.value.trim();
-      request.returning_user_info = null;
-    } else request.user = user.value.trim();
+    if (serial) request.serials = [serial.value.trim()];
+    if (user) {
+      if (request.kind === "location") {
+        request.returning_user = user.value.trim();
+        request.returning_user_info = null;
+      } else request.user = user.value.trim();
+    }
     validateImportPreview([request]);
   }));
 
-  $("#importIgnored").hidden = !payload.ignored.length;
-  $("#importIgnoredList").innerHTML = payload.ignored.map((item) => `<li>${item.count} × ${escapeHtml(item.reason)}</li>`).join("");
 }
 
 async function validateImportPreview(retryRequests = null) {
@@ -3024,6 +3034,7 @@ async function validateImportPreview(retryRequests = null) {
     requests.forEach((request) => {
       request.import_validation = "valid";
       request.import_error = "";
+      request.import_failed_fields = [];
       request.returning_user_loading = false;
     });
     renderImportPreview();
@@ -3033,6 +3044,7 @@ async function validateImportPreview(retryRequests = null) {
   requests.forEach((request) => {
     request.import_validation = "checking";
     request.import_error = "";
+    request.import_failed_fields = [];
     request.eudm_device_type = "";
     if (request.kind === "location") request.returning_user_loading = true;
   });
@@ -3048,7 +3060,15 @@ async function validateImportPreview(retryRequests = null) {
       ]);
       const asset = (assets.results || []).find((item) => bestSerial(item, serial).toLowerCase() === serial.toLowerCase());
       const user = (users.results || []).find((item) => bestLogin(item, username).toLowerCase() === username.toLowerCase());
-      if (!asset || !user) throw new Error(!asset ? "Serial number was not found in EUDM." : "Username was not found in EUDM.");
+      const missingFields = [];
+      if (!asset) missingFields.push("serial");
+      if (!user) missingFields.push("username");
+      if (missingFields.length) {
+        const missingLabels = missingFields.map((field) => field === "serial" ? "Serial number" : "Username");
+        const validationError = new Error(`${missingLabels.join(" and ")} ${missingLabels.length === 1 ? "was" : "were"} not found in EUDM.`);
+        validationError.failedFields = missingFields;
+        throw validationError;
+      }
       request.eudm_device_type = deviceTypeFromResult(asset, serial);
       if (request.kind === "location") {
         request.returning_user_info = { login: bestLogin(user, username), columns: (user.columns || [user.value]).map(String).filter(Boolean) };
@@ -3061,6 +3081,7 @@ async function validateImportPreview(retryRequests = null) {
     } catch (error) {
       request.import_validation = "failed";
       request.import_error = error.message || "Could not validate this request.";
+      request.import_failed_fields = error.failedFields || ["serial", "username"];
     } finally {
       request.returning_user_loading = false;
     }
@@ -3119,11 +3140,10 @@ async function prepareImport() {
     }
     state.queue.push(...requests);
     state.selectedId = requests[0]?.id || state.selectedId;
-    const ignored = state.importPreview.ignored.reduce((sum, item) => sum + item.count, 0);
     $("#importDialog").close();
     renderAll();
     resolveQueueReturningUsers(requests);
-    toast(`${requests.length} request${requests.length === 1 ? "" : "s"} added${ignored ? `; ${ignored} serial entries excluded` : ""}.`, "success");
+    toast(`${requests.length} request${requests.length === 1 ? "" : "s"} added.`, "success");
     return;
   }
   button.disabled = true;
@@ -3161,6 +3181,7 @@ async function prepareImport() {
       if (request.group !== "Pending returns") request.status = "";
       request.import_validation = "checking";
       request.import_error = "";
+      request.import_failed_fields = [];
     });
     state.importPreview = payload;
     state.importExpandedGroups.clear();
@@ -3194,7 +3215,7 @@ async function openReview() {
       || (request.group && request.group !== kindLabel(request.kind) ? request.group : "");
     return `<div class="review-row">
       <span class="${errors.length ? "invalid-mark" : "ready-mark"}">${errors.length ? "!" : "✓"}</span>
-      <div><strong>${escapeHtml(request.serials.join(", ") || "No serial")}</strong><small>${escapeHtml(kindLabel(request.kind))}${request.kind === "bulk_location" ? ` · ${request.serials.length} devices` : ""}</small></div>
+      <div><strong>${escapeHtml(request.serials.join(", ") || "No serial")}</strong><small>${escapeHtml(kindLabel(request.kind))}${request.kind === "bulk_location" ? ` · ${request.serials.length} devices` : ""}</small>${request.device_allocation ? `<small>ALM model: ${escapeHtml(request.device_allocation)}</small>` : ""}</div>
       <div><strong>${escapeHtml(statusLabel(request))}</strong>${secondary ? `<small>${escapeHtml(secondary)}</small>` : ""}</div>
       <div><strong>${escapeHtml(destinationLabel(request))}</strong>${errors.length ? `<small>${escapeHtml(errors[0])}</small>` : request.returning_user ? `<small>Returned by ${escapeHtml(request.returning_user)}</small>` : ""}</div>
     </div>`;
