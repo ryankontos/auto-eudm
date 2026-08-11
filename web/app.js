@@ -8,6 +8,7 @@ const state = {
   workbookInspection: null,
   importPreview: null,
   importDraftId: null,
+  importDrafts: [],
   importUploadToken: 0,
   importExpandedGroups: new Set(),
   currentJob: null,
@@ -33,10 +34,8 @@ const RECENT_LOCATIONS_STORAGE_KEY = "auto-eudm-recent-locations";
 const CONCURRENCY_STORAGE_KEY = "auto-eudm-concurrency";
 const IMPORT_COLUMNS_STORAGE_KEY = "auto-eudm-import-columns";
 const IMPORT_LOCATION_STORAGE_KEY = "auto-eudm-import-location";
-const ALM_IMPORT_DRAFTS_STORAGE_KEY = "auto-eudm-alm-import-drafts";
 const VALIDATION_DEBOUNCE_MS = 1500;
 const MAX_RECENT_LOCATIONS = 8;
-const MAX_ALM_IMPORT_DRAFTS = 10;
 const IMPORT_PREVIEW_ROW_LIMIT = 80;
 const MAX_WORKBOOK_BYTES = 100 * 1024 * 1024;
 const ALM_IMPORT_STATUS_OPTIONS = {
@@ -2326,7 +2325,7 @@ function addPairs() {
 }
 
 function resetImportDialog() {
-  saveCurrentImportDraft();
+  saveCurrentImportDraft({ immediate: true });
   state.importUploadToken += 1;
   state.workbook = null;
   state.workbookInspection = null;
@@ -2788,21 +2787,17 @@ function newImportDraftId() {
 }
 
 function readImportDrafts() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(ALM_IMPORT_DRAFTS_STORAGE_KEY) || "[]");
-    return Array.isArray(saved) ? saved.filter((draft) => draft && typeof draft === "object" && draft.id) : [];
-  } catch (_) {
-    return [];
-  }
+  return state.importDrafts.filter((draft) => draft && typeof draft === "object" && draft.id);
 }
 
-function writeImportDrafts(drafts) {
-  try {
-    localStorage.setItem(ALM_IMPORT_DRAFTS_STORAGE_KEY, JSON.stringify(drafts.slice(0, MAX_ALM_IMPORT_DRAFTS)));
-  } catch (_) {
-    // A large preview can exceed local storage. The live import remains usable;
-    // it simply will not be resumable from a later page load.
-  }
+let importDraftSaveTimer = null;
+let importDraftSavePending = null;
+let importDraftSaveInFlight = Promise.resolve();
+
+async function loadImportDrafts() {
+  const payload = await api("/api/import-drafts");
+  state.importDrafts = Array.isArray(payload.drafts) ? payload.drafts : [];
+  renderImportDrafts();
 }
 
 function importDraftPhase() {
@@ -2826,9 +2821,9 @@ function importDraftSettings() {
   };
 }
 
-function saveCurrentImportDraft() {
+function saveCurrentImportDraft({ immediate = false } = {}) {
   const workbook = state.workbook || state.workbookInspection;
-  if (!state.importDraftId || !workbook?.import_id) return;
+  if (!state.importDraftId || !workbook?.import_id) return Promise.resolve();
   const draft = {
     id: state.importDraftId,
     filename: workbook.filename || "ALM Workbook",
@@ -2839,15 +2834,48 @@ function saveCurrentImportDraft() {
     preview: state.importPreview ? JSON.parse(JSON.stringify(state.importPreview)) : null,
     saved_at: new Date().toISOString(),
   };
-  const drafts = readImportDrafts().filter((item) => item.id !== draft.id);
-  drafts.unshift(draft);
-  writeImportDrafts(drafts);
+  state.importDrafts = [draft, ...readImportDrafts().filter((item) => item.id !== draft.id)];
   renderImportDrafts();
+  importDraftSavePending = draft;
+  if (importDraftSaveTimer) window.clearTimeout(importDraftSaveTimer);
+  if (immediate) return flushImportDraftSave({ keepalive: true });
+  importDraftSaveTimer = window.setTimeout(() => {
+    importDraftSaveTimer = null;
+    flushImportDraftSave();
+  }, 150);
+  return importDraftSaveInFlight;
+}
+
+function flushImportDraftSave({ keepalive = false } = {}) {
+  const draft = importDraftSavePending;
+  importDraftSavePending = null;
+  if (!draft) return importDraftSaveInFlight;
+  importDraftSaveInFlight = importDraftSaveInFlight
+    .catch(() => {})
+    .then(async () => {
+      const payload = await api("/api/import-drafts", {
+        method: "POST",
+        body: JSON.stringify(draft),
+        keepalive,
+      });
+      state.importDrafts = Array.isArray(payload.drafts) ? payload.drafts : state.importDrafts;
+      renderImportDrafts();
+    })
+    .catch((error) => {
+      console.warn("Could not save ALM import draft.", error);
+    });
+  return importDraftSaveInFlight;
 }
 
 function deleteImportDraft(id) {
-  writeImportDrafts(readImportDrafts().filter((draft) => draft.id !== id));
+  state.importDrafts = readImportDrafts().filter((draft) => draft.id !== id);
   renderImportDrafts();
+  return flushImportDraftSave().then(() => api(`/api/import-drafts/${encodeURIComponent(id)}`, { method: "DELETE" }))
+    .then((payload) => {
+      state.importDrafts = Array.isArray(payload.drafts) ? payload.drafts : state.importDrafts;
+      renderImportDrafts();
+    })
+    .catch((error) => toast(error.message, "error"));
 }
 
 function renderImportDrafts() {
@@ -2870,18 +2898,17 @@ function renderImportDrafts() {
   list.querySelectorAll("[data-import-resume]").forEach((button) => button.addEventListener("click", () => resumeImportDraft(button.dataset.importResume)));
   list.querySelectorAll("[data-import-delete]").forEach((button) => button.addEventListener("click", () => {
     const draft = readImportDrafts().find((item) => item.id === button.dataset.importDelete);
-    if (draft && confirm(`Delete the saved ALM import “${draft.filename || "ALM Workbook"}”?`)) deleteImportDraft(draft.id);
+    if (draft && confirm(`Delete the saved ALM import “${draft.filename || "ALM Workbook"}”?`)) void deleteImportDraft(draft.id);
   }));
   renderLatestImportDraft();
 }
 
 function renderLatestImportDraft() {
-  const panel = $("#resumeImportDraftMain");
   const button = $("#resumeLatestImportButton");
-  if (!panel || !button) return;
+  if (!button) return;
   const latest = readImportDrafts()[0];
-  const visible = Boolean(latest) && state.queue.length === 0;
-  panel.hidden = !visible;
+  const visible = Boolean(latest);
+  button.hidden = !visible;
   if (!visible) return;
   $("#resumeImportDraftTitle").textContent = `Resume ${latest.filename || "ALM import"}`;
   const timestamp = new Date(latest.saved_at || "");
@@ -3327,7 +3354,7 @@ async function prepareImport() {
     }
     state.queue.push(...requests);
     state.selectedId = requests[0]?.id || state.selectedId;
-    deleteImportDraft(state.importDraftId);
+    await deleteImportDraft(state.importDraftId);
     state.importDraftId = null;
     $("#importDialog").close();
     renderAll();
@@ -3781,11 +3808,11 @@ function bindEvents() {
   });
   $("#importSheetButton").addEventListener("click", openAlmWorkbookImport);
   $("#importDialog").addEventListener("close", () => {
-    saveCurrentImportDraft();
+    saveCurrentImportDraft({ immediate: true });
     state.importUploadToken += 1;
     setImportBusy(false);
   });
-  window.addEventListener("beforeunload", saveCurrentImportDraft);
+  window.addEventListener("beforeunload", () => saveCurrentImportDraft({ immediate: true }));
   const importForm = $("#importDialog form");
   importForm.addEventListener("submit", (event) => {
     // The dialog form uses method="dialog" for the intentional Cancel action.
@@ -4107,6 +4134,7 @@ async function init() {
       api("/api/config"),
       api("/api/preferences"),
     ]);
+    await loadImportDrafts();
     const spreadsheetEnabled = Boolean(state.config.spreadsheet_import_enabled);
     $("#importSheetButton").hidden = !spreadsheetEnabled;
     const spreadsheetSettings = $('[data-settings-tab="spreadsheet"]');

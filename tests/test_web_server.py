@@ -34,6 +34,7 @@ class FakeApp:
         self.clients = FakeClients()
         self.jobs = FakeJobs()
         self.saved_preferences: list[dict[str, object]] = []
+        self.import_drafts: list[dict[str, object]] = []
 
     @staticmethod
     def config_json() -> dict[str, object]:
@@ -46,6 +47,18 @@ class FakeApp:
     def save_preferences(self, payload: dict[str, object]) -> dict[str, object]:
         self.saved_preferences.append(payload)
         return payload
+
+    def import_drafts_json(self) -> list[dict[str, object]]:
+        return self.import_drafts
+
+    def save_import_draft(self, payload: dict[str, object]) -> list[dict[str, object]]:
+        self.import_drafts = [draft for draft in self.import_drafts if draft.get("id") != payload.get("id")]
+        self.import_drafts.insert(0, payload)
+        return self.import_drafts
+
+    def delete_import_draft(self, draft_id: str) -> list[dict[str, object]]:
+        self.import_drafts = [draft for draft in self.import_drafts if draft.get("id") != draft_id]
+        return self.import_drafts
 
 
 class LocalWebServerTests(unittest.TestCase):
@@ -138,6 +151,24 @@ class LocalWebServerTests(unittest.TestCase):
         )
         self.assertEqual(response.status, 403)
         self.assertEqual(self.app.saved_preferences, [{"theme": "dark"}])
+
+    def test_import_drafts_are_read_written_and_deleted_through_local_api(self) -> None:
+        draft = {
+            "id": "draft-1",
+            "workbook": {"import_id": "import-1"},
+            "phase": "review",
+        }
+        response, raw = self.request("POST", "/api/import-drafts", payload=draft)
+        self.assertEqual(response.status, 200)
+        self.assertEqual(json.loads(raw), {"drafts": [draft]})
+
+        response, raw = self.request("GET", "/api/import-drafts")
+        self.assertEqual(response.status, 200)
+        self.assertEqual(json.loads(raw), {"drafts": [draft]})
+
+        response, raw = self.request("DELETE", "/api/import-drafts/draft-1")
+        self.assertEqual(response.status, 200)
+        self.assertEqual(json.loads(raw), {"drafts": []})
 
     def test_non_loopback_host_header_is_rejected(self) -> None:
         response, raw = self.request(

@@ -28,6 +28,7 @@ MAX_BODY = 140 * 1024 * 1024
 MAX_SEARCH_QUERY = 200
 REQUEST_TIMEOUT_SECONDS = 30
 JOB_ID_PATTERN = re.compile(r"[a-f0-9]{32}")
+IMPORT_DRAFT_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,100}")
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
@@ -231,6 +232,9 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
         if path == "/api/preferences":
             self._json(self.app.preferences_json())
             return
+        if path == "/api/import-drafts":
+            self._json({"drafts": self.app.import_drafts_json()})
+            return
         if path == "/api/status":
             self._json(self.app.clients.status())
             return
@@ -321,6 +325,32 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
             )
             self._error("An unexpected local server error occurred.", 500)
 
+    def do_DELETE(self) -> None:
+        if not self._allow_host() or not self._allow_origin():
+            self._error("Requests are accepted only from this localhost app.", 403)
+            return
+        try:
+            path = urllib.parse.urlparse(self.path).path
+            prefix = "/api/import-drafts/"
+            if not path.startswith(prefix):
+                self._error("Unknown local API endpoint.", 404)
+                return
+            draft_id = path.removeprefix(prefix).strip()
+            if not IMPORT_DRAFT_ID_PATTERN.fullmatch(draft_id):
+                self._error("Unknown ALM import draft.", 404)
+                return
+            self._json({"drafts": self.app.delete_import_draft(draft_id)})
+        except eudm.EUDMError as exc:
+            self._handle_eudm_error(exc, 422)
+        except (BrokenPipeError, ConnectionResetError, socket.timeout):
+            return
+        except Exception:
+            run_reporting.exception(
+                "Unhandled local HTTP DELETE for %s",
+                urllib.parse.urlparse(self.path).path,
+            )
+            self._error("An unexpected local server error occurred.", 500)
+
     def _do_post(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
@@ -339,6 +369,9 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/preferences":
             self._json(self.app.save_preferences(payload))
+            return
+        if path == "/api/import-drafts":
+            self._json({"drafts": self.app.save_import_draft(payload)})
             return
         if path == "/api/connection/health":
             self._json(self.app.clients.check_connection())

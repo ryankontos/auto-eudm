@@ -861,6 +861,12 @@ fieldset { margin: 0; padding: 0; border: 0; }
 .resume-import-draft strong,
 .resume-import-draft small { display: block; overflow-wrap: anywhere; }
 .resume-import-draft small { margin-top: 2px; color: var(--muted); font-size: 11px; }
+.resume-import-tool {
+  border-color: var(--amber-border);
+  background: var(--amber-soft);
+}
+.resume-import-tool:hover { border-color: var(--amber); background: var(--amber-soft); }
+.resume-import-tool .tool-icon { color: var(--amber); }
 .import-busy {
   display: grid;
   grid-template-columns: 28px minmax(0, 1fr) auto;

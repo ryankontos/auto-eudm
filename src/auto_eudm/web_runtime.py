@@ -43,6 +43,7 @@ DEVICE_MODEL_LOCATION_STATUSES = frozenset({
 MAX_IMPORT_JOBS = 12
 MAX_PENDING_IMPORTS = 2
 MAX_LIVE_SUBMISSION_JOBS = 100
+MAX_ALM_IMPORT_DRAFTS = 10
 
 
 def populate_spec(
@@ -979,6 +980,9 @@ class Application:
         self.pending_imports: dict[str, tuple[str, bytes]] = {}
         self.import_jobs: dict[str, ImportJob] = {}
         self.import_lock = threading.Lock()
+        self.import_drafts_path = ROOT / "results" / "web-alm-import-drafts.json"
+        self.import_drafts_lock = threading.Lock()
+        self.import_drafts = self._load_import_drafts()
         self.preferences_path = ROOT / "results" / "web-settings.json"
         self.preferences_lock = threading.Lock()
         self.preferences = self._load_preferences()
@@ -1152,6 +1156,62 @@ class Application:
             values = json.loads(json.dumps(saved))
             values["_saved"] = True
             return values
+
+    def _load_import_drafts(self) -> list[dict[str, Any]]:
+        """Load resumable ALM import state from the project filesystem."""
+        try:
+            raw = json.loads(self.import_drafts_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return []
+        if not isinstance(raw, list):
+            return []
+        return [
+            draft
+            for draft in raw[:MAX_ALM_IMPORT_DRAFTS]
+            if isinstance(draft, dict) and str(draft.get("id", "")).strip()
+        ]
+
+    def import_drafts_json(self) -> list[dict[str, Any]]:
+        with self.import_drafts_lock:
+            return json.loads(json.dumps(self.import_drafts))
+
+    def save_import_draft(self, raw: dict[str, Any]) -> list[dict[str, Any]]:
+        if not isinstance(raw, dict):
+            raise eudm.EUDMError("The ALM import draft was invalid.")
+        draft_id = str(raw.get("id", "")).strip()
+        if not draft_id or len(draft_id) > 100 or any(
+            character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+            for character in draft_id
+        ):
+            raise eudm.EUDMError("The ALM import draft identifier was invalid.")
+        if not isinstance(raw.get("workbook"), dict) or not raw["workbook"].get("import_id"):
+            raise eudm.EUDMError("The ALM import draft did not include workbook state.")
+        try:
+            stored = json.loads(json.dumps(raw))
+        except (TypeError, ValueError) as exc:
+            raise eudm.EUDMError("The ALM import draft could not be saved.") from exc
+        stored["id"] = draft_id
+        stored["saved_at"] = str(stored.get("saved_at", "")) or datetime.now().isoformat(timespec="seconds")
+        with self.import_drafts_lock:
+            drafts = [draft for draft in self.import_drafts if draft.get("id") != draft_id]
+            drafts.insert(0, stored)
+            self.import_drafts = drafts[:MAX_ALM_IMPORT_DRAFTS]
+            payload = json.dumps(self.import_drafts, ensure_ascii=False, indent=2)
+            self.import_drafts_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self.import_drafts_path.with_suffix(".tmp")
+            temporary.write_text(payload + "\n", encoding="utf-8")
+            temporary.replace(self.import_drafts_path)
+            return json.loads(json.dumps(self.import_drafts))
+
+    def delete_import_draft(self, draft_id: str) -> list[dict[str, Any]]:
+        with self.import_drafts_lock:
+            self.import_drafts = [draft for draft in self.import_drafts if draft.get("id") != draft_id]
+            payload = json.dumps(self.import_drafts, ensure_ascii=False, indent=2)
+            self.import_drafts_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self.import_drafts_path.with_suffix(".tmp")
+            temporary.write_text(payload + "\n", encoding="utf-8")
+            temporary.replace(self.import_drafts_path)
+            return json.loads(json.dumps(self.import_drafts))
 
     def add_import(self, workbook: WorkbookImport) -> None:
         with self.import_lock:

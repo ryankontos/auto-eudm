@@ -40,6 +40,10 @@
           <span class="tool-icon import-icon" aria-hidden="true">↓</span>
           <span><strong>Import ALM Workbook</strong><small>Import a local spreadsheet</small></span>
         </button>
+        <button id="resumeLatestImportButton" class="tool-button resume-import-tool" type="button" hidden>
+          <span class="tool-icon" aria-hidden="true">↻</span>
+          <span><strong id="resumeImportDraftTitle">Resume ALM import</strong><small id="resumeImportDraftDetail"></small></span>
+        </button>
       </div>
 
       <div class="rail-bottom-action">
@@ -81,10 +85,6 @@
       <div id="queueEmpty" class="empty-state">
         <h2>Build a request queue</h2>
         <p>Add a request, import serial/user pairs, or import an ALM Workbook.</p>
-        <div id="resumeImportDraftMain" class="resume-import-draft" hidden>
-          <div><strong id="resumeImportDraftTitle">Resume ALM import</strong><small id="resumeImportDraftDetail"></small></div>
-          <button id="resumeLatestImportButton" class="button secondary compact" type="button">Resume</button>
-        </div>
       </div>
 
       <div id="queueTableWrap" class="queue-table-wrap" hidden>
