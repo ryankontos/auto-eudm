@@ -822,6 +822,45 @@ fieldset { margin: 0; padding: 0; border: 0; }
 .file-drop small { margin-top: 2px; }
 .file-drop input { position: absolute; width: 1px; height: 1px; opacity: 0; }
 #importChoose.is-busy .file-drop { display: none; }
+.import-drafts {
+  margin-bottom: 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-alt);
+}
+.import-drafts-heading { padding: 9px 11px 7px; }
+.import-drafts-heading strong,
+.import-drafts-heading small { display: block; }
+.import-drafts-heading small { margin-top: 2px; color: var(--muted); font-size: 11px; }
+.import-draft {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 11px;
+  border-top: 1px solid var(--line);
+}
+.import-draft > div:first-child { min-width: 0; }
+.import-draft strong,
+.import-draft small { display: block; overflow-wrap: anywhere; }
+.import-draft small { margin-top: 2px; color: var(--muted); font-size: 10px; }
+.import-draft-actions { display: flex; align-items: center; gap: 9px; flex: 0 0 auto; }
+.resume-import-draft {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  max-width: 520px;
+  margin: 18px auto 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  text-align: left;
+  background: var(--surface-alt);
+}
+.resume-import-draft strong,
+.resume-import-draft small { display: block; overflow-wrap: anywhere; }
+.resume-import-draft small { margin-top: 2px; color: var(--muted); font-size: 11px; }
 .import-busy {
   display: grid;
   grid-template-columns: 28px minmax(0, 1fr) auto;
@@ -982,8 +1021,8 @@ fieldset { margin: 0; padding: 0; border: 0; }
 }
 .import-date-groups label { margin: 0; }
 .import-date-groups > small { padding-bottom: 8px; color: var(--muted); line-height: 1.35; }
-.import-warning {
-  margin-top: 10px;
+.import-verification-warning {
+  margin: 10px 0;
   padding: 9px 11px;
   border: 1px solid var(--amber-border);
   border-radius: 4px;
@@ -992,9 +1031,8 @@ fieldset { margin: 0; padding: 0; border: 0; }
   font-size: 11px;
   line-height: 1.35;
 }
-.import-warning strong,
-.import-warning span { display: block; }
-.import-warning span { margin-top: 2px; }
+.import-verification-warning ul { margin: 4px 0 0; padding-left: 18px; }
+.import-verification-warning li + li { margin-top: 3px; }
 .import-show-more {
   display: block;
   width: calc(100% - 18px);

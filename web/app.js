@@ -7,6 +7,7 @@ const state = {
   workbook: null,
   workbookInspection: null,
   importPreview: null,
+  importDraftId: null,
   importUploadToken: 0,
   importExpandedGroups: new Set(),
   currentJob: null,
@@ -32,8 +33,10 @@ const RECENT_LOCATIONS_STORAGE_KEY = "auto-eudm-recent-locations";
 const CONCURRENCY_STORAGE_KEY = "auto-eudm-concurrency";
 const IMPORT_COLUMNS_STORAGE_KEY = "auto-eudm-import-columns";
 const IMPORT_LOCATION_STORAGE_KEY = "auto-eudm-import-location";
+const ALM_IMPORT_DRAFTS_STORAGE_KEY = "auto-eudm-alm-import-drafts";
 const VALIDATION_DEBOUNCE_MS = 1500;
 const MAX_RECENT_LOCATIONS = 8;
+const MAX_ALM_IMPORT_DRAFTS = 10;
 const IMPORT_PREVIEW_ROW_LIMIT = 80;
 const MAX_WORKBOOK_BYTES = 100 * 1024 * 1024;
 const ALM_IMPORT_STATUS_OPTIONS = {
@@ -1103,6 +1106,7 @@ function refreshBulkValidationButton(request = selectedRequest()) {
 function renderAll() {
   renderQueue();
   renderInspector();
+  renderLatestImportDraft();
 }
 
 function restoreInspector() {
@@ -2322,10 +2326,12 @@ function addPairs() {
 }
 
 function resetImportDialog() {
+  saveCurrentImportDraft();
   state.importUploadToken += 1;
   state.workbook = null;
   state.workbookInspection = null;
   state.importPreview = null;
+  state.importDraftId = null;
   state.importExpandedGroups.clear();
   $("#workbookInput").value = "";
   $("#importChoose").hidden = false;
@@ -2333,11 +2339,11 @@ function resetImportDialog() {
   $("#importConfigure").hidden = true;
   $("#importMapColumns").hidden = true;
   $("#importPreview").hidden = true;
+  $("#importVerificationWarnings").hidden = true;
+  $("#importVerificationWarningList").innerHTML = "";
   $("#importDateGroups").hidden = true;
   $("#importGroupInput").innerHTML = "";
   $("#importDateGroupsHelp").textContent = "";
-  $("#importWarnings").hidden = true;
-  $("#importWarnings").innerHTML = "";
   $("#backImportButton").hidden = true;
   $("#prepareImportButton").disabled = true;
   $("#prepareImportButton").textContent = "Review import";
@@ -2347,6 +2353,7 @@ function resetImportDialog() {
   state.importLocationResults = [];
   $$('input[name="importMode"]').forEach((input) => { input.checked = true; });
   setImportStep(1);
+  renderImportDrafts();
 }
 
 function setImportStep(step) {
@@ -2439,31 +2446,10 @@ function updateImportGroupChoices(selected) {
   $("#importDateGroupsHelp").textContent = `This date appears grouped into ${groups.length} sections. Choose one section or all sections.`;
 }
 
-function updateImportWarnings(selected) {
-  const warnings = selected?.warnings || [];
-  const warning = $("#importWarnings");
-  if (!warnings.length) {
-    warning.hidden = true;
-    warning.innerHTML = "";
-    return;
-  }
-  const details = warnings.slice(0, 4).map((item) => {
-    const missing = [
-      item.missing_returned ? "returned-device" : "",
-      item.missing_pending ? "pending-return" : "",
-    ].filter(Boolean).join(" and ");
-    return `${item.username || `row ${item.row_number}`} (${missing || "serial"})`;
-  });
-  const remainder = warnings.length > details.length ? ` and ${warnings.length - details.length} more` : "";
-  warning.innerHTML = `<strong>Check ${warnings.length} attended row${warnings.length === 1 ? "" : "s"}</strong><span>Missing serials: ${details.map(escapeHtml).join(", ")}${remainder}. These rows are not counted until corrected.</span>`;
-  warning.hidden = false;
-}
-
 function updateImportCounts() {
   const sheet = workbookSheet($("#sheetInput").value);
   const selected = sheet?.dates.find((entry) => entry.value === $("#dateInput").value);
   updateImportGroupChoices(selected);
-  updateImportWarnings(selected);
   const groupValue = selectedImportGroup();
   const group = selected?.groups?.find((item) => item.value === groupValue);
   const counts = groupValue && groupValue !== "all" && group ? group : selected;
@@ -2609,6 +2595,7 @@ function openImportColumnMapping() {
 
 function showImportedWorkbook(workbook) {
   $("#importError").hidden = true;
+  if (!state.importDraftId) state.importDraftId = newImportDraftId();
   if (workbook.needs_mapping) {
     state.workbook = workbook;
     state.workbookInspection = workbook;
@@ -2623,6 +2610,7 @@ function showImportedWorkbook(workbook) {
       return;
     }
     openImportColumnMapping();
+    saveCurrentImportDraft();
     return;
   }
   state.workbook = workbook;
@@ -2638,6 +2626,7 @@ function showImportedWorkbook(workbook) {
   $("#importFileSummary").textContent = `${workbook.sheets.length} dated sheet${workbook.sheets.length === 1 ? "" : "s"}`;
   $("#sheetInput").innerHTML = workbook.sheets.map((sheet) => `<option value="${escapeHtml(sheet.name)}" ${sheet.name === workbook.default_sheet ? "selected" : ""}>${escapeHtml(sheet.name)}</option>`).join("");
   updateImportDates();
+  saveCurrentImportDraft();
 }
 
 function renderImportColumnMap() {
@@ -2793,6 +2782,182 @@ async function uploadWorkbook(file) {
   }
 }
 
+function newImportDraftId() {
+  if (globalThis.crypto?.randomUUID) return crypto.randomUUID();
+  return `draft-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function readImportDrafts() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(ALM_IMPORT_DRAFTS_STORAGE_KEY) || "[]");
+    return Array.isArray(saved) ? saved.filter((draft) => draft && typeof draft === "object" && draft.id) : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function writeImportDrafts(drafts) {
+  try {
+    localStorage.setItem(ALM_IMPORT_DRAFTS_STORAGE_KEY, JSON.stringify(drafts.slice(0, MAX_ALM_IMPORT_DRAFTS)));
+  } catch (_) {
+    // A large preview can exceed local storage. The live import remains usable;
+    // it simply will not be resumable from a later page load.
+  }
+}
+
+function importDraftPhase() {
+  if (state.importPreview) return "review";
+  if (state.workbook?.needs_mapping) return "mapping";
+  return "options";
+}
+
+function importDraftPhaseLabel(phase) {
+  return ({ mapping: "Choose columns", options: "Options", review: "Review" })[phase] || "Import";
+}
+
+function importDraftSettings() {
+  return {
+    sheet: $("#sheetInput").value || "",
+    date: $("#dateInput").value || "",
+    group: $("#importGroupInput").value || "",
+    modes: selectedImportModes(),
+    location: state.importLocation ? JSON.parse(JSON.stringify(state.importLocation)) : null,
+    columns: selectedImportColumns(),
+  };
+}
+
+function saveCurrentImportDraft() {
+  const workbook = state.workbook || state.workbookInspection;
+  if (!state.importDraftId || !workbook?.import_id) return;
+  const draft = {
+    id: state.importDraftId,
+    filename: workbook.filename || "ALM Workbook",
+    import_id: workbook.import_id,
+    workbook: JSON.parse(JSON.stringify(workbook)),
+    phase: importDraftPhase(),
+    settings: importDraftSettings(),
+    preview: state.importPreview ? JSON.parse(JSON.stringify(state.importPreview)) : null,
+    saved_at: new Date().toISOString(),
+  };
+  const drafts = readImportDrafts().filter((item) => item.id !== draft.id);
+  drafts.unshift(draft);
+  writeImportDrafts(drafts);
+  renderImportDrafts();
+}
+
+function deleteImportDraft(id) {
+  writeImportDrafts(readImportDrafts().filter((draft) => draft.id !== id));
+  renderImportDrafts();
+}
+
+function renderImportDrafts() {
+  const wrapper = $("#importDrafts");
+  const list = $("#importDraftList");
+  if (!wrapper || !list) return;
+  const drafts = readImportDrafts();
+  wrapper.hidden = !drafts.length;
+  list.innerHTML = drafts.map((draft) => {
+    const timestamp = new Date(draft.saved_at || "");
+    const saved = Number.isNaN(timestamp.getTime()) ? "Saved import" : `Saved ${timestamp.toLocaleString()}`;
+    return `<div class="import-draft">
+      <div><strong>${escapeHtml(draft.filename || "ALM Workbook")}</strong><small>${escapeHtml(importDraftPhaseLabel(draft.phase))} · ${escapeHtml(saved)}</small></div>
+      <div class="import-draft-actions">
+        <button class="button secondary compact" type="button" data-import-resume="${escapeHtml(draft.id)}">Resume</button>
+        <button class="text-button" type="button" data-import-delete="${escapeHtml(draft.id)}">Delete</button>
+      </div>
+    </div>`;
+  }).join("");
+  list.querySelectorAll("[data-import-resume]").forEach((button) => button.addEventListener("click", () => resumeImportDraft(button.dataset.importResume)));
+  list.querySelectorAll("[data-import-delete]").forEach((button) => button.addEventListener("click", () => {
+    const draft = readImportDrafts().find((item) => item.id === button.dataset.importDelete);
+    if (draft && confirm(`Delete the saved ALM import “${draft.filename || "ALM Workbook"}”?`)) deleteImportDraft(draft.id);
+  }));
+  renderLatestImportDraft();
+}
+
+function renderLatestImportDraft() {
+  const panel = $("#resumeImportDraftMain");
+  const button = $("#resumeLatestImportButton");
+  if (!panel || !button) return;
+  const latest = readImportDrafts()[0];
+  const visible = Boolean(latest) && state.queue.length === 0;
+  panel.hidden = !visible;
+  if (!visible) return;
+  $("#resumeImportDraftTitle").textContent = `Resume ${latest.filename || "ALM import"}`;
+  const timestamp = new Date(latest.saved_at || "");
+  const saved = Number.isNaN(timestamp.getTime()) ? "saved import" : `saved ${timestamp.toLocaleString()}`;
+  $("#resumeImportDraftDetail").textContent = `${importDraftPhaseLabel(latest.phase)} · ${saved}`;
+  button.onclick = () => {
+    $("#importDialog").showModal();
+    resumeImportDraft(latest.id);
+  };
+}
+
+function restoreImportDraftOptions(settings = {}) {
+  if (settings.sheet && [...$("#sheetInput").options].some((option) => option.value === settings.sheet)) {
+    $("#sheetInput").value = settings.sheet;
+  }
+  updateImportDates();
+  if (settings.date && [...$("#dateInput").options].some((option) => option.value === settings.date)) {
+    $("#dateInput").value = settings.date;
+  }
+  if (Array.isArray(settings.modes) && settings.modes.length) {
+    $$('input[name="importMode"]').forEach((input) => { input.checked = settings.modes.includes(input.value); });
+  }
+  if (settings.location) state.importLocation = JSON.parse(JSON.stringify(settings.location));
+  if (settings.group && [...$("#importGroupInput").options].some((option) => option.value === settings.group)) {
+    $("#importGroupInput").value = settings.group;
+  }
+  updateImportCounts();
+}
+
+function restoreImportDraftMapping(settings = {}) {
+  const selectors = {
+    username: "#importMapUsername",
+    deployment_serial: "#importMapDeployment",
+    returned_device: "#importMapReturned",
+    pending_return: "#importMapPending",
+    enabled: "#importMapEnabled",
+    device_allocation: "#importMapDeviceAllocation",
+  };
+  Object.entries(selectors).forEach(([key, selector]) => {
+    const element = $(selector);
+    const value = settings.columns?.[key] || "";
+    if ([...element.options].some((option) => option.value === value)) element.value = value;
+  });
+  updateImportColumnMapButton();
+}
+
+function resumeImportDraft(id) {
+  const draft = readImportDrafts().find((item) => item.id === id);
+  if (!draft?.workbook?.import_id) return;
+  resetImportDialog();
+  state.importDraftId = draft.id;
+  state.workbook = JSON.parse(JSON.stringify(draft.workbook));
+  state.workbookInspection = state.workbook.needs_mapping ? state.workbook : null;
+  state.importLocation = draft.settings?.location ? JSON.parse(JSON.stringify(draft.settings.location)) : preferredImportLocation();
+  if (draft.phase === "mapping" || draft.workbook.needs_mapping) {
+    openImportColumnMapping();
+    restoreImportDraftMapping(draft.settings);
+    return;
+  }
+  showImportedWorkbook(state.workbook);
+  restoreImportDraftOptions(draft.settings);
+  if (!draft.preview) {
+    saveCurrentImportDraft();
+    return;
+  }
+  state.importPreview = JSON.parse(JSON.stringify(draft.preview));
+  $("#importConfigure").hidden = true;
+  $("#importPreview").hidden = false;
+  $("#backImportButton").hidden = false;
+  setImportStep(3);
+  renderImportPreview();
+  updateImportPrepareButton(state.importPreview);
+  const pending = state.importPreview.requests.some((request) => request.included !== false && !["valid", "failed"].includes(request.import_validation));
+  if (pending) validateImportPreview();
+}
+
 function importReturnDetails(request, isReturnedDevice) {
   if (!isReturnedDevice) return "";
   // Do not display user details until both the serial and username have been
@@ -2804,6 +2969,26 @@ function importReturnDetails(request, isReturnedDevice) {
   return '<div class="import-return-details"><strong>Returning user</strong><small>An email will be sent to this user. Verify the details.</small><span>'
     + escapeHtml(info.login || request.returning_user)
     + '</span><em>' + escapeHtml(info.columns.join(" · ")) + '</em></div>';
+}
+
+function renderImportVerificationWarnings(payload = state.importPreview) {
+  const warning = $("#importVerificationWarnings");
+  if (!payload || !warning) return;
+  const selected = payload.requests.filter((request) => request.included !== false);
+  const checking = selected.some((request) => !["valid", "failed"].includes(request.import_validation));
+  const failed = selected.filter((request) => request.import_validation === "failed");
+  if (checking || !failed.length) {
+    warning.hidden = true;
+    $("#importVerificationWarningList").innerHTML = "";
+    return;
+  }
+  $("#importVerificationWarningList").innerHTML = failed.map((request) => {
+    const affected = (request.import_failed_fields || []).map((field) => field === "serial" ? "serial" : "username");
+    const detail = affected.length ? ` (${affected.join(" and ")})` : "";
+    const user = request.user || request.returning_user || "No username";
+    return `<li><strong>${escapeHtml(request.serials[0] || "No serial")}</strong> · ${escapeHtml(user)}${escapeHtml(detail)}: ${escapeHtml(request.import_error || "Could not verify in EUDM.")}</li>`;
+  }).join("");
+  warning.hidden = false;
 }
 
 function updateImportPrepareButton(payload = state.importPreview) {
@@ -2833,6 +3018,7 @@ function updateImportPrepareButton(payload = state.importPreview) {
 function renderImportPreview() {
   const payload = state.importPreview;
   if (!payload) return;
+  renderImportVerificationWarnings(payload);
   const included = payload.requests.filter((request) => request.included !== false);
   const deploymentCount = included.filter((request) => request.group === "Deployments").length;
   const returnedDeviceCount = included.filter((request) => request.group === "Returned devices").length;
@@ -3023,7 +3209,7 @@ function renderImportPreview() {
     }
     validateImportPreview([request]);
   }));
-
+  saveCurrentImportDraft();
 }
 
 async function validateImportPreview(retryRequests = null) {
@@ -3099,6 +3285,7 @@ function backToImportSelection() {
   $("#prepareImportButton").disabled = false;
   $("#importError").hidden = true;
   setImportStep(2);
+  saveCurrentImportDraft();
 }
 
 async function prepareImport() {
@@ -3140,6 +3327,8 @@ async function prepareImport() {
     }
     state.queue.push(...requests);
     state.selectedId = requests[0]?.id || state.selectedId;
+    deleteImportDraft(state.importDraftId);
+    state.importDraftId = null;
     $("#importDialog").close();
     renderAll();
     resolveQueueReturningUsers(requests);
@@ -3192,6 +3381,7 @@ async function prepareImport() {
     button.disabled = true;
     setImportStep(3);
     renderImportPreview();
+    saveCurrentImportDraft();
     validateImportPreview();
   } catch (error) {
     $("#importError").textContent = error.message;
@@ -3591,8 +3781,23 @@ function bindEvents() {
   });
   $("#importSheetButton").addEventListener("click", openAlmWorkbookImport);
   $("#importDialog").addEventListener("close", () => {
+    saveCurrentImportDraft();
     state.importUploadToken += 1;
     setImportBusy(false);
+  });
+  window.addEventListener("beforeunload", saveCurrentImportDraft);
+  const importForm = $("#importDialog form");
+  importForm.addEventListener("submit", (event) => {
+    // The dialog form uses method="dialog" for the intentional Cancel action.
+    // Prevent implicit Enter submission from closing the importer and losing
+    // an in-progress workbook review.
+    if (event.submitter?.value !== "cancel") event.preventDefault();
+  });
+  importForm.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || event.isComposing) return;
+    event.preventDefault();
+    const retry = event.target.closest(".import-inline-edit")?.querySelector("[data-import-retry]");
+    if (retry) retry.click();
   });
   $("#workbookInput").addEventListener("change", (event) => {
     if (event.target.files[0]) uploadWorkbook(event.target.files[0]);

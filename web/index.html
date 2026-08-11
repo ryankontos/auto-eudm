@@ -81,6 +81,10 @@
       <div id="queueEmpty" class="empty-state">
         <h2>Build a request queue</h2>
         <p>Add a request, import serial/user pairs, or import an ALM Workbook.</p>
+        <div id="resumeImportDraftMain" class="resume-import-draft" hidden>
+          <div><strong id="resumeImportDraftTitle">Resume ALM import</strong><small id="resumeImportDraftDetail"></small></div>
+          <button id="resumeLatestImportButton" class="button secondary compact" type="button">Resume</button>
+        </div>
       </div>
 
       <div id="queueTableWrap" class="queue-table-wrap" hidden>
@@ -304,7 +308,15 @@
         <li id="importStep2"><span>2</span>Options</li>
         <li id="importStep3"><span>3</span>Review</li>
       </ol>
+      <div id="importVerificationWarnings" class="import-verification-warning" role="status" aria-live="polite" hidden>
+        <strong>Verification needs attention</strong>
+        <ul id="importVerificationWarningList"></ul>
+      </div>
       <div id="importChoose">
+        <div id="importDrafts" class="import-drafts" hidden>
+          <div class="import-drafts-heading"><strong>Saved ALM imports</strong><small>Resume an import or delete it when it is no longer needed.</small></div>
+          <div id="importDraftList"></div>
+        </div>
         <div id="importFileChooser">
           <label class="file-drop" for="workbookInput">
             <span class="file-symbol" aria-hidden="true">↓</span>
@@ -378,7 +390,6 @@
             </label>
           </div>
         </div>
-        <div id="importWarnings" class="import-warning" role="status" hidden></div>
       </div>
       <div id="importPreview" hidden>
         <div class="import-preview-heading">
