@@ -35,6 +35,7 @@ class FakeApp:
         self.jobs = FakeJobs()
         self.saved_preferences: list[dict[str, object]] = []
         self.import_drafts: list[dict[str, object]] = []
+        self.cached: dict[tuple[str, str], dict[str, object]] = {}
 
     @staticmethod
     def config_json() -> dict[str, object]:
@@ -59,6 +60,15 @@ class FakeApp:
     def delete_import_draft(self, draft_id: str) -> list[dict[str, object]]:
         self.import_drafts = [draft for draft in self.import_drafts if draft.get("id") != draft_id]
         return self.import_drafts
+
+    def verification_cache_lookup(self, kind: str, value: str) -> dict[str, object] | None:
+        return self.cached.get((kind, value.casefold()))
+
+    def record_verified_serial(self, result: dict[str, object]) -> None:
+        self.cached[("serial", str(result["value"]).casefold())] = result
+
+    def record_verified_username(self, result: dict[str, object]) -> None:
+        self.cached[("username", str(result["value"]).casefold())] = result
 
 
 class LocalWebServerTests(unittest.TestCase):
@@ -227,6 +237,17 @@ class LocalWebServerTests(unittest.TestCase):
 
         self.assertEqual(response.status, 422)
         self.assertIn(str(MAX_SEARCH_QUERY), json.loads(raw)["error"])
+
+    def test_cached_serial_is_returned_without_connecting_to_eudm(self) -> None:
+        cached = {"value": "ABC123", "columns": ["ABC123"], "device_type": "Laptop"}
+        self.app.cached[("serial", "abc123")] = cached
+
+        response, raw = self.request(
+            "POST", "/api/search/assets", payload={"query": "ABC123", "fresh": True}
+        )
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(json.loads(raw), {"results": [cached], "cached": True})
 
     def test_job_routes_reject_non_generated_identifiers(self) -> None:
         response, raw = self.request("GET", '/api/jobs/not-a-job/results.txt')

@@ -87,6 +87,16 @@ class ImportActionTests(unittest.TestCase):
         )
         self.assertFalse(ignored)
 
+    def test_red_font_marker_does_not_exclude_a_true_row(self) -> None:
+        row = replace(self.row, marked_red=True)
+
+        actions, ignored = inventory.build_actions(
+            [row], self.selected_date, "deployments"
+        )
+
+        self.assertEqual(len(actions), 1)
+        self.assertNotIn("marked red", ignored)
+
     @mock.patch("builtins.print")
     @mock.patch("builtins.input", return_value="1")
     def test_cli_can_override_a_deployment_to_existing_stock(

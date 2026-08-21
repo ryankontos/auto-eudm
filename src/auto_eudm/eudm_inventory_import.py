@@ -440,7 +440,6 @@ def eligible_rows(
         if (selected_date is None or row.deployment_date == selected_date)
         and (date_group is None or row.date_group == date_group)
         and row.enabled
-        and not row.marked_red
         and looks_like_username(row.username)
     ]
 
@@ -464,12 +463,11 @@ def eligible_counts(
 
 
 def attended_rows_missing_return_serials(rows: Iterable[SheetRow]) -> list[SheetRow]:
-    """Find attended, included rows missing either return serial."""
+    """Find TRUE/FALSE-enabled rows missing either return serial."""
     return [
         row
         for row in rows
         if row.enabled
-        and not row.marked_red
         and looks_like_username(row.username)
         and (
             (
@@ -513,9 +511,6 @@ def build_actions(
             continue
         if not row.enabled:
             ignored["TRUE/FALSE column is false"] += 1
-            continue
-        if row.marked_red:
-            ignored["marked red"] += 1
             continue
         if not row.username:
             if any(looks_like_serial(value) for value in (row.deployment_serial, row.returned_device_serial, row.pending_return_serial)):
@@ -676,7 +671,7 @@ def main() -> int:
   The newest 'Inventory Tracking - Sydney*.xlsx' or .xlsm in Downloads is used
   when FILE is omitted. 'Bookings 2026' is selected automatically; otherwise
   you choose a sheet. Columns are identified by their configured headings.
-  Red rows, non-attendees, and rows without a valid username are excluded.
+  Non-attendees and rows without a valid username are excluded.
   The standalone importer submits deployments and pending returns; use the web
   importer when returned devices also need to be moved into location stock.
 

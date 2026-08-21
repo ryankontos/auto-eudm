@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 from pathlib import Path
 import threading
@@ -43,7 +43,9 @@ DEVICE_MODEL_LOCATION_STATUSES = frozenset({
 MAX_IMPORT_JOBS = 12
 MAX_PENDING_IMPORTS = 2
 MAX_LIVE_SUBMISSION_JOBS = 100
+VERIFICATION_CACHE_MAX_ENTRIES = 10000
 MAX_ALM_IMPORT_DRAFTS = 10
+ALM_IMPORT_DRAFT_MAX_AGE = timedelta(hours=6)
 HISTORY_FILENAME = "request-history.json"
 LEGACY_HISTORY_FILENAMES = ("web-request-history.json",)
 
@@ -1003,6 +1005,9 @@ class Application:
         self.import_drafts_path = ROOT / "results" / "web-alm-import-drafts.json"
         self.import_drafts_lock = threading.Lock()
         self.import_drafts = self._load_import_drafts()
+        self.verification_cache_path = ROOT / "results" / "web-verification-cache.json"
+        self.verification_cache_lock = threading.Lock()
+        self.verification_cache = self._load_verification_cache()
         self.preferences_path = ROOT / "results" / "web-settings.json"
         self.preferences_lock = threading.Lock()
         self.preferences = self._load_preferences()
@@ -1048,6 +1053,7 @@ class Application:
             "validate_bulk_serials": True,
             "validate_quick_import": True,
             "validate_workbook_import": True,
+            "save_alm_import_drafts": True,
             "device_model_mappings": [],
             "import_columns": {
                 "username": "Username",
@@ -1085,6 +1091,7 @@ class Application:
             "validate_bulk_serials",
             "validate_quick_import",
             "validate_workbook_import",
+            "save_alm_import_drafts",
         ):
             if key in raw and not isinstance(raw[key], bool):
                 raise eudm.EUDMError("A settings toggle had an invalid value.")
@@ -1185,11 +1192,43 @@ class Application:
             return []
         if not isinstance(raw, list):
             return []
-        return [
+        now = datetime.now()
+        drafts = [
             draft
             for draft in raw[:MAX_ALM_IMPORT_DRAFTS]
-            if isinstance(draft, dict) and str(draft.get("id", "")).strip()
+            if isinstance(draft, dict)
+            and str(draft.get("id", "")).strip()
+            and self._draft_is_current(draft, now=now)
         ]
+        if len(drafts) != len(raw):
+            try:
+                self._write_import_drafts(drafts)
+            except OSError:
+                pass
+        return drafts
+
+    @staticmethod
+    def _draft_is_current(draft: dict[str, Any], *, now: datetime | None = None) -> bool:
+        saved_at = str(draft.get("saved_at", "")).strip()
+        if not saved_at:
+            return False
+        try:
+            saved = datetime.fromisoformat(saved_at.replace("Z", "+00:00"))
+            current = now or datetime.now(saved.tzinfo)
+            if saved.tzinfo is not None and current.tzinfo is None:
+                current = current.astimezone(saved.tzinfo)
+            if saved.tzinfo is None and current.tzinfo is not None:
+                current = current.replace(tzinfo=None)
+        except ValueError:
+            return False
+        return current - saved <= ALM_IMPORT_DRAFT_MAX_AGE
+
+    def _write_import_drafts(self, drafts: list[dict[str, Any]]) -> None:
+        payload = json.dumps(drafts[:MAX_ALM_IMPORT_DRAFTS], ensure_ascii=False, indent=2)
+        self.import_drafts_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.import_drafts_path.with_suffix(".tmp")
+        temporary.write_text(payload + "\n", encoding="utf-8")
+        temporary.replace(self.import_drafts_path)
 
     def import_drafts_json(self) -> list[dict[str, Any]]:
         with self.import_drafts_lock:
@@ -1216,22 +1255,80 @@ class Application:
             drafts = [draft for draft in self.import_drafts if draft.get("id") != draft_id]
             drafts.insert(0, stored)
             self.import_drafts = drafts[:MAX_ALM_IMPORT_DRAFTS]
-            payload = json.dumps(self.import_drafts, ensure_ascii=False, indent=2)
-            self.import_drafts_path.parent.mkdir(parents=True, exist_ok=True)
-            temporary = self.import_drafts_path.with_suffix(".tmp")
-            temporary.write_text(payload + "\n", encoding="utf-8")
-            temporary.replace(self.import_drafts_path)
+            self._write_import_drafts(self.import_drafts)
             return json.loads(json.dumps(self.import_drafts))
 
     def delete_import_draft(self, draft_id: str) -> list[dict[str, Any]]:
         with self.import_drafts_lock:
             self.import_drafts = [draft for draft in self.import_drafts if draft.get("id") != draft_id]
-            payload = json.dumps(self.import_drafts, ensure_ascii=False, indent=2)
-            self.import_drafts_path.parent.mkdir(parents=True, exist_ok=True)
-            temporary = self.import_drafts_path.with_suffix(".tmp")
-            temporary.write_text(payload + "\n", encoding="utf-8")
-            temporary.replace(self.import_drafts_path)
+            self._write_import_drafts(self.import_drafts)
             return json.loads(json.dumps(self.import_drafts))
+
+    @staticmethod
+    def _verification_cache_key(value: str) -> str:
+        return " ".join(str(value or "").split()).casefold()
+
+    def _load_verification_cache(self) -> dict[str, dict[str, dict[str, Any]]]:
+        empty = {"serials": {}, "usernames": {}}
+        try:
+            raw = json.loads(self.verification_cache_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return empty
+        if not isinstance(raw, dict):
+            return empty
+        cache: dict[str, dict[str, dict[str, Any]]] = {}
+        for category in ("serials", "usernames"):
+            values = raw.get(category)
+            if not isinstance(values, dict):
+                cache[category] = {}
+                continue
+            cache[category] = {
+                str(key): dict(value)
+                for key, value in list(values.items())[-VERIFICATION_CACHE_MAX_ENTRIES:]
+                if isinstance(value, dict) and str(key).strip()
+            }
+        return {**empty, **cache}
+
+    def _write_verification_cache(self) -> None:
+        payload = json.dumps(self.verification_cache, ensure_ascii=False, indent=2)
+        self.verification_cache_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.verification_cache_path.with_suffix(".tmp")
+        temporary.write_text(payload + "\n", encoding="utf-8")
+        temporary.replace(self.verification_cache_path)
+
+    def verification_cache_lookup(self, kind: str, value: str) -> dict[str, Any] | None:
+        category = "serials" if kind == "serial" else "usernames" if kind == "username" else ""
+        key = self._verification_cache_key(value)
+        if not category or not key:
+            return None
+        with self.verification_cache_lock:
+            cached = self.verification_cache[category].get(key)
+            return json.loads(json.dumps(cached)) if cached else None
+
+    def record_verified_serial(self, result: dict[str, Any]) -> None:
+        self._record_verification("serials", result)
+
+    def record_verified_username(self, result: dict[str, Any]) -> None:
+        self._record_verification("usernames", result)
+
+    def _record_verification(self, category: str, result: dict[str, Any]) -> None:
+        value = str(result.get("value", "")).strip()
+        key = self._verification_cache_key(value)
+        if not key:
+            return
+        stored = {
+            "value": value,
+            "columns": [str(item) for item in result.get("columns", [])],
+        }
+        if category == "serials":
+            stored["device_type"] = str(result.get("device_type", "") or "")
+        with self.verification_cache_lock:
+            values = self.verification_cache[category]
+            values.pop(key, None)
+            values[key] = stored
+            while len(values) > VERIFICATION_CACHE_MAX_ENTRIES:
+                values.pop(next(iter(values)))
+            self._write_verification_cache()
 
     def add_import(self, workbook: WorkbookImport) -> None:
         with self.import_lock:

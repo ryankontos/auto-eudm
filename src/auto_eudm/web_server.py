@@ -196,6 +196,19 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
             )
         return query
 
+    @staticmethod
+    def _exact_search_result(
+        results: list[dict[str, Any]], query: str
+    ) -> dict[str, Any] | None:
+        wanted = " ".join(query.split()).casefold()
+        for result in results:
+            if not isinstance(result, dict):
+                continue
+            value = " ".join(str(result.get("value", "")).split()).casefold()
+            if value == wanted:
+                return result
+        return None
+
     def do_GET(self) -> None:
         if not self._allow_host():
             self._error("Requests are accepted only on this localhost server.", 403)
@@ -382,8 +395,16 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
                 minimum=2,
                 message="Enter at least two serial characters.",
             )
+            cached = self.app.verification_cache_lookup("serial", query)
+            if cached:
+                self._json({"results": [cached], "cached": True})
+                return
             probe = self.app.clients.fresh_search() if payload.get("fresh") else self.app.clients.search()
-            self._json({"results": probe.assets(query)})
+            results = probe.assets(query)
+            exact = self._exact_search_result(results, query)
+            if exact:
+                self.app.record_verified_serial(exact)
+            self._json({"results": results})
             return
         if path == "/api/search/users":
             query = self._search_query(
@@ -391,13 +412,16 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
                 minimum=2,
                 message="Enter at least two name or username characters.",
             )
-            self._json(
-                {
-                    "results": (self.app.clients.fresh_search() if payload.get("fresh") else self.app.clients.search()).users(
-                        query, bool(payload.get("returning"))
-                    )
-                }
-            )
+            cached = self.app.verification_cache_lookup("username", query)
+            if cached:
+                self._json({"results": [cached], "cached": True})
+                return
+            probe = self.app.clients.fresh_search() if payload.get("fresh") else self.app.clients.search()
+            results = probe.users(query, bool(payload.get("returning")))
+            exact = self._exact_search_result(results, query)
+            if exact:
+                self.app.record_verified_username(exact)
+            self._json({"results": results})
             return
         if path == "/api/search/locations":
             city = str(payload.get("city", "")).strip()

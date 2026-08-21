@@ -20,10 +20,6 @@
     <div class="product-name">AutoEUDM</div>
     <div class="header-actions">
       <button id="historyButton" class="button secondary compact" type="button">Request history</button>
-      <div id="connectionBadge" class="connection-badge" aria-live="polite">
-        <span class="status-dot"></span>
-        <span>Loading</span>
-      </div>
       <button id="connectButton" class="button secondary compact" type="button">Connect to EUDM</button>
     </div>
   </header>
@@ -47,6 +43,10 @@
       </div>
 
       <div class="rail-bottom-action">
+        <div id="connectionBadge" class="connection-badge sidebar-connection" aria-live="polite">
+          <span class="status-dot"></span>
+          <span>Loading</span>
+        </div>
         <button id="settingsButton" class="tool-button settings-tool-button" type="button"><span class="tool-icon" aria-hidden="true">⚙</span><span><strong>Settings</strong></span></button>
       </div>
     </aside>
@@ -437,6 +437,7 @@
         <label class="settings-checkbox"><input id="validateWorkbookImportInput" type="checkbox"><span>Verify serials and users in ALM Workbook imports</span></label>
       </section>
       <section data-settings-panel="spreadsheet" hidden>
+        <label class="settings-checkbox"><input id="saveAlmImportDraftsInput" type="checkbox"><span>Save ALM imports for resume for up to 6 hours</span></label>
         <div class="settings-column-grid">
           <label>Username column<input id="spreadsheetUsernameColumnInput" type="text" placeholder="Username"></label>
           <label>Deployment serial column<input id="spreadsheetDeploymentColumnInput" type="text" placeholder="SN"></label>

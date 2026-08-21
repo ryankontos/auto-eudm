@@ -956,7 +956,7 @@ function renderQueue() {
     return `
       <tr data-id="${escapeHtml(request.id)}" class="${selected ? "selected" : ""} ${errors.length ? "invalid" : ""} ${request.result_state === "failed" ? "failed" : ""}" tabindex="0">
         <td class="index-column">${index + 1}</td>
-        <td><span class="cell-primary">${escapeHtml(serialDisplay)}</span>${request.kind === "bulk_location" ? `<span class="cell-secondary">${request.serials.length} devices</span>` : ""}${request.device_allocation ? `<span class="cell-secondary">ALM model: ${escapeHtml(request.device_allocation)}</span>` : ""}${requestId}</td>
+        <td><span class="cell-primary">${escapeHtml(serialDisplay)}</span>${request.kind === "bulk_location" ? `<span class="cell-secondary">${request.serials.length} devices</span>` : ""}${request.device_allocation ? `<span class="cell-secondary">${escapeHtml(request.device_allocation)}</span>` : ""}${requestId}</td>
         <td><span class="cell-primary">${escapeHtml(kindLabel(request.kind))}</span>${secondary ? `<span class="cell-secondary">${escapeHtml(secondary)}</span>` : ""}</td>
         <td title="${escapeHtml(statusLabel(request))}">${escapeHtml(statusLabel(request))}</td>
         <td title="${escapeHtml(destinationLabel(request))}"><span class="cell-primary">${escapeHtml(destinationLabel(request))}</span>${request.returning_user ? `<span class="cell-secondary">Returned by ${escapeHtml(request.returning_user)}</span>` : ""}</td>
@@ -1458,8 +1458,15 @@ async function loadSerialSuggestions(request, query, { requireSelection = true }
     if (!validationStillCurrent(request, "serial", epoch, value)) return;
     const results = payload.results || [];
     const exactAsset = results.find((item) => serialResultMatches(item, value));
+    const cachedExact = Boolean(payload.cached && exactAsset);
     request.eudm_device_type = exactAsset ? deviceTypeFromResult(exactAsset, value) : "";
-    if (selectedRequest() === request) renderSearchResults(elements.serialResults, results, (result) => {
+    if (cachedExact) {
+      request.serials = [bestSerial(exactAsset, value)];
+      request.serial_selected = true;
+      request.serial_validation = "valid";
+      request.serial_validation_error = "";
+      hideSearchResults();
+    } else if (selectedRequest() === request) renderSearchResults(elements.serialResults, results, (result) => {
       if (!validationStillCurrent(request, "serial", epoch, value)) return;
       hideSearchResults();
       request.serial_validation_epoch = Number(request.serial_validation_epoch || 0) + 1;
@@ -1471,12 +1478,12 @@ async function loadSerialSuggestions(request, query, { requireSelection = true }
       renderInspector();
       renderQueue();
     }, 1);
-    if (selectedRequest() === request) setLookupStatus("serial", results.length ? "Select a matching serial number:" : "No matching serial numbers found.");
+    if (selectedRequest() === request && !cachedExact) setLookupStatus("serial", results.length ? "Select a matching serial number:" : "No matching serial numbers found.");
     const exact = results.some((item) => serialResultMatches(item, value));
     if (!exact) {
       request.serial_validation = "failed";
       request.serial_validation_error = "Serial number was not found in EUDM.";
-    } else if (requireSelection) {
+    } else if (requireSelection && !cachedExact) {
       request.serial_validation = "unselected";
       request.serial_validation_error = "Serial number is not verified.";
     } else {
@@ -1520,8 +1527,21 @@ async function validateUserAfterPause(request, returning = false) {
     });
     if (!validationStillCurrent(request, field, epoch, value)) return;
     const results = payload.results || [];
+    const cachedResult = payload.cached
+      ? results.find((item) => bestLogin(item, value).toLowerCase() === value.toLowerCase())
+      : null;
     const container = returning ? elements.returningResults : elements.userResults;
-    if (selectedRequest() === request) renderSearchResults(container, results, (result) => {
+    if (cachedResult) {
+      const login = bestLogin(cachedResult, value);
+      const info = { login, columns: (cachedResult.columns || [cachedResult.value]).map(String).filter(Boolean) };
+      request[field] = login;
+      request[`${field}_selected`] = true;
+      request[`${field}_info`] = info;
+      request[`${field}_validation`] = "valid";
+      request[`${field}_validation_error`] = "";
+      request.returning_user_loading = false;
+      hideSearchResults();
+    } else if (selectedRequest() === request) renderSearchResults(container, results, (result) => {
       if (!validationStillCurrent(request, field, epoch, value)) return;
       hideSearchResults();
       request[`${field}_validation_epoch`] = Number(request[`${field}_validation_epoch`] || 0) + 1;
@@ -1544,14 +1564,14 @@ async function validateUserAfterPause(request, returning = false) {
       renderInspector();
       renderQueue();
     }, 0);
-    if (selectedRequest() === request) setLookupStatus(returning ? "returning" : "user", results.length ? "Select a matching user:" : "No matching users found.");
+    if (selectedRequest() === request && !cachedResult) setLookupStatus(returning ? "returning" : "user", results.length ? "Select a matching user:" : "No matching users found.");
     const hasResults = results.length > 0;
     if (returning) {
       request.returning_user_loading = false;
-      request.returning_user_validation = hasResults ? "suggested" : "failed";
+      request.returning_user_validation = cachedResult ? "valid" : hasResults ? "suggested" : "failed";
       request.returning_user_validation_error = hasResults ? "Choose the verified user from the suggestions." : "User was not found in EUDM.";
     } else {
-      request.user_validation = hasResults ? "suggested" : "failed";
+      request.user_validation = cachedResult ? "valid" : hasResults ? "suggested" : "failed";
       request.user_validation_error = hasResults ? "Choose the verified user from the suggestions." : "User was not found in EUDM.";
     }
     refreshSelectedValidation();
@@ -1808,6 +1828,7 @@ function openSettings() {
   $("#spreadsheetDeviceAllocationColumnInput").value = columns.device_allocation || "Device(s) Allocation";
   $("#validateQuickImportInput").checked = validationEnabled("validate_quick_import");
   $("#validateWorkbookImportInput").checked = validationEnabled("validate_workbook_import");
+  $("#saveAlmImportDraftsInput").checked = state.preferences.save_alm_import_drafts !== false;
   renderDeviceModelMappings();
   $("#settingsDialog").showModal();
 }
@@ -2333,11 +2354,8 @@ function resetImportDialog() {
   state.importDraftId = null;
   state.importExpandedGroups.clear();
   $("#workbookInput").value = "";
-  $("#importChoose").hidden = false;
   $("#importFileChooser").hidden = false;
-  $("#importConfigure").hidden = true;
-  $("#importMapColumns").hidden = true;
-  $("#importPreview").hidden = true;
+  setImportStage("choose");
   $("#importVerificationWarnings").hidden = true;
   $("#importVerificationWarningList").innerHTML = "";
   $("#importDateGroups").hidden = true;
@@ -2360,6 +2378,23 @@ function setImportStep(step) {
     const item = $(`#importStep${number}`);
     item.classList.toggle("active", number === step);
     item.classList.toggle("complete", number < step);
+  });
+}
+
+function setImportStage(stage) {
+  const stages = {
+    choose: ["#importChoose"],
+    mapping: ["#importChoose", "#importMapColumns"],
+    options: ["#importConfigure"],
+    preview: ["#importPreview"],
+  };
+  ["#importChoose", "#importMapColumns", "#importConfigure", "#importPreview"].forEach((selector) => {
+    const node = $(selector);
+    if (node) node.hidden = true;
+  });
+  (stages[stage] || []).forEach((selector) => {
+    const node = $(selector);
+    if (node) node.hidden = false;
   });
 }
 
@@ -2576,11 +2611,8 @@ function workbookMappingMatches(workbook, saved) {
 function openImportColumnMapping() {
   const workbook = state.workbookInspection;
   if (!workbook) return;
-  $("#importChoose").hidden = false;
   $("#importFileChooser").hidden = true;
-  $("#importConfigure").hidden = true;
-  $("#importPreview").hidden = true;
-  $("#importMapColumns").hidden = false;
+  setImportStage("mapping");
   $("#importMapFilename").textContent = workbook.filename;
   const preferredSheet = $("#sheetInput").value || workbook.default_sheet;
   $("#importMapSheet").innerHTML = workbook.sheets.map((sheet) => (
@@ -2613,11 +2645,8 @@ function showImportedWorkbook(workbook) {
     return;
   }
   state.workbook = workbook;
-  $("#importChoose").hidden = true;
   $("#importFileChooser").hidden = false;
-  $("#importMapColumns").hidden = true;
-  $("#importConfigure").hidden = false;
-  $("#importPreview").hidden = true;
+  setImportStage("options");
   $("#backImportButton").hidden = true;
   $("#prepareImportButton").textContent = "Review import";
   setImportStep(2);
@@ -2699,9 +2728,7 @@ async function mapWorkbookColumns({ persist = true } = {}) {
     throw new Error("Import the ALM Workbook again.");
   }
   $("#importError").hidden = true;
-  $("#importMapColumns").hidden = true;
-  $("#importConfigure").hidden = true;
-  $("#importChoose").hidden = false;
+  setImportStage("choose");
   $("#importFileChooser").hidden = true;
   setImportBusy(true, { percent: 25, title: "Reading ALM Workbook…", detail: "Matching workbook columns" });
   try {
@@ -2718,7 +2745,6 @@ async function mapWorkbookColumns({ persist = true } = {}) {
     if (persist) await saveImportColumnPreferences(columns);
     showImportedWorkbook(workbook);
   } catch (error) {
-    $("#importChoose").hidden = true;
     $("#importFileChooser").hidden = false;
     openImportColumnMapping();
     throw error;
@@ -2823,7 +2849,7 @@ function importDraftSettings() {
 
 function saveCurrentImportDraft({ immediate = false } = {}) {
   const workbook = state.workbook || state.workbookInspection;
-  if (!state.importDraftId || !workbook?.import_id) return Promise.resolve();
+  if (state.preferences.save_alm_import_drafts === false || !state.importDraftId || !workbook?.import_id) return Promise.resolve();
   const draft = {
     id: state.importDraftId,
     filename: workbook.filename || "ALM Workbook",
@@ -2907,7 +2933,7 @@ function renderLatestImportDraft() {
   const button = $("#resumeLatestImportButton");
   if (!button) return;
   const latest = readImportDrafts()[0];
-  const visible = Boolean(latest);
+  const visible = state.preferences.save_alm_import_drafts !== false && Boolean(latest);
   button.hidden = !visible;
   if (!visible) return;
   $("#resumeImportDraftTitle").textContent = `Resume ${latest.filename || "ALM import"}`;
@@ -2975,8 +3001,7 @@ function resumeImportDraft(id) {
     return;
   }
   state.importPreview = JSON.parse(JSON.stringify(draft.preview));
-  $("#importConfigure").hidden = true;
-  $("#importPreview").hidden = false;
+  setImportStage("preview");
   $("#backImportButton").hidden = false;
   setImportStep(3);
   renderImportPreview();
@@ -3305,8 +3330,7 @@ async function validateImportPreview(retryRequests = null) {
 
 function backToImportSelection() {
   state.importPreview = null;
-  $("#importPreview").hidden = true;
-  $("#importConfigure").hidden = false;
+  setImportStage("options");
   $("#backImportButton").hidden = true;
   $("#prepareImportButton").textContent = "Review import";
   $("#prepareImportButton").disabled = false;
@@ -3401,8 +3425,7 @@ async function prepareImport() {
     });
     state.importPreview = payload;
     state.importExpandedGroups.clear();
-    $("#importConfigure").hidden = true;
-    $("#importPreview").hidden = false;
+    setImportStage("preview");
     $("#backImportButton").hidden = false;
     button.textContent = "Verifying selections…";
     button.disabled = true;
@@ -3432,7 +3455,7 @@ async function openReview() {
       || (request.group && request.group !== kindLabel(request.kind) ? request.group : "");
     return `<div class="review-row">
       <span class="${errors.length ? "invalid-mark" : "ready-mark"}">${errors.length ? "!" : "✓"}</span>
-      <div><strong>${escapeHtml(request.serials.join(", ") || "No serial")}</strong><small>${escapeHtml(kindLabel(request.kind))}${request.kind === "bulk_location" ? ` · ${request.serials.length} devices` : ""}</small>${request.device_allocation ? `<small>ALM model: ${escapeHtml(request.device_allocation)}</small>` : ""}</div>
+      <div><strong>${escapeHtml(request.serials.join(", ") || "No serial")}</strong><small>${escapeHtml(kindLabel(request.kind))}${request.kind === "bulk_location" ? ` · ${request.serials.length} devices` : ""}</small>${request.device_allocation ? `<small>${escapeHtml(request.device_allocation)}</small>` : ""}</div>
       <div><strong>${escapeHtml(statusLabel(request))}</strong>${secondary ? `<small>${escapeHtml(secondary)}</small>` : ""}</div>
       <div><strong>${escapeHtml(destinationLabel(request))}</strong>${errors.length ? `<small>${escapeHtml(errors[0])}</small>` : request.returning_user ? `<small>Returned by ${escapeHtml(request.returning_user)}</small>` : ""}</div>
     </div>`;
@@ -3807,6 +3830,7 @@ function bindEvents() {
       concurrency: Number(elements.concurrency.value),
       validate_quick_import: $("#validateQuickImportInput").checked,
       validate_workbook_import: $("#validateWorkbookImportInput").checked,
+      save_alm_import_drafts: $("#saveAlmImportDraftsInput").checked,
       device_model_mappings: deviceModelMappingsValue,
       import_columns: columns,
     };
@@ -3816,6 +3840,12 @@ function bindEvents() {
         method: "POST",
         body: JSON.stringify(preferences),
       });
+      if (state.preferences.save_alm_import_drafts === false) {
+        state.importDrafts = [];
+      } else {
+        await loadImportDrafts();
+      }
+      renderAll();
       localStorage.setItem(IMPORT_COLUMNS_STORAGE_KEY, JSON.stringify(columns));
       localStorage.setItem(CONCURRENCY_STORAGE_KEY, elements.concurrency.value);
       $("#settingsDialog").close();
@@ -4176,7 +4206,7 @@ async function init() {
       api("/api/config"),
       api("/api/preferences"),
     ]);
-    await loadImportDrafts();
+    if (state.preferences.save_alm_import_drafts !== false) await loadImportDrafts();
     const spreadsheetEnabled = Boolean(state.config.spreadsheet_import_enabled);
     $("#importSheetButton").hidden = !spreadsheetEnabled;
     const spreadsheetSettings = $('[data-settings-tab="spreadsheet"]');

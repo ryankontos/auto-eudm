@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
 import json
 from pathlib import Path
 import tempfile
@@ -283,6 +284,41 @@ class SubmissionHistoryTests(unittest.TestCase):
 
             self.assertEqual([item["job_id"] for item in loaded], ["legacy"])
             self.assertEqual(json.loads(canonical.read_text(encoding="utf-8")), history)
+
+    def test_alm_drafts_expire_after_six_hours(self) -> None:
+        now = datetime(2026, 8, 20, 12, 0, 0)
+        current = {"saved_at": (now - timedelta(hours=5, minutes=59)).isoformat()}
+        expired = {"saved_at": (now - timedelta(hours=6, minutes=1)).isoformat()}
+
+        self.assertTrue(Application._draft_is_current(current, now=now))
+        self.assertFalse(Application._draft_is_current(expired, now=now))
+
+    def test_verification_cache_is_persisted_and_loaded(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            cache_path = Path(folder) / "web-verification-cache.json"
+            app = Application.__new__(Application)
+            app.verification_cache_path = cache_path
+            app.verification_cache_lock = threading.Lock()
+            app.verification_cache = {"serials": {}, "usernames": {}}
+            app.record_verified_serial({
+                "value": " ABC123 ",
+                "columns": ["ABC123", "Laptop"],
+                "device_type": "Laptop",
+            })
+
+            loaded = Application.__new__(Application)
+            loaded.verification_cache_path = cache_path
+            loaded.verification_cache_lock = threading.Lock()
+            loaded.verification_cache = loaded._load_verification_cache()
+
+            self.assertEqual(
+                loaded.verification_cache_lookup("serial", "abc123"),
+                {
+                    "value": "ABC123",
+                    "columns": ["ABC123", "Laptop"],
+                    "device_type": "Laptop",
+                },
+            )
 
     def test_parallel_completions_are_all_persisted(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

@@ -438,9 +438,9 @@ class WorkbookImport:
         try:
             from openpyxl import load_workbook
             workbook = load_workbook(
-                # The importer reads values and red font markers only. Streaming
-                # cells avoids loading a large tracking workbook's full style
-                # and formula graph into memory.
+                # The importer reads values and TRUE/FALSE eligibility only.
+                # Streaming cells avoids loading a large tracking workbook's
+                # full style and formula graph into memory.
                 BytesIO(payload), data_only=True, read_only=True
             )
         except Exception as exc:
@@ -517,9 +517,9 @@ class WorkbookImport:
                             deployment_serial=inventory.clean_text(values[indexes["deployment_serial"] - 1].value) if indexes["deployment_serial"] else None,
                             returned_device_serial=inventory.clean_text(values[indexes["returned_device"] - 1].value) if indexes["returned_device"] else None,
                             pending_return_serial=inventory.clean_text(values[indexes["pending_return"] - 1].value) if indexes["pending_return"] else None,
-                            marked_red=any(
-                                inventory.cell_is_red(cell) for cell in values
-                            ),
+                            # Font colour is presentation only. Eligibility is
+                            # controlled by the configured TRUE/FALSE column.
+                            marked_red=False,
                             enabled=inventory.enabled_column_allows(
                                 values[indexes["enabled"] - 1].value
                             ) if indexes["enabled"] else True,

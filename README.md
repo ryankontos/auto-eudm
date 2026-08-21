@@ -193,6 +193,9 @@ serial, returned device, pending return, and the optional TRUE/FALSE column.
 Web settings are stored in `results/web-settings.json`, so they survive browser
 and AutoEUDM restarts.
 
+ALM import drafts are optional in **Settings → ALM Workbook** and expire after
+six hours when enabled.
+
 The web workspace verifies the authenticated EUDM session every 30 seconds
 with a read-only API request. If SSO has expired, it immediately switches to a
 reconnect prompt. **Refresh connection** is also always available while EUDM
