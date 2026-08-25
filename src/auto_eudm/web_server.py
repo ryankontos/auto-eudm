@@ -204,8 +204,8 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
         for result in results:
             if not isinstance(result, dict):
                 continue
-            value = " ".join(str(result.get("value", "")).split()).casefold()
-            if value == wanted:
+            values = [result.get("value"), *(result.get("columns") or [])]
+            if any(" ".join(str(value or "").split()).casefold() == wanted for value in values):
                 return result
         return None
 
@@ -344,6 +344,10 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
             return
         try:
             path = urllib.parse.urlparse(self.path).path
+            if path == "/api/import/backlog/ignored":
+                self.app.clear_alm_backlog_ignored()
+                self._json({"cleared": True})
+                return
             prefix = "/api/import-drafts/"
             if not path.startswith(prefix):
                 self._error("Unknown local API endpoint.", 404)
@@ -395,7 +399,7 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
                 minimum=2,
                 message="Enter at least two serial characters.",
             )
-            cached = self.app.verification_cache_lookup("serial", query)
+            cached = None if payload.get("bypass_cache") else self.app.verification_cache_lookup("serial", query)
             if cached:
                 self._json({"results": [cached], "cached": True})
                 return
@@ -412,7 +416,7 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
                 minimum=2,
                 message="Enter at least two name or username characters.",
             )
-            cached = self.app.verification_cache_lookup("username", query)
+            cached = None if payload.get("bypass_cache") else self.app.verification_cache_lookup("username", query)
             if cached:
                 self._json({"results": [cached], "cached": True})
                 return
@@ -463,6 +467,24 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
                     payload.get("group_selection"),
                 )
             )
+            return
+        if path == "/api/import/backlog":
+            workbook = self.app.get_import(str(payload.get("import_id", "")))
+            self._json(
+                workbook.prepare_backlog(
+                    str(payload.get("sheet", "")),
+                    payload.get("days_back", 30),
+                    bool(payload.get("include_today")),
+                    self.app.alm_backlog_ignored_keys(),
+                )
+            )
+            return
+        if path == "/api/import/backlog/ignore":
+            self.app.ignore_alm_backlog(
+                str(payload.get("serial", "")),
+                str(payload.get("username", "")),
+            )
+            self._json({"saved": True})
             return
         if path == "/api/jobs":
             raw_requests = payload.get("requests")

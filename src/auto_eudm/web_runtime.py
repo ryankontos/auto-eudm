@@ -377,8 +377,11 @@ class ClientManager:
 
     def connect_async(self) -> None:
         with self.lock:
-            if self.state in {"connecting", "connected", "simulation"}:
+            if self.state in {"connecting", "simulation"}:
                 return
+            if self.state == "connected":
+                self.client = None
+                self.probe = None
             self.state = "connecting"
             self.message = "Opening the saved EUDM session…"
         thread = threading.Thread(target=self._connect, daemon=True)
@@ -1008,6 +1011,9 @@ class Application:
         self.verification_cache_path = ROOT / "results" / "web-verification-cache.json"
         self.verification_cache_lock = threading.Lock()
         self.verification_cache = self._load_verification_cache()
+        self.alm_backlog_ignored_path = ROOT / "results" / "web-alm-backlog-ignored.json"
+        self.alm_backlog_ignored_lock = threading.Lock()
+        self.alm_backlog_ignored = self._load_alm_backlog_ignored()
         self.preferences_path = ROOT / "results" / "web-settings.json"
         self.preferences_lock = threading.Lock()
         self.preferences = self._load_preferences()
@@ -1062,6 +1068,7 @@ class Application:
                 "pending_return": "OLD Device SN",
                 "enabled": "",
                 "device_allocation": "Device(s) Allocation",
+                "new_asset_status": "New Asset Status",
             },
         }
 
@@ -1148,6 +1155,7 @@ class Application:
                     "pending_return",
                     "enabled",
                     "device_allocation",
+                    "new_asset_status",
                 )
             }
             if not all(normalised[key] for key in ("username", "deployment_serial", "pending_return")):
@@ -1302,7 +1310,14 @@ class Application:
         if not category or not key:
             return None
         with self.verification_cache_lock:
-            cached = self.verification_cache[category].get(key)
+            values = self.verification_cache[category]
+            cached = values.get(key)
+            if cached is None:
+                for candidate in reversed(list(values.values())):
+                    aliases = [candidate.get("value"), *(candidate.get("columns") or [])]
+                    if any(self._verification_cache_key(alias) == key for alias in aliases):
+                        cached = candidate
+                        break
             return json.loads(json.dumps(cached)) if cached else None
 
     def record_verified_serial(self, result: dict[str, Any]) -> None:
@@ -1329,6 +1344,50 @@ class Application:
             while len(values) > VERIFICATION_CACHE_MAX_ENTRIES:
                 values.pop(next(iter(values)))
             self._write_verification_cache()
+
+    def _load_alm_backlog_ignored(self) -> dict[str, dict[str, str]]:
+        try:
+            raw = json.loads(self.alm_backlog_ignored_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return {}
+        values = raw.get("ignored", raw) if isinstance(raw, dict) else raw
+        if not isinstance(values, dict):
+            return {}
+        return {
+            str(key): {
+                "serial": str(value.get("serial", "")),
+                "username": str(value.get("username", "")),
+            }
+            for key, value in values.items()
+            if isinstance(value, dict) and str(key).strip()
+        }
+
+    def _write_alm_backlog_ignored(self) -> None:
+        payload = json.dumps({"ignored": self.alm_backlog_ignored}, ensure_ascii=False, indent=2)
+        self.alm_backlog_ignored_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.alm_backlog_ignored_path.with_suffix(".tmp")
+        temporary.write_text(payload + "\n", encoding="utf-8")
+        temporary.replace(self.alm_backlog_ignored_path)
+
+    def alm_backlog_ignored_keys(self) -> set[str]:
+        with self.alm_backlog_ignored_lock:
+            return set(self.alm_backlog_ignored)
+
+    def ignore_alm_backlog(self, serial: str, username: str) -> None:
+        key = WorkbookImport.backlog_key(serial, username)
+        if not key or "\u0000" not in key:
+            raise eudm.EUDMError("The ALM backlog row was missing a serial or username.")
+        with self.alm_backlog_ignored_lock:
+            self.alm_backlog_ignored[key] = {
+                "serial": " ".join(str(serial or "").split()),
+                "username": " ".join(str(username or "").split()),
+            }
+            self._write_alm_backlog_ignored()
+
+    def clear_alm_backlog_ignored(self) -> None:
+        with self.alm_backlog_ignored_lock:
+            self.alm_backlog_ignored = {}
+            self._write_alm_backlog_ignored()
 
     def add_import(self, workbook: WorkbookImport) -> None:
         with self.import_lock:

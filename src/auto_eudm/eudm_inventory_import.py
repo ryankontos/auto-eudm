@@ -55,6 +55,7 @@ class ImportColumns:
     pending_return: str = "OLD Device SN"
     enabled: str = ""
     device_allocation: str = "Device(s) Allocation"
+    new_asset_status: str = "New Asset Status"
 
 
 @dataclass(frozen=True)
@@ -70,6 +71,7 @@ class SheetRow:
     date_group: int = 1
     returned_device_column_present: bool = True
     device_allocation: str | None = None
+    new_asset_status: str | None = None
 
 
 @dataclass(frozen=True)
@@ -81,6 +83,7 @@ class Action:
     status: str
     kind: str = "user"
     device_allocation: str | None = None
+    new_asset_status: str | None = None
 
 
 def normalized_header(value: Any) -> str:
@@ -98,6 +101,7 @@ def columns_from_mapping(raw: dict[str, Any] | None = None) -> ImportColumns:
         pending_return=clean_text(raw.get("pending_return")) or "OLD Device SN",
         enabled=clean_text(raw.get("enabled")) or "",
         device_allocation=clean_text(raw.get("device_allocation")) or "",
+        new_asset_status=clean_text(raw.get("new_asset_status")) or "",
     )
 
 
@@ -110,6 +114,7 @@ def find_column_indexes(sheet: Any, columns: ImportColumns) -> tuple[int, dict[s
         "pending_return": columns.pending_return,
         "enabled": columns.enabled,
         "device_allocation": columns.device_allocation,
+        "new_asset_status": columns.new_asset_status,
     }
     targets = {key: normalized_header(value) for key, value in desired.items()}
     date_titles = {"date", "deployment date", "booking date"}
@@ -360,6 +365,7 @@ def load_sheet(path: Path, columns: ImportColumns | None = None) -> tuple[str, l
                     date_group=date_group,
                     returned_device_column_present=bool(indexes["returned_device"]),
                     device_allocation=clean_text(values[indexes["device_allocation"] - 1].value) if indexes["device_allocation"] else None,
+                    new_asset_status=clean_text(values[indexes["new_asset_status"] - 1].value) if indexes["new_asset_status"] else None,
                 )
             )
         if not rows:
@@ -528,6 +534,7 @@ def build_actions(
                     row.deployment_serial,
                     NEW_STOCK,
                     device_allocation=row.device_allocation,
+                    new_asset_status=row.new_asset_status,
                 ))
             else:
                 ignored["Deployment serial is blank or invalid"] += 1

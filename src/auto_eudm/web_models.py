@@ -6,7 +6,7 @@ import base64
 import binascii
 from collections import Counter
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from io import BytesIO
 import re
 from typing import Any, Callable
@@ -526,6 +526,7 @@ class WorkbookImport:
                             date_group=date_group,
                             returned_device_column_present=bool(indexes["returned_device"]),
                             device_allocation=inventory.clean_text(values[indexes["device_allocation"] - 1].value) if indexes["device_allocation"] else None,
+                            new_asset_status=inventory.clean_text(values[indexes["new_asset_status"] - 1].value) if indexes["new_asset_status"] else None,
                         )
                     )
                 if rows:
@@ -676,6 +677,7 @@ class WorkbookImport:
                 source=f"{self.filename} · {sheet_name}",
                 device_allocation=action.device_allocation,
             ).to_json()
+            request["new_asset_status"] = action.new_asset_status or ""
             requests.append(request)
         requests.sort(
             key=lambda request: 0
@@ -702,4 +704,75 @@ class WorkbookImport:
                     for request in requests
                 ),
             },
+        }
+
+    @staticmethod
+    def backlog_key(serial: str, username: str) -> str:
+        return "\u0000".join(
+            " ".join(str(value or "").split()).casefold()
+            for value in (serial, username)
+        )
+
+    def prepare_backlog(
+        self,
+        sheet_name: str,
+        days_back: int,
+        include_today: bool,
+        ignored_keys: set[str] | None = None,
+        *,
+        today: date | None = None,
+    ) -> dict[str, Any]:
+        if sheet_name not in self.sheets:
+            raise eudm.EUDMError("Choose one of the workbook's available sheets.")
+        try:
+            days = int(days_back)
+        except (TypeError, ValueError) as exc:
+            raise eudm.EUDMError("Choose how many days of backlog to check.") from exc
+        if not 0 <= days <= 3650:
+            raise eudm.EUDMError("Backlog range must be between 0 and 3650 days.")
+        current_day = today or date.today()
+        start_day = current_day - timedelta(days=days)
+        ignored = ignored_keys or set()
+        candidates: list[dict[str, Any]] = []
+        ignored_count = 0
+        for row in self.sheets[sheet_name]:
+            if row.deployment_date < start_day or row.deployment_date > current_day:
+                continue
+            if row.deployment_date == current_day and not include_today:
+                continue
+            if not inventory.looks_like_serial(row.deployment_serial):
+                continue
+            if not inventory.looks_like_username(row.username):
+                continue
+            current_status = (row.new_asset_status or "").strip()
+            if current_status.casefold().startswith("deployed"):
+                continue
+            serial = str(row.deployment_serial).strip()
+            username = str(row.username).strip()
+            key = self.backlog_key(serial, username)
+            if key in ignored:
+                ignored_count += 1
+                continue
+            candidates.append({
+                "id": f"{self.import_id}-{row.row_number}-{serial}",
+                "row_number": row.row_number,
+                "date": row.deployment_date.isoformat(),
+                "serial": serial,
+                "username": username,
+                "current_status": current_status or "No status",
+                "device_allocation": row.device_allocation or "",
+                "included": True,
+                "status": "",
+            })
+        return {
+            "mode": "backlog",
+            "filename": self.filename,
+            "sheet": sheet_name,
+            "days_back": days,
+            "include_today": bool(include_today),
+            "start_date": start_day.isoformat(),
+            "end_date": current_day.isoformat(),
+            "candidates": candidates,
+            "ignored_count": ignored_count,
+            "counts": {"candidates": len(candidates)},
         }

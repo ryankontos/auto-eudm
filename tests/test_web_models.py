@@ -158,6 +158,57 @@ class WorkbookUploadTests(unittest.TestCase):
             payload["requests"][0]["device_allocation"], "MacBookPro18,3"
         )
 
+    def test_backlog_filters_deployed_rows_date_range_and_persistent_ignores(self) -> None:
+        rows = [
+            inventory.SheetRow(
+                row_number=2,
+                deployment_date=date(2025, 2, 10),
+                username="valid.user",
+                deployment_serial="SERIAL123",
+                returned_device_serial=None,
+                pending_return_serial=None,
+                marked_red=False,
+                enabled=True,
+                new_asset_status="In Inventory",
+            ),
+            inventory.SheetRow(
+                row_number=3,
+                deployment_date=date(2025, 2, 9),
+                username="deployed.user",
+                deployment_serial="SERIAL456",
+                returned_device_serial=None,
+                pending_return_serial=None,
+                marked_red=False,
+                enabled=True,
+                new_asset_status="Deployed",
+            ),
+            inventory.SheetRow(
+                row_number=4,
+                deployment_date=date(2025, 1, 1),
+                username="old.user",
+                deployment_serial="SERIAL789",
+                returned_device_serial=None,
+                pending_return_serial=None,
+                marked_red=False,
+                enabled=True,
+                new_asset_status="In Inventory",
+            ),
+        ]
+        workbook = WorkbookImport("import-backlog", "tracking.xlsx", {"Sheet": rows})
+        ignored = {WorkbookImport.backlog_key("SERIAL123", "valid.user")}
+
+        payload = workbook.prepare_backlog(
+            "Sheet", 5, True, ignored, today=date(2025, 2, 10)
+        )
+
+        self.assertEqual(payload["candidates"], [])
+        self.assertEqual(payload["ignored_count"], 1)
+
+        payload = workbook.prepare_backlog(
+            "Sheet", 5, True, set(), today=date(2025, 2, 10)
+        )
+        self.assertEqual([item["serial"] for item in payload["candidates"]], ["SERIAL123"])
+
     def test_workbook_summary_counts_selected_date_and_valid_user_rows(self) -> None:
         selected = inventory.SheetRow(
             row_number=2,

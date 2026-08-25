@@ -36,6 +36,10 @@
           <span class="tool-icon import-icon" aria-hidden="true">↓</span>
           <span><strong>Import ALM Workbook</strong><small>Import a local spreadsheet</small></span>
         </button>
+        <button id="almBacklogButton" class="tool-button" type="button">
+          <span class="tool-icon import-icon" aria-hidden="true">↗</span>
+          <span><strong>ALM deployment backlog</strong><small>Find undeployed devices</small></span>
+        </button>
         <button id="resumeLatestImportButton" class="tool-button resume-import-tool" type="button" hidden>
           <span class="tool-icon" aria-hidden="true">↻</span>
           <span><strong id="resumeImportDraftTitle">Resume ALM import</strong><small id="resumeImportDraftDetail"></small></span>
@@ -43,10 +47,6 @@
       </div>
 
       <div class="rail-bottom-action">
-        <div id="connectionBadge" class="connection-badge sidebar-connection" aria-live="polite">
-          <span class="status-dot"></span>
-          <span>Loading</span>
-        </div>
         <button id="settingsButton" class="tool-button settings-tool-button" type="button"><span class="tool-icon" aria-hidden="true">⚙</span><span><strong>Settings</strong></span></button>
       </div>
     </aside>
@@ -55,7 +55,7 @@
       <div class="queue-header">
         <div>
           <h1 id="queueHeading">Request queue</h1>
-          <p id="queueCounts">0 requests · 0 devices</p>
+          <p id="queueCounts">0 requests</p>
         </div>
         <div class="queue-actions">
           <button id="newRequestButton" class="new-request-button" type="button" aria-label="Prepare a request" title="Prepare a request"><span aria-hidden="true">+</span></button>
@@ -300,7 +300,7 @@
   <dialog id="importDialog" class="modal wide-modal">
     <form method="dialog" class="modal-card wide">
       <div class="modal-header">
-        <h2>ALM Workbook</h2>
+        <h2 id="importDialogTitle">ALM Workbook</h2>
         <button class="icon-button" value="cancel" aria-label="Close">×</button>
       </div>
       <ol class="wizard-steps" aria-label="Import progress">
@@ -349,6 +349,7 @@
             <label>Pending-return serial <em>Required</em><select id="importMapPending"></select></label>
             <label>TRUE/FALSE <small>Optional</small><select id="importMapEnabled"></select></label>
             <label>Device allocation <small>Optional</small><select id="importMapDeviceAllocation"></select></label>
+            <label>New asset status <small>Optional for normal imports</small><select id="importMapNewAssetStatus"></select></label>
           </div>
         </div>
       </div>
@@ -374,6 +375,7 @@
           </label>
           <small id="importDateGroupsHelp"></small>
         </div>
+        <div id="almDeployOptions">
         <fieldset class="choice-cards">
           <legend>What should be added?</legend>
           <label><input type="checkbox" name="importMode" value="deployments" checked><span><strong>Deploy to users</strong><small id="deploymentImportCount">0 requests</small></span></label>
@@ -389,6 +391,14 @@
               <select id="importLocationInput"></select>
             </label>
           </div>
+        </div>
+        </div>
+        <div id="almBacklogOptions" class="alm-backlog-options" hidden>
+          <label for="almBacklogDaysInput">Check the last <strong id="almBacklogDaysLabel">30 days</strong></label>
+          <input id="almBacklogDaysInput" type="range" min="0" max="365" value="30">
+          <div class="range-labels"><span>Today only</span><span>1 year ago</span></div>
+          <label class="settings-checkbox"><input id="almBacklogIncludeToday" type="checkbox"><span>Include today</span></label>
+          <small>Rows with a serial number whose New Asset Status is not deployed will appear for review.</small>
         </div>
       </div>
       <div id="importPreview" hidden>
@@ -445,7 +455,9 @@
           <label>Pending return column<input id="spreadsheetPendingColumnInput" type="text" placeholder="OLD Device SN"></label>
           <label>TRUE/FALSE column<input id="spreadsheetEnabledColumnInput" type="text" placeholder="Optional"></label>
           <label>Device allocation column<input id="spreadsheetDeviceAllocationColumnInput" type="text" placeholder="Device(s) Allocation"></label>
+          <label>New asset status column<input id="spreadsheetNewAssetStatusColumnInput" type="text" placeholder="New Asset Status"></label>
         </div>
+        <div class="settings-inline-action"><small>Backlog rows marked as ignored are remembered in the project files.</small><button id="clearAlmBacklogIgnoredButton" class="text-button" type="button">Clear ignored backlog rows</button></div>
       </section>
       <section data-settings-panel="models" hidden>
         <p class="settings-help">Select the model number you checked on the device when importing. Each model can choose one status for user deployments and one for location deployments; either status can be set to No suggestion.</p>

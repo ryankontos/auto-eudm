@@ -174,47 +174,6 @@ textarea:focus-visible {
 .theme-button { gap: 6px; }
 #themeIcon { width: 14px; font-size: 14px; line-height: 1; }
 
-.connection-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  min-height: 30px;
-  padding: 0 10px;
-  border: 1px solid rgba(255,255,255,.18);
-  border-radius: 4px;
-  color: #e7edf1;
-  background: rgba(0,0,0,.12);
-  font-size: 12px;
-}
-.sidebar-connection {
-  width: 100%;
-  justify-content: flex-start;
-  margin: 0 0 10px;
-  border-color: var(--line);
-  color: var(--muted);
-  background: var(--surface-alt);
-}
-.sidebar-connection.connected .status-dot,
-.sidebar-connection.simulation .status-dot { background: var(--green); }
-.sidebar-connection.connecting .status-dot { background: var(--amber); }
-.sidebar-connection.error .status-dot,
-.sidebar-connection.expired .status-dot { background: var(--red); }
-
-.status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #aeb9c1;
-}
-
-.connection-badge.connected .status-dot,
-.connection-badge.simulation .status-dot { background: #64c48c; }
-.connection-badge.connecting .status-dot { background: #f0b74c; animation: pulse 1s infinite; }
-.connection-badge.error .status-dot { background: #ef6a6a; }
-.connection-badge.expired .status-dot { background: #ef6a6a; }
-
-@keyframes pulse { 50% { opacity: .35; } }
-
 .workspace {
   display: grid;
   grid-template-columns: 224px minmax(0, 1fr) minmax(360px, 400px);
@@ -264,6 +223,31 @@ textarea:focus-visible {
   color: var(--ink);
   background: transparent;
 }
+
+.alm-backlog-options {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-alt);
+}
+
+.alm-backlog-options > label:first-child {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.alm-backlog-options input[type="range"] { width: 100%; }
+.range-labels {
+  display: flex;
+  justify-content: space-between;
+  color: var(--subtle);
+  font-size: 11px;
+}
+.alm-backlog-options > small { color: var(--muted); }
+.backlog-row-actions { margin-top: 4px; }
+.import-device-status { color: var(--muted); }
 .tool-button:hover { background: var(--surface-alt); }
 .tool-button strong, .tool-button small { display: block; }
 .tool-button strong { font-weight: 650; font-size: 12.5px; }
