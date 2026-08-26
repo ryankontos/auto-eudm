@@ -209,6 +209,9 @@ class WorkbookUploadTests(unittest.TestCase):
         )
         self.assertEqual([item["serial"] for item in payload["candidates"]], ["SERIAL123"])
 
+        with self.assertRaisesRegex(eudm.EUDMError, "between 1 and 3650"):
+            workbook.prepare_backlog("Sheet", 0, True, set(), today=date(2025, 2, 10))
+
     def test_workbook_summary_counts_selected_date_and_valid_user_rows(self) -> None:
         selected = inventory.SheetRow(
             row_number=2,

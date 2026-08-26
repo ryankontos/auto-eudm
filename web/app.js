@@ -2522,6 +2522,9 @@ function renderImportModeOptions() {
   $("#importDialogTitle").textContent = backlog ? "ALM deployment backlog" : "ALM Workbook";
   $("#almDeployOptions").hidden = backlog;
   $("#almBacklogOptions").hidden = !backlog;
+  $("#importDatePicker").hidden = backlog;
+  $("#importDateSummary").hidden = !backlog;
+  if (backlog) $("#importDateGroups").hidden = true;
   $("#prepareImportButton").textContent = backlog ? "Find undeployed devices" : "Review import";
   updateBacklogDaysLabel();
 }
@@ -2530,8 +2533,10 @@ function updateBacklogDaysLabel() {
   const input = $("#almBacklogDaysInput");
   const label = $("#almBacklogDaysLabel");
   if (!input || !label) return;
-  const days = Number(input.value) || 30;
-  label.textContent = days === 0 ? "today only" : `${days} day${days === 1 ? "" : "s"}`;
+  const rawDays = Number(input.value);
+  const days = Number.isFinite(rawDays) && rawDays >= 1 ? Math.min(365, Math.round(rawDays)) : 1;
+  if (input.value !== String(days)) input.value = String(days);
+  label.textContent = `${days} day${days === 1 ? "" : "s"}`;
 }
 
 function setImportStep(step) {
@@ -2622,6 +2627,13 @@ function updateImportGroupChoices(selected) {
   const groups = selected?.groups || [];
   const selector = $("#importGroupInput");
   const wrapper = $("#importDateGroups");
+  if (state.importMode === "backlog") {
+    wrapper.hidden = true;
+    selector.innerHTML = '<option value="all">All sections</option>';
+    selector.value = "all";
+    $("#importDateGroupsHelp").textContent = "";
+    return;
+  }
   if (groups.length <= 1) {
     wrapper.hidden = true;
     selector.innerHTML = '<option value="all">All sections</option>';
@@ -2642,6 +2654,14 @@ function updateImportGroupChoices(selected) {
 }
 
 function updateImportCounts() {
+  if (state.importMode === "backlog") {
+    $("#importDateGroups").hidden = true;
+    $("#importLocationFields").hidden = true;
+    const prepareButton = $("#prepareImportButton");
+    prepareButton.disabled = !state.workbook?.import_id;
+    prepareButton.textContent = "Find undeployed devices";
+    return;
+  }
   const sheet = workbookSheet($("#sheetInput").value);
   const selected = sheet?.dates.find((entry) => entry.value === $("#dateInput").value);
   updateImportGroupChoices(selected);
@@ -2695,6 +2715,7 @@ async function fetchImportLocations(city, force = false) {
 function setImportBusy(visible, { percent = 0, title = "", detail = "" } = {}) {
   const busy = $("#importBusy");
   busy.hidden = !visible;
+  $("#importStageContent").hidden = visible;
   $("#importChoose").classList.toggle("is-busy", visible);
   if (!visible) return;
   const safePercent = Math.max(0, Math.min(100, Math.round(percent)));
@@ -2786,7 +2807,7 @@ function openImportColumnMapping() {
   setImportStep(1);
 }
 
-function showImportedWorkbook(workbook) {
+async function showImportedWorkbook(workbook) {
   $("#importError").hidden = true;
   renderImportModeOptions();
   if (!state.importDraftId) state.importDraftId = newImportDraftId();
@@ -2797,10 +2818,12 @@ function showImportedWorkbook(workbook) {
     if (workbookMappingMatches(workbook, saved)) {
       $("#importMapSheet").innerHTML = `<option value="${escapeHtml(workbook.default_sheet)}">${escapeHtml(workbook.default_sheet)}</option>`;
       renderImportColumnMap();
-      mapWorkbookColumns().catch((error) => {
+      try {
+        await mapWorkbookColumns();
+      } catch (error) {
         $("#importError").textContent = error.message;
         $("#importError").hidden = false;
-      });
+      }
       return;
     }
     openImportColumnMapping();
@@ -2909,7 +2932,7 @@ async function mapWorkbookColumns({ persist = true } = {}) {
     const workbook = await waitForWorkbookImport(job.job_id, token);
     if (!workbook) return;
     if (persist) await saveImportColumnPreferences(columns);
-    showImportedWorkbook(workbook);
+    await showImportedWorkbook(workbook);
   } catch (error) {
     $("#importFileChooser").hidden = false;
     openImportColumnMapping();
@@ -2962,7 +2985,7 @@ async function uploadWorkbook(file) {
       body: JSON.stringify({ filename: file.name, data }),
     });
     const workbook = await waitForWorkbookImport(job.job_id, token);
-    if (workbook && token === state.importUploadToken) showImportedWorkbook(workbook);
+    if (workbook && token === state.importUploadToken) await showImportedWorkbook(workbook);
   } catch (error) {
     if (token === state.importUploadToken) {
       $("#importError").textContent = error.message;
@@ -3011,7 +3034,7 @@ function importDraftSettings() {
     modes: selectedImportModes(),
     location: state.importLocation ? JSON.parse(JSON.stringify(state.importLocation)) : null,
     columns: selectedImportColumns(),
-    backlog_days: Number($("#almBacklogDaysInput").value) || 30,
+    backlog_days: Math.max(1, Number($("#almBacklogDaysInput").value) || 30),
     backlog_include_today: $("#almBacklogIncludeToday").checked,
   };
 }
@@ -3129,7 +3152,10 @@ function restoreImportDraftOptions(settings = {}) {
     $$('input[name="importMode"]').forEach((input) => { input.checked = settings.modes.includes(input.value); });
   }
   if (settings.location) state.importLocation = JSON.parse(JSON.stringify(settings.location));
-  if (settings.backlog_days) $("#almBacklogDaysInput").value = settings.backlog_days;
+  if (settings.backlog_days != null) {
+    const savedDays = Number(settings.backlog_days);
+    $("#almBacklogDaysInput").value = String(Number.isFinite(savedDays) ? Math.max(1, Math.min(365, savedDays)) : 30);
+  }
   $("#almBacklogIncludeToday").checked = Boolean(settings.backlog_include_today);
   updateBacklogDaysLabel();
   if (settings.group && [...$("#importGroupInput").options].some((option) => option.value === settings.group)) {
@@ -3182,7 +3208,10 @@ function resumeImportDraft(id) {
   renderImportPreview();
   updateImportPrepareButton(state.importPreview);
   const pending = state.importPreview.requests.some((request) => request.included !== false && !["valid", "failed"].includes(request.import_validation));
-  if (pending) validateImportPreview();
+  if (pending) {
+    if (state.importPreview.mode === "backlog") validateBacklogPreview(state.importPreview);
+    else validateImportPreview();
+  }
 }
 
 function importReturnDetails(request, isReturnedDevice) {
@@ -3819,7 +3848,7 @@ async function prepareImport() {
         body: JSON.stringify({
           import_id: state.workbook.import_id,
           sheet: $("#sheetInput").value,
-          days_back: Number($("#almBacklogDaysInput").value),
+          days_back: Math.max(1, Number($("#almBacklogDaysInput").value) || 30),
           include_today: $("#almBacklogIncludeToday").checked,
         }),
       });

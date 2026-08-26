@@ -728,8 +728,8 @@ class WorkbookImport:
             days = int(days_back)
         except (TypeError, ValueError) as exc:
             raise eudm.EUDMError("Choose how many days of backlog to check.") from exc
-        if not 0 <= days <= 3650:
-            raise eudm.EUDMError("Backlog range must be between 0 and 3650 days.")
+        if not 1 <= days <= 3650:
+            raise eudm.EUDMError("Backlog range must be between 1 and 3650 days.")
         current_day = today or date.today()
         start_day = current_day - timedelta(days=days)
         ignored = ignored_keys or set()

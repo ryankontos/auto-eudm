@@ -312,19 +312,7 @@
         <strong>Verification needs attention</strong>
         <ul id="importVerificationWarningList"></ul>
       </div>
-      <div id="importChoose">
-        <div id="importDrafts" class="import-drafts" hidden>
-          <div class="import-drafts-heading"><strong>Saved ALM imports</strong><small>Resume an import or delete it when it is no longer needed.</small></div>
-          <div id="importDraftList"></div>
-        </div>
-        <div id="importFileChooser">
-          <label class="file-drop" for="workbookInput">
-            <span class="file-symbol" aria-hidden="true">↓</span>
-            <strong>Import an ALM Workbook</strong>
-            <small>.xlsx or .xlsm, up to 100 MB</small>
-            <input id="workbookInput" type="file" accept=".xlsx,.xlsm">
-          </label>
-        </div>
+      <div id="importStage" class="import-stage">
         <div id="importBusy" class="import-busy" role="status" aria-live="polite" hidden>
           <span class="import-spinner" aria-hidden="true"></span>
           <div>
@@ -334,82 +322,102 @@
           <div class="import-progress" aria-hidden="true"><span id="importBusyBar"></span></div>
           <span id="importBusyPercent" class="import-progress-percent">0%</span>
         </div>
-        <div id="importMapColumns" hidden>
-          <div class="import-file-row">
-            <div><strong id="importMapFilename"></strong><small>Choose the columns in this workbook.</small></div>
-            <button id="changeMappedFileButton" class="text-button" type="button">Change file</button>
+        <div id="importStageContent" class="import-stage-content">
+          <div id="importChoose">
+            <div id="importDrafts" class="import-drafts" hidden>
+              <div class="import-drafts-heading"><strong>Saved ALM imports</strong><small>Resume an import or delete it when it is no longer needed.</small></div>
+              <div id="importDraftList"></div>
+            </div>
+            <div id="importFileChooser">
+              <label class="file-drop" for="workbookInput">
+                <span class="file-symbol" aria-hidden="true">↓</span>
+                <strong>Import an ALM Workbook</strong>
+                <small>.xlsx or .xlsm, up to 100 MB</small>
+                <input id="workbookInput" type="file" accept=".xlsx,.xlsm">
+              </label>
+            </div>
+            <div id="importMapColumns" hidden>
+              <div class="import-file-row">
+                <div><strong id="importMapFilename"></strong><small>Choose the columns in this workbook.</small></div>
+                <button id="changeMappedFileButton" class="text-button" type="button">Change file</button>
+              </div>
+              <div class="column-map">
+                <label class="column-map-sheet">Sheet
+                  <select id="importMapSheet"></select>
+                </label>
+                <label>Username <em>Required</em><select id="importMapUsername"></select></label>
+                <label>Deployment serial <em>Required</em><select id="importMapDeployment"></select></label>
+                <label>Returned-device serial <small>Optional</small><select id="importMapReturned"></select></label>
+                <label>Pending-return serial <em>Required</em><select id="importMapPending"></select></label>
+                <label>TRUE/FALSE <small>Optional</small><select id="importMapEnabled"></select></label>
+                <label>Device allocation <small>Optional</small><select id="importMapDeviceAllocation"></select></label>
+                <label>New asset status <small>Optional for normal imports</small><select id="importMapNewAssetStatus"></select></label>
+              </div>
+            </div>
           </div>
-          <div class="column-map">
-            <label class="column-map-sheet">Sheet
-              <select id="importMapSheet"></select>
-            </label>
-            <label>Username <em>Required</em><select id="importMapUsername"></select></label>
-            <label>Deployment serial <em>Required</em><select id="importMapDeployment"></select></label>
-            <label>Returned-device serial <small>Optional</small><select id="importMapReturned"></select></label>
-            <label>Pending-return serial <em>Required</em><select id="importMapPending"></select></label>
-            <label>TRUE/FALSE <small>Optional</small><select id="importMapEnabled"></select></label>
-            <label>Device allocation <small>Optional</small><select id="importMapDeviceAllocation"></select></label>
-            <label>New asset status <small>Optional for normal imports</small><select id="importMapNewAssetStatus"></select></label>
+          <div id="importConfigure" hidden>
+            <div class="import-file-row">
+              <div><strong id="importFilename"></strong><small id="importFileSummary"></small></div>
+              <div class="import-file-actions">
+                <button id="changeColumnsButton" class="text-button" type="button">Change columns</button>
+                <button id="changeFileButton" class="text-button" type="button">Change file</button>
+              </div>
+            </div>
+            <div class="two-column-form">
+              <label>Sheet
+                <select id="sheetInput"></select>
+              </label>
+              <label id="importDatePicker">Deployment date
+                <select id="dateInput"></select>
+              </label>
+              <div id="importDateSummary" class="import-selection-summary" role="status" hidden>
+                <strong>Backlog date range</strong>
+                <small id="importDateSummaryDetail">Use the range below to find undeployed devices.</small>
+              </div>
+            </div>
+            <div id="importDateGroups" class="import-date-groups" hidden>
+              <label>Date sections
+                <select id="importGroupInput"></select>
+              </label>
+              <small id="importDateGroupsHelp"></small>
+            </div>
+            <div id="almDeployOptions">
+            <fieldset class="choice-cards">
+              <legend>What should be added?</legend>
+              <label><input type="checkbox" name="importMode" value="deployments" checked><span><strong>Deploy to users</strong><small id="deploymentImportCount">0 requests</small></span></label>
+              <label><input type="checkbox" name="importMode" value="returned_devices" checked><span><strong>Returned devices</strong><small id="returnedDeviceImportCount">0 requests</small></span></label>
+              <label><input type="checkbox" name="importMode" value="pending_returns" checked><span><strong>Pending returns</strong><small id="pendingReturnImportCount">0 requests</small></span></label>
+            </fieldset>
+            <div id="importLocationFields" hidden>
+              <div class="two-column-form">
+                <label>City
+                  <select id="importCityInput"></select>
+                </label>
+                <label>Location
+                  <select id="importLocationInput"></select>
+                </label>
+              </div>
+            </div>
+            </div>
+            <div id="almBacklogOptions" class="alm-backlog-options" hidden>
+              <label for="almBacklogDaysInput">Check the last <strong id="almBacklogDaysLabel">30 days</strong></label>
+              <input id="almBacklogDaysInput" type="range" min="1" max="365" value="30">
+              <div class="range-labels"><span>1 day ago</span><span>1 year ago</span></div>
+              <label class="settings-checkbox"><input id="almBacklogIncludeToday" type="checkbox"><span>Include today</span></label>
+              <small>Rows with a serial number whose New Asset Status is not deployed will appear for review.</small>
+            </div>
+          </div>
+          <div id="importPreview" hidden>
+            <div class="import-preview-heading">
+              <div>
+                <strong id="importPreviewTitle">Requests ready to add</strong>
+                <small id="importPreviewSubtitle"></small>
+              </div>
+              <span id="importPreviewCount" class="count-badge"></span>
+            </div>
+            <div id="importPreviewList" class="import-preview-list"></div>
           </div>
         </div>
-      </div>
-      <div id="importConfigure" hidden>
-        <div class="import-file-row">
-          <div><strong id="importFilename"></strong><small id="importFileSummary"></small></div>
-          <div class="import-file-actions">
-            <button id="changeColumnsButton" class="text-button" type="button">Change columns</button>
-            <button id="changeFileButton" class="text-button" type="button">Change file</button>
-          </div>
-        </div>
-        <div class="two-column-form">
-          <label>Sheet
-            <select id="sheetInput"></select>
-          </label>
-          <label>Deployment date
-            <select id="dateInput"></select>
-          </label>
-        </div>
-        <div id="importDateGroups" class="import-date-groups" hidden>
-          <label>Date sections
-            <select id="importGroupInput"></select>
-          </label>
-          <small id="importDateGroupsHelp"></small>
-        </div>
-        <div id="almDeployOptions">
-        <fieldset class="choice-cards">
-          <legend>What should be added?</legend>
-          <label><input type="checkbox" name="importMode" value="deployments" checked><span><strong>Deploy to users</strong><small id="deploymentImportCount">0 requests</small></span></label>
-          <label><input type="checkbox" name="importMode" value="returned_devices" checked><span><strong>Returned devices</strong><small id="returnedDeviceImportCount">0 requests</small></span></label>
-          <label><input type="checkbox" name="importMode" value="pending_returns" checked><span><strong>Pending returns</strong><small id="pendingReturnImportCount">0 requests</small></span></label>
-        </fieldset>
-        <div id="importLocationFields" hidden>
-          <div class="two-column-form">
-            <label>City
-              <select id="importCityInput"></select>
-            </label>
-            <label>Location
-              <select id="importLocationInput"></select>
-            </label>
-          </div>
-        </div>
-        </div>
-        <div id="almBacklogOptions" class="alm-backlog-options" hidden>
-          <label for="almBacklogDaysInput">Check the last <strong id="almBacklogDaysLabel">30 days</strong></label>
-          <input id="almBacklogDaysInput" type="range" min="0" max="365" value="30">
-          <div class="range-labels"><span>Today only</span><span>1 year ago</span></div>
-          <label class="settings-checkbox"><input id="almBacklogIncludeToday" type="checkbox"><span>Include today</span></label>
-          <small>Rows with a serial number whose New Asset Status is not deployed will appear for review.</small>
-        </div>
-      </div>
-      <div id="importPreview" hidden>
-        <div class="import-preview-heading">
-          <div>
-            <strong id="importPreviewTitle">Requests ready to add</strong>
-            <small id="importPreviewSubtitle"></small>
-          </div>
-          <span id="importPreviewCount" class="count-badge"></span>
-        </div>
-        <div id="importPreviewList" class="import-preview-list"></div>
       </div>
       <div id="importError" class="inline-error" hidden></div>
       <div class="modal-actions">
