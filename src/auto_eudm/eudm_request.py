@@ -72,6 +72,73 @@ class DeploymentExecutionError(EUDMError):
         self.request_id = request_id
 
 
+_ASSET_STATUS_KEYS = (
+    "assetStatus",
+    "asset_status",
+    "currentStatus",
+    "current_status",
+    "deviceStatus",
+    "device_status",
+    "inventoryStatus",
+    "inventory_status",
+    "status",
+    "lifecycleStatus",
+    "lifecycle_status",
+)
+_KNOWN_ASSET_STATUS_LABELS = frozenset(
+    {
+        "donated",
+        "hold",
+        "in inventory",
+        "new stock",
+        "loan stock",
+        "used stock",
+        "pending decom",
+        "pending disposal",
+        "pending pickup",
+        "pending repair",
+        "pending rebuild",
+        "under repair",
+        "vendor collected",
+        "stolen/lost",
+    }
+)
+
+
+def _clean_asset_status(value: Any) -> str:
+    if not isinstance(value, (str, int, float)):
+        return ""
+    return " ".join(str(value).split()).strip()
+
+
+def asset_status_from_row(row: dict[str, Any]) -> str:
+    """Extract an asset's current status from an EUDM device-table row.
+
+    EUDM has returned both named fields and display-only table columns across
+    questionnaire versions, so keep the extraction deliberately tolerant.
+    """
+    if not isinstance(row, dict):
+        return ""
+    for key in _ASSET_STATUS_KEYS:
+        candidate = _clean_asset_status(row.get(key))
+        if candidate:
+            return candidate
+    display_values = row.get("displayValue", [])
+    if not isinstance(display_values, list):
+        return ""
+    for value in display_values:
+        candidate = _clean_asset_status(value)
+        normalised = candidate.casefold()
+        if normalised.startswith("deployed - ") or normalised in _KNOWN_ASSET_STATUS_LABELS:
+            return candidate
+    return ""
+
+
+def asset_is_user_deployed(row: dict[str, Any]) -> bool:
+    """Return whether EUDM identifies the asset as deployed to a user."""
+    return asset_status_from_row(row).casefold().startswith("deployed - ")
+
+
 @dataclass(frozen=True)
 class DeploymentResult:
     request_id: str
@@ -454,7 +521,11 @@ class SimulationClient:
                     )
                 return self._event(
                     "device-list",
-                    [{"dataValue": f"SIM-ASSET:{value}", "displayValue": [value, value]}],
+                    [{
+                        "dataValue": f"SIM-ASSET:{value}",
+                        "displayValue": [value, value],
+                        "assetStatus": "Deployed - Existing Stock",
+                    }],
                 )
             if question_id == "serial-list":
                 serials = [serial.strip() for serial in value.split(",") if serial.strip()]
@@ -1009,11 +1080,31 @@ def answer_single_asset_exact(
     serial_field: dict[str, Any],
     device_table: dict[str, Any],
     serial: str,
+    *,
+    require_user_deployment: bool = False,
 ) -> str:
     """Resolve one exact asset without prompting for terminal input."""
     events = answer(client, request_id, questionnaire_id, serial_field, serial)
     devices = option_data(events, device_table["id"])
     value = choose_data_value(devices, serial, exact=True, kind="serial number")
+    selected_row = next(
+        (
+            row
+            for row in devices
+            if str(row.get("dataValue", "")) == str(value)
+        ),
+        {},
+    )
+    if require_user_deployment and not asset_is_user_deployed(selected_row):
+        current_status = asset_status_from_row(selected_row)
+        if current_status:
+            detail = f"its current status is {current_status!r}"
+        else:
+            detail = "its current status could not be confirmed as a user deployment"
+        raise EUDMError(
+            "Pending return was not submitted because "
+            f"{detail}."
+        )
     answer(client, request_id, questionnaire_id, device_table, value)
     return serial
 
@@ -1029,6 +1120,7 @@ def deploy_device_to_user(
     manual_review_enabled: bool = False,
     on_request_created: Any | None = None,
     interactive_matches: bool = True,
+    require_current_user_deployment: bool = False,
 ) -> DeploymentResult:
     """Populate and optionally submit one user deployment request."""
     for label, value in (
@@ -1075,6 +1167,7 @@ def deploy_device_to_user(
             submit=submit,
             manual_review_enabled=manual_review_enabled,
             interactive_matches=interactive_matches,
+            require_current_user_deployment=require_current_user_deployment,
         )
     except MatchSkipped as exc:
         return DeploymentResult(
@@ -1097,6 +1190,7 @@ def _complete_user_deployment(
     submit: bool,
     manual_review_enabled: bool,
     interactive_matches: bool,
+    require_current_user_deployment: bool,
 ) -> DeploymentResult:
     questionnaire = request_step(
         client,
@@ -1121,7 +1215,13 @@ def _complete_user_deployment(
         )
     else:
         serial = answer_single_asset_exact(
-            client, request_id, questionnaire_id, serial_field, device_table, serial
+            client,
+            request_id,
+            questionnaire_id,
+            serial_field,
+            device_table,
+            serial,
+            require_user_deployment=require_current_user_deployment,
         )
 
     status_item = field_by_label(all_items, "Change Status to", type_="Dropdown")

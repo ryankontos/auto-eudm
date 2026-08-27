@@ -69,6 +69,7 @@ def populate_spec(
             manual_review_enabled=False,
             on_request_created=on_request_created,
             interactive_matches=False,
+            require_current_user_deployment=spec.group == "Pending returns",
         )
     location = spec.location
     assert location is not None
@@ -119,6 +120,7 @@ def display_rows(
                 if candidate and candidate.casefold() not in {value.casefold(), ""}:
                     device_type = candidate
             result["device_type"] = device_type
+            result["asset_status"] = eudm.asset_status_from_row(row)
         displayed.append(result)
     return displayed
 
@@ -1337,6 +1339,7 @@ class Application:
         }
         if category == "serials":
             stored["device_type"] = str(result.get("device_type", "") or "")
+            stored["asset_status"] = str(result.get("asset_status", "") or "")
         with self.verification_cache_lock:
             values = self.verification_cache[category]
             values.pop(key, None)

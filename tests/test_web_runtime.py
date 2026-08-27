@@ -22,6 +22,8 @@ from auto_eudm.web_runtime import (
     MAX_LIVE_SUBMISSION_JOBS,
     MAX_PENDING_IMPORTS,
     SubmissionJob,
+    display_rows,
+    populate_spec,
 )
 
 
@@ -64,6 +66,44 @@ def valid_request(client_id: str) -> RequestSpec:
             "group": "Deployments",
         }
     )
+
+
+class PendingReturnRoutingTests(unittest.TestCase):
+    @mock.patch(
+        "auto_eudm.web_runtime.eudm.deploy_device_to_user",
+        return_value=eudm.DeploymentResult("REQ-1", None, submitted=True),
+    )
+    def test_pending_return_group_requires_current_user_deployment(
+        self, deploy: mock.Mock
+    ) -> None:
+        spec = RequestSpec.from_json(
+            {
+                "id": "pending-1",
+                "kind": "user",
+                "serials": ["SERIAL123"],
+                "status": "Pending Return",
+                "user": "valid.user",
+                "group": "Pending returns",
+            }
+        )
+
+        populate_spec(mock.Mock(), spec, "request.user", submit=True)
+
+        self.assertTrue(deploy.call_args.kwargs["require_current_user_deployment"])
+
+    def test_asset_search_rows_include_current_status(self) -> None:
+        rows = display_rows(
+            [
+                {
+                    "dataValue": "SIM-ASSET:SERIAL123",
+                    "displayValue": ["SERIAL123", "MacBook Air", "Used Stock"],
+                }
+            ],
+            include_device_type=True,
+        )
+
+        self.assertEqual(rows[0]["device_type"], "MacBook Air")
+        self.assertEqual(rows[0]["asset_status"], "Used Stock")
 
 
 class ImportJobRetentionTests(unittest.TestCase):
@@ -304,6 +344,7 @@ class SubmissionHistoryTests(unittest.TestCase):
                 "value": " ABC123 ",
                 "columns": ["ABC123", "Laptop"],
                 "device_type": "Laptop",
+                "asset_status": "Deployed - Existing Stock",
             })
 
             loaded = Application.__new__(Application)
@@ -317,6 +358,7 @@ class SubmissionHistoryTests(unittest.TestCase):
                     "value": "ABC123",
                     "columns": ["ABC123", "Laptop"],
                     "device_type": "Laptop",
+                    "asset_status": "Deployed - Existing Stock",
                 },
             )
 

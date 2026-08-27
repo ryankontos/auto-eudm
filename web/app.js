@@ -1358,6 +1358,64 @@ function bestSerial(result, query) {
     || query;
 }
 
+const KNOWN_ASSET_STATUS_LABELS = new Set([
+  "donated",
+  "hold",
+  "in inventory",
+  "new stock",
+  "loan stock",
+  "used stock",
+  "pending decom",
+  "pending disposal",
+  "pending pickup",
+  "pending repair",
+  "pending rebuild",
+  "under repair",
+  "vendor collected",
+  "stolen/lost",
+]);
+
+function cleanAssetStatus(value) {
+  return typeof value === "string" || typeof value === "number"
+    ? String(value).trim().replace(/\s+/g, " ")
+    : "";
+}
+
+function assetStatusFromResult(result) {
+  const explicit = [
+    result?.asset_status,
+    result?.assetStatus,
+    result?.current_status,
+    result?.currentStatus,
+    result?.device_status,
+    result?.deviceStatus,
+    result?.inventory_status,
+    result?.inventoryStatus,
+    result?.status,
+  ];
+  for (const value of explicit) {
+    const status = cleanAssetStatus(value);
+    if (status) return status;
+  }
+  return (result?.columns || [])
+    .map(cleanAssetStatus)
+    .find((status) => {
+      const key = status.toLowerCase();
+      return key.startsWith("deployed - ") || KNOWN_ASSET_STATUS_LABELS.has(key);
+    }) || "";
+}
+
+function assetIsUserDeployed(result) {
+  return /^deployed\s*-\s+/i.test(assetStatusFromResult(result));
+}
+
+function pendingReturnStatusError(result) {
+  const status = assetStatusFromResult(result);
+  return status
+    ? `Pending return not eligible: current asset status is "${status}". It must still be deployed to a user.`
+    : "Pending return not eligible: EUDM did not provide a current status confirming that this device is deployed to a user.";
+}
+
 function deviceTypeFromResult(result, serial) {
   const wanted = new Set([
     String(serial || "").trim().toLowerCase(),
@@ -3431,25 +3489,28 @@ function renderImportPreview() {
           </div>`
         : `<span class="fixed-status">Deployed - Pending Return</span>`;
       const validation = request.import_validation === "checking"
-        ? '<small class="import-checking">Verifying serial and user details in EUDM…</small>'
+        ? `<small class="import-checking">${request.group === "Pending returns" ? "Verifying current asset status and user details in EUDM…" : "Verifying serial and user details in EUDM…"}</small>`
         : request.import_validation === "failed"
           ? `<small class="import-check-failed">${escapeHtml(request.import_error || "Not found in EUDM")}</small>`
           : request.import_validation === "valid"
-            ? '<small class="import-check-ok">✓ Serial and user verified</small>'
+            ? `<small class="import-check-ok">✓ ${request.group === "Pending returns" ? "Serial, current status and user verified" : "Serial and user verified"}</small>`
             : "";
       const returnDetails = importReturnDetails(request, isReturnedDevice);
       const failedFields = request.import_failed_fields || ["serial", "username"];
-      const editable = request.import_validation === "failed" ? `<div class="import-inline-edit">
+      const editable = request.import_validation === "failed" && failedFields.length ? `<div class="import-inline-edit">
         ${failedFields.includes("serial") ? `<input data-import-serial="${escapeHtml(request.id)}" value="${escapeHtml(request.serials[0])}" aria-label="Serial number" placeholder="Correct serial">` : ""}
         ${failedFields.includes("username") ? `<input data-import-user="${escapeHtml(request.id)}" value="${escapeHtml(request.user || request.returning_user)}" aria-label="Username" placeholder="Correct username">` : ""}
         <button class="text-button" data-import-retry="${escapeHtml(request.id)}" type="button">Retry</button>
       </div>` : "";
+      const currentAssetStatus = request.group === "Pending returns" && request.current_asset_status
+        ? `<small class="import-device-status">Current status: ${escapeHtml(request.current_asset_status)}</small>`
+        : "";
       return `<div class="import-preview-row ${isIncluded ? "" : "excluded"}">
         <label class="include-control" title="${isIncluded ? "Included" : "Do not deploy"}">
           <input type="checkbox" data-import-include="${escapeHtml(request.id)}" ${isIncluded ? "checked" : ""}>
           <span>${index + 1}</span>
         </label>
-        <div><small class="import-field-title">${isDeployment ? "Deployment serial" : isReturnedDevice ? "Returned device" : "Pending return"}</small><strong>${escapeHtml(request.serials[0])}</strong>${request.device_allocation ? `<small class="import-device-allocation">${escapeHtml(request.device_allocation)}</small>` : ""}${isDeployment && request.new_asset_status ? `<small class="import-device-status">New asset status: ${escapeHtml(request.new_asset_status)}</small>` : ""}</div>
+        <div><small class="import-field-title">${isDeployment ? "Deployment serial" : isReturnedDevice ? "Returned device" : "Pending return"}</small><strong>${escapeHtml(request.serials[0])}</strong>${request.device_allocation ? `<small class="import-device-allocation">${escapeHtml(request.device_allocation)}</small>` : ""}${isDeployment && request.new_asset_status ? `<small class="import-device-status">New asset status: ${escapeHtml(request.new_asset_status)}</small>` : ""}${currentAssetStatus}</div>
         <div><small class="import-field-title">${isReturnedDevice ? "Returning user" : "User"}</small><strong>${escapeHtml(request.user || request.returning_user || "No user")}</strong></div>
         <div>${statusControl}${isIncluded ? validation : "<small>Do not deploy</small>"}${returnDetails}${editable}</div>
       </div>`;
@@ -3582,52 +3643,85 @@ async function validateImportPreview(retryRequests = null) {
   const payload = state.importPreview;
   if (!payload || !["connected", "simulation"].includes(state.connection?.state)) return;
   const requests = (retryRequests || payload.requests).filter((request) => request.included !== false);
-  if (!validationEnabled("validate_workbook_import")) {
-    requests.forEach((request) => {
+  const importValidationEnabled = validationEnabled("validate_workbook_import");
+  // Pending returns always need a current asset-status check, even when the
+  // optional general ALM verification toggle is off.
+  const requestsToValidate = importValidationEnabled
+    ? requests
+    : requests.filter((request) => request.group === "Pending returns");
+  if (!importValidationEnabled) {
+    requests.filter((request) => !requestsToValidate.includes(request)).forEach((request) => {
       request.import_validation = "valid";
       request.import_error = "";
       request.import_failed_fields = [];
       request.returning_user_loading = false;
     });
-    renderImportPreview();
-    updateImportPrepareButton(payload);
-    return;
+    if (!requestsToValidate.length) {
+      renderImportPreview();
+      updateImportPrepareButton(payload);
+      return;
+    }
   }
-  requests.forEach((request) => {
+  requestsToValidate.forEach((request) => {
     request.import_validation = "checking";
     request.import_error = "";
     request.import_failed_fields = [];
     request.eudm_device_type = "";
+    request.current_asset_status = "";
     if (request.kind === "location") request.returning_user_loading = true;
   });
   renderImportPreview();
   $("#prepareImportButton").disabled = true;
-  await Promise.all(requests.map(async (request) => {
+  await Promise.all(requestsToValidate.map(async (request) => {
     const serial = request.serials[0];
     const username = request.user || request.returning_user;
     try {
       const [assets, users] = await Promise.all([
-        api("/api/search/assets", { method: "POST", body: JSON.stringify({ query: serial, fresh: true }) }),
-        api("/api/search/users", { method: "POST", body: JSON.stringify({ query: username, returning: request.kind === "location", fresh: true }) }),
+        api("/api/search/assets", {
+          method: "POST",
+          body: JSON.stringify({
+            query: serial,
+            fresh: true,
+            // A pending return is a time-sensitive safety check. Do not let a
+            // previously cached status authorize it.
+            bypass_cache: request.group === "Pending returns",
+          }),
+        }),
+        importValidationEnabled
+          ? api("/api/search/users", { method: "POST", body: JSON.stringify({ query: username, returning: request.kind === "location", fresh: true }) })
+          : Promise.resolve({ results: [] }),
       ]);
       const asset = (assets.results || []).find((item) => serialResultMatches(item, serial));
-      const user = (users.results || []).find((item) => userResultMatches(item, username));
+      const user = importValidationEnabled
+        ? (users.results || []).find((item) => userResultMatches(item, username))
+        : null;
+      request.current_asset_status = asset ? assetStatusFromResult(asset) : "";
       const missingFields = [];
       if (!asset) missingFields.push("serial");
-      if (!user) missingFields.push("username");
+      if (importValidationEnabled && !user) missingFields.push("username");
       if (missingFields.length) {
         const missingLabels = missingFields.map((field) => field === "serial" ? "Serial number" : "Username");
         const validationError = new Error(`${missingLabels.join(" and ")} ${missingLabels.length === 1 ? "was" : "were"} not found in EUDM.`);
         validationError.failedFields = missingFields;
         throw validationError;
       }
+      if (request.group === "Pending returns" && !assetIsUserDeployed(asset)) {
+        const validationError = new Error(pendingReturnStatusError(asset));
+        // There is no serial or username correction to offer for a status
+        // mismatch; the operator must exclude the row or wait for a real
+        // user-deployed status.
+        validationError.failedFields = [];
+        throw validationError;
+      }
       request.eudm_device_type = deviceTypeFromResult(asset, serial);
-      if (request.kind === "location") {
-        request.returning_user_info = { login: bestLogin(user, username), columns: (user.columns || [user.value]).map(String).filter(Boolean) };
-        request.returning_user_validation = "valid";
-      } else {
-        request.user_info = { login: bestLogin(user, username), columns: (user.columns || [user.value]).map(String).filter(Boolean) };
-        request.user_validation = "valid";
+      if (importValidationEnabled) {
+        if (request.kind === "location") {
+          request.returning_user_info = { login: bestLogin(user, username), columns: (user.columns || [user.value]).map(String).filter(Boolean) };
+          request.returning_user_validation = "valid";
+        } else {
+          request.user_info = { login: bestLogin(user, username), columns: (user.columns || [user.value]).map(String).filter(Boolean) };
+          request.user_validation = "valid";
+        }
       }
       request.import_validation = "valid";
       if (assets.cached) {
@@ -3636,16 +3730,23 @@ async function validateImportPreview(retryRequests = null) {
           const freshAsset = (freshPayload.results || []).find((item) => serialResultMatches(item, serial));
           if (freshAsset) {
             request.eudm_device_type = deviceTypeFromResult(freshAsset, serial);
+            request.current_asset_status = assetStatusFromResult(freshAsset);
+            if (request.group === "Pending returns" && !assetIsUserDeployed(freshAsset)) {
+              request.import_validation = "failed";
+              request.import_error = pendingReturnStatusError(freshAsset);
+              request.import_failed_fields = [];
+            }
           } else {
             request.import_validation = "failed";
             request.import_error = "Serial number was not found in EUDM.";
             request.import_failed_fields = ["serial"];
+            request.current_asset_status = "";
           }
           renderImportPreview();
           updateImportPrepareButton(payload);
         });
       }
-      if (users.cached) {
+      if (importValidationEnabled && users.cached) {
         verifyCachedValueInBackground("username", username, request.kind === "location", (freshPayload) => {
           if ((request.user || request.returning_user) !== username) return;
           const freshUser = (freshPayload.results || []).find((item) => userResultMatches(item, username));
