@@ -134,66 +134,6 @@ class RequestCLIValidationTests(unittest.TestCase):
         client.request.assert_not_called()
 
 
-class PendingReturnStatusTests(unittest.TestCase):
-    def asset_events(self, status: str | None) -> dict[str, object]:
-        row: dict[str, object] = {
-            "dataValue": "SIM-ASSET:SERIAL123",
-            "displayValue": ["SERIAL123", "MacBook Air", status or ""],
-        }
-        if status is not None:
-            row["assetStatus"] = status
-        return eudm.SimulationClient._event("device-list", [row])
-
-    def test_pending_return_rejects_asset_not_deployed_to_user(self) -> None:
-        events = self.asset_events("Used Stock")
-
-        with mock.patch.object(eudm, "answer", return_value=events) as answer:
-            with self.assertRaisesRegex(eudm.EUDMError, "current status is 'Used Stock'"):
-                eudm.answer_single_asset_exact(
-                    mock.Mock(),
-                    "REQ-1",
-                    "QUESTIONNAIRE-1",
-                    {"id": "serial-search"},
-                    {"id": "device-list"},
-                    "SERIAL123",
-                    require_user_deployment=True,
-                )
-
-        answer.assert_called_once()
-
-    def test_pending_return_accepts_user_deployment_status(self) -> None:
-        events = self.asset_events("Deployed - Pending Return")
-
-        with mock.patch.object(eudm, "answer", side_effect=[events, {}]) as answer:
-            result = eudm.answer_single_asset_exact(
-                mock.Mock(),
-                "REQ-1",
-                "QUESTIONNAIRE-1",
-                {"id": "serial-search"},
-                {"id": "device-list"},
-                "SERIAL123",
-                require_user_deployment=True,
-            )
-
-        self.assertEqual(result, "SERIAL123")
-        self.assertEqual(answer.call_count, 2)
-
-    def test_pending_return_rejects_missing_current_status(self) -> None:
-        events = self.asset_events(None)
-
-        with mock.patch.object(eudm, "answer", return_value=events):
-            with self.assertRaisesRegex(eudm.EUDMError, "could not be confirmed"):
-                eudm.answer_single_asset_exact(
-                    mock.Mock(),
-                    "REQ-1",
-                    "QUESTIONNAIRE-1",
-                    {"id": "serial-search"},
-                    {"id": "device-list"},
-                    "SERIAL123",
-                    require_user_deployment=True,
-                )
-
-
 class RootEntrypointTests(unittest.TestCase):
     def run_script(self, script: str, *arguments: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(

@@ -14,6 +14,7 @@ const state = {
   importMode: "deploy",
   importDraftId: null,
   importDrafts: [],
+  importSelectedDates: [],
   importUploadToken: 0,
   importExpandedGroups: new Set(),
   currentJob: null,
@@ -85,6 +86,7 @@ const elements = {
   historyList: $("#historyList"),
   reviewButton: $("#reviewButton"),
   clearQueueButton: $("#clearQueueButton"),
+  inspector: $("#inspector"),
   inspectorEmpty: $("#inspectorEmpty"),
   inspectorContent: $("#inspectorContent"),
   serialInput: $("#serialInput"),
@@ -1090,13 +1092,13 @@ function renderQueue() {
   elements.queueBody.querySelectorAll("tr").forEach((row) => {
     row.addEventListener("click", (event) => {
       if (event.target.closest("[data-remove], [data-copy-request-id]")) return;
-      state.selectedId = row.dataset.id;
+      state.selectedId = state.selectedId === row.dataset.id ? null : row.dataset.id;
       renderAll();
     });
     row.addEventListener("keydown", (event) => {
       if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
-        state.selectedId = row.dataset.id;
+        state.selectedId = state.selectedId === row.dataset.id ? null : row.dataset.id;
         renderAll();
       }
     });
@@ -1140,6 +1142,7 @@ function fillSelect(select, options, selected, placeholder = null) {
 
 function renderInspector() {
   const request = selectedRequest();
+  elements.inspector.hidden = !request;
   elements.inspectorEmpty.hidden = Boolean(request);
   elements.inspectorContent.hidden = !request;
   hideSearchResults();
@@ -1440,64 +1443,6 @@ function bestSerial(result, query) {
     || columns.find((value) => /^[A-Za-z0-9._-]{6,}$/.test(value))
     || String(result.value || "")
     || query;
-}
-
-const KNOWN_ASSET_STATUS_LABELS = new Set([
-  "donated",
-  "hold",
-  "in inventory",
-  "new stock",
-  "loan stock",
-  "used stock",
-  "pending decom",
-  "pending disposal",
-  "pending pickup",
-  "pending repair",
-  "pending rebuild",
-  "under repair",
-  "vendor collected",
-  "stolen/lost",
-]);
-
-function cleanAssetStatus(value) {
-  return typeof value === "string" || typeof value === "number"
-    ? String(value).trim().replace(/\s+/g, " ")
-    : "";
-}
-
-function assetStatusFromResult(result) {
-  const explicit = [
-    result?.asset_status,
-    result?.assetStatus,
-    result?.current_status,
-    result?.currentStatus,
-    result?.device_status,
-    result?.deviceStatus,
-    result?.inventory_status,
-    result?.inventoryStatus,
-    result?.status,
-  ];
-  for (const value of explicit) {
-    const status = cleanAssetStatus(value);
-    if (status) return status;
-  }
-  return (result?.columns || [])
-    .map(cleanAssetStatus)
-    .find((status) => {
-      const key = status.toLowerCase();
-      return key.startsWith("deployed - ") || KNOWN_ASSET_STATUS_LABELS.has(key);
-    }) || "";
-}
-
-function assetIsUserDeployed(result) {
-  return /^deployed\s*-\s+/i.test(assetStatusFromResult(result));
-}
-
-function pendingReturnStatusError(result) {
-  const status = assetStatusFromResult(result);
-  return status
-    ? `Pending return not eligible: current asset status is "${status}". It must still be deployed to a user.`
-    : "Pending return not eligible: EUDM did not provide a current status confirming that this device is deployed to a user.";
 }
 
 function deviceTypeFromResult(result, serial) {
@@ -2673,6 +2618,7 @@ function addPairs() {
 function resetImportDialog(mode = state.importMode || "deploy") {
   saveCurrentImportDraft({ immediate: true });
   state.importMode = mode;
+  state.importSelectedDates = [];
   state.importUploadToken += 1;
   state.workbook = null;
   state.workbookInspection = null;
@@ -2792,20 +2738,67 @@ function updateImportDates() {
     : dates.some((entry) => entry.value === todayValue)
       ? [todayValue]
       : dates[0]?.value ? [dates[0].value] : [];
-  $("#dateInput").innerHTML = dates.map((entry) => {
+  state.importSelectedDates = selected;
+  renderImportDateDialog();
+  updateImportDateSummary();
+  updateImportCounts();
+}
+
+function updateImportDateSummary() {
+  const dates = workbookSheet($("#sheetInput").value)?.dates || [];
+  const selected = selectedImportDateEntries();
+  const trigger = $("#openImportDatesButton");
+  const label = $("#importDateSelectionLabel");
+  const detail = $("#importDateSelectionDetail");
+  if (!trigger || !label || !detail) return;
+  trigger.disabled = !dates.length;
+  if (!selected.length) {
+    label.textContent = dates.length ? "Choose dates" : "No dates available";
+    detail.textContent = dates.length ? "Choose one or more dates" : "No deployment dates found";
+    trigger.setAttribute("aria-label", "Choose deployment dates");
+    return;
+  }
+  label.textContent = selected.length === 1
+    ? relativeDateLabel(selected[0].value)
+    : `${selected.length} dates selected`;
+  detail.textContent = `${selected.length} date${selected.length === 1 ? "" : "s"} selected`;
+  trigger.setAttribute(
+    "aria-label",
+    `Choose deployment dates. Selected: ${selected.map((entry) => entry.label).join(", ")}`,
+  );
+}
+
+function updateImportDateDialogApplyButton() {
+  const button = $("#applyImportDatesButton");
+  if (!button) return;
+  button.disabled = !$('[data-import-dialog-date]:checked');
+}
+
+function renderImportDateDialog() {
+  const list = $("#importDateDialogList");
+  if (!list) return;
+  const dates = workbookSheet($("#sheetInput").value)?.dates || [];
+  const selected = new Set(selectedImportDates());
+  if (!dates.length) {
+    list.innerHTML = '<div class="import-date-empty">No deployment dates were found in this sheet.</div>';
+    updateImportDateDialogApplyButton();
+    return;
+  }
+  list.innerHTML = dates.map((entry) => {
     const requests = Number(entry.deployment_count || 0)
       + Number(entry.returned_device_count || 0)
       + Number(entry.pending_return_count || 0);
     return `<label class="import-date-option">
-      <input type="checkbox" data-import-date="${escapeHtml(entry.value)}" ${selected.includes(entry.value) ? "checked" : ""}>
+      <input type="checkbox" data-import-dialog-date="${escapeHtml(entry.value)}" ${selected.has(entry.value) ? "checked" : ""}>
       <span><strong>${escapeHtml(entry.label)}</strong><small>${escapeHtml(relativeDateLabel(entry.value))} · ${requests} request${requests === 1 ? "" : "s"}</small></span>
     </label>`;
   }).join("");
-  updateImportCounts();
+  updateImportDateDialogApplyButton();
 }
 
 function selectedImportDates() {
-  return $$('[data-import-date]:checked').map((input) => input.dataset.importDate).filter(Boolean);
+  const available = new Set((workbookSheet($("#sheetInput").value)?.dates || []).map((entry) => entry.value));
+  return [...new Set(state.importSelectedDates || [])].filter((value) => available.has(value));
 }
 
 function selectedImportDateEntries() {
@@ -2814,8 +2807,31 @@ function selectedImportDateEntries() {
 }
 
 function setSelectedImportDates(values) {
-  const selected = new Set((values || []).map((value) => String(value)));
-  $$('[data-import-date]').forEach((input) => { input.checked = selected.has(input.dataset.importDate); });
+  const available = new Set((workbookSheet($("#sheetInput").value)?.dates || []).map((entry) => entry.value));
+  state.importSelectedDates = [...new Set((values || []).map((value) => String(value)))].filter((value) => available.has(value));
+  renderImportDateDialog();
+  updateImportDateSummary();
+}
+
+function openImportDateDialog() {
+  renderImportDateDialog();
+  const dialog = $("#importDatesDialog");
+  if (!dialog?.open) {
+    dialog.showModal();
+    $("#openImportDatesButton").setAttribute("aria-expanded", "true");
+  }
+}
+
+function applyImportDateSelection() {
+  const selected = $$('[data-import-dialog-date]:checked')
+    .map((input) => input.dataset.importDialogDate)
+    .filter(Boolean);
+  if (!selected.length) return;
+  state.importSelectedDates = selected;
+  updateImportDateSummary();
+  updateImportCounts();
+  saveCurrentImportDraft();
+  $("#importDatesDialog").close();
 }
 
 function selectedImportModes() {
@@ -3662,13 +3678,13 @@ function renderImportPreview() {
         request.cached_user_verification ? "user" : "",
       ].filter(Boolean);
       const validation = request.import_validation === "checking"
-        ? `<small class="import-checking">${request.group === "Pending returns" ? "Verifying current asset status and user details in EUDM…" : "Verifying serial and user details in EUDM…"}</small>`
+        ? '<small class="import-checking">Verifying serial and user details in EUDM…</small>'
         : request.import_validation === "failed"
           ? `<small class="import-check-failed">${escapeHtml(request.import_error || "Not found in EUDM")}</small>`
           : cachedFields.length
             ? `<small class="import-checking">${cachedVerificationMessage(...cachedFields)}</small>`
           : request.import_validation === "valid"
-            ? `<small class="import-check-ok">✓ ${request.group === "Pending returns" ? "Serial, current status and user verified" : "Serial and user verified"}</small>`
+            ? '<small class="import-check-ok">✓ Serial and user verified</small>'
             : "";
       const returnDetails = importReturnDetails(request, isReturnedDevice);
       const failedFields = request.import_failed_fields || ["serial", "username"];
@@ -3677,15 +3693,12 @@ function renderImportPreview() {
         ${failedFields.includes("username") ? `<input data-import-user="${escapeHtml(request.id)}" value="${escapeHtml(request.user || request.returning_user)}" aria-label="Username" placeholder="Correct username">` : ""}
         <button class="text-button" data-import-retry="${escapeHtml(request.id)}" type="button">Retry</button>
       </div>` : "";
-      const currentAssetStatus = request.group === "Pending returns" && request.current_asset_status
-        ? `<small class="import-device-status">Current status: ${escapeHtml(request.current_asset_status)}</small>`
-        : "";
       return `<div class="import-preview-row ${isIncluded ? "" : "excluded"}">
         <label class="include-control" title="${isIncluded ? "Included" : "Do not deploy"}">
           <input type="checkbox" data-import-include="${escapeHtml(request.id)}" ${isIncluded ? "checked" : ""}>
           <span>${index + 1}</span>
         </label>
-        <div><small class="import-field-title">${isDeployment ? "Deployment serial" : isReturnedDevice ? "Returned device" : "Pending return"}</small><strong>${escapeHtml(request.serials[0])}</strong>${request.device_allocation ? `<small class="import-device-allocation">${escapeHtml(request.device_allocation)}</small>` : ""}${isDeployment && request.new_asset_status ? `<small class="import-device-status">New asset status: ${escapeHtml(request.new_asset_status)}</small>` : ""}${currentAssetStatus}</div>
+        <div><small class="import-field-title">${isDeployment ? "Deployment serial" : isReturnedDevice ? "Returned device" : "Pending return"}</small><strong>${escapeHtml(request.serials[0])}</strong>${request.device_allocation ? `<small class="import-device-allocation">${escapeHtml(request.device_allocation)}</small>` : ""}${isDeployment && request.new_asset_status ? `<small class="import-device-status">New asset status: ${escapeHtml(request.new_asset_status)}</small>` : ""}</div>
         <div><small class="import-field-title">${isReturnedDevice ? "Returning user" : "User"}</small><strong>${escapeHtml(request.user || request.returning_user || "No user")}</strong></div>
         <div>${statusControl}${isIncluded ? validation : "<small>Do not deploy</small>"}${returnDetails}${editable}</div>
       </div>`;
@@ -3819,11 +3832,9 @@ async function validateImportPreview(retryRequests = null) {
   if (!payload || !["connected", "simulation"].includes(state.connection?.state)) return;
   const requests = (retryRequests || payload.requests).filter((request) => request.included !== false);
   const importValidationEnabled = validationEnabled("validate_workbook_import");
-  // Pending returns always need a current asset-status check, even when the
-  // optional general ALM verification toggle is off.
   const requestsToValidate = importValidationEnabled
     ? requests
-    : requests.filter((request) => request.group === "Pending returns");
+    : [];
   if (!importValidationEnabled) {
     requests.filter((request) => !requestsToValidate.includes(request)).forEach((request) => {
       request.import_validation = "valid";
@@ -3844,7 +3855,6 @@ async function validateImportPreview(retryRequests = null) {
     request.import_error = "";
     request.import_failed_fields = [];
     request.eudm_device_type = "";
-    request.current_asset_status = "";
     request.cached_serial_verification = false;
     request.cached_user_verification = false;
     if (request.kind === "location") request.returning_user_loading = true;
@@ -3861,9 +3871,6 @@ async function validateImportPreview(retryRequests = null) {
           body: JSON.stringify({
             query: serial,
             fresh: true,
-            // A pending return is a time-sensitive safety check. Do not let a
-            // previously cached status authorize it.
-            bypass_cache: request.group === "Pending returns",
           }),
         }),
         importValidationEnabled
@@ -3874,7 +3881,6 @@ async function validateImportPreview(retryRequests = null) {
       const user = importValidationEnabled
         ? (users.results || []).find((item) => userResultMatches(item, username))
         : null;
-      request.current_asset_status = asset ? assetStatusFromResult(asset) : "";
       const missingFields = [];
       if (!asset) missingFields.push("serial");
       if (importValidationEnabled && !user) missingFields.push("username");
@@ -3882,14 +3888,6 @@ async function validateImportPreview(retryRequests = null) {
         const missingLabels = missingFields.map((field) => field === "serial" ? "Serial number" : "Username");
         const validationError = new Error(`${missingLabels.join(" and ")} ${missingLabels.length === 1 ? "was" : "were"} not found in EUDM.`);
         validationError.failedFields = missingFields;
-        throw validationError;
-      }
-      if (request.group === "Pending returns" && !assetIsUserDeployed(asset)) {
-        const validationError = new Error(pendingReturnStatusError(asset));
-        // There is no serial or username correction to offer for a status
-        // mismatch; the operator must exclude the row or wait for a real
-        // user-deployed status.
-        validationError.failedFields = [];
         throw validationError;
       }
       request.eudm_device_type = deviceTypeFromResult(asset, serial);
@@ -3912,17 +3910,10 @@ async function validateImportPreview(retryRequests = null) {
           request.cached_serial_verification = false;
           if (freshAsset) {
             request.eudm_device_type = deviceTypeFromResult(freshAsset, serial);
-            request.current_asset_status = assetStatusFromResult(freshAsset);
-            if (request.group === "Pending returns" && !assetIsUserDeployed(freshAsset)) {
-              request.import_validation = "failed";
-              request.import_error = pendingReturnStatusError(freshAsset);
-              request.import_failed_fields = [];
-            }
           } else {
             request.import_validation = "failed";
             request.import_error = "Serial number was not found in EUDM.";
             request.import_failed_fields = ["serial"];
-            request.current_asset_status = "";
           }
           renderImportPreview();
           updateImportPrepareButton(payload);
@@ -4752,7 +4743,16 @@ function bindEvents() {
   $("#sheetInput").addEventListener("change", () => {
     updateImportDates();
   });
-  $("#dateInput").addEventListener("change", updateImportCounts);
+  $("#openImportDatesButton").addEventListener("click", openImportDateDialog);
+  $("#importDateDialogList").addEventListener("change", updateImportDateDialogApplyButton);
+  $("#applyImportDatesButton").addEventListener("click", applyImportDateSelection);
+  $("#importDatesDialog").addEventListener("close", () => {
+    $("#openImportDatesButton").setAttribute("aria-expanded", "false");
+  });
+  const importDateForm = $("#importDatesDialog form");
+  importDateForm.addEventListener("submit", (event) => {
+    if (event.submitter?.value !== "cancel") event.preventDefault();
+  });
   $("#importDateGroups").addEventListener("change", updateImportCounts);
   $("#almBacklogDaysInput").addEventListener("input", () => {
     updateBacklogDaysLabel();

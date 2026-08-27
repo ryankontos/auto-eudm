@@ -373,8 +373,11 @@
               </label>
               <div id="importDatePicker" class="import-date-picker">
                 <strong>Deployment dates</strong>
-                <small>Select one or more days</small>
-                <div id="dateInput" class="import-date-list" role="group" aria-label="Deployment dates"></div>
+                <button id="openImportDatesButton" class="import-date-trigger" type="button" aria-haspopup="dialog" aria-controls="importDatesDialog">
+                  <span id="importDateSelectionLabel">Choose dates</span>
+                  <span class="import-date-trigger-chevron" aria-hidden="true">⌄</span>
+                </button>
+                <small id="importDateSelectionDetail">Choose one or more dates</small>
               </div>
               <div id="importDateSummary" class="import-selection-summary" role="status" hidden>
                 <strong>Backlog date range</strong>
@@ -429,6 +432,21 @@
         <button class="button secondary" value="cancel">Cancel</button>
         <button id="backImportButton" class="button quiet" type="button" hidden>Back</button>
         <button id="prepareImportButton" class="button primary" value="default" type="button" disabled>Review import</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="importDatesDialog" class="modal import-date-dialog">
+    <form method="dialog" class="modal-card">
+      <div class="modal-header">
+        <h2>Choose deployment dates</h2>
+        <button class="icon-button" value="cancel" aria-label="Close">×</button>
+      </div>
+      <p class="import-date-dialog-intro">Select one or more days from this workbook.</p>
+      <div id="importDateDialogList" class="import-date-list" role="group" aria-label="Deployment dates"></div>
+      <div class="modal-actions">
+        <button class="button secondary" value="cancel">Cancel</button>
+        <button id="applyImportDatesButton" class="button primary" type="button">Apply dates</button>
       </div>
     </form>
   </dialog>

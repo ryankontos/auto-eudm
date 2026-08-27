@@ -931,6 +931,28 @@ fieldset { margin: 0; padding: 0; border: 0; }
 .import-date-picker > small { display: block; }
 .import-date-picker > strong { color: var(--muted); }
 .import-date-picker > small { margin-top: 2px; font-size: 11px; font-weight: 400; }
+.import-date-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  min-height: 42px;
+  margin-top: 6px;
+  padding: 7px 10px;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  color: var(--ink);
+  background: var(--surface);
+  font-size: 13px;
+  font-weight: 650;
+  text-align: left;
+}
+.import-date-trigger:hover { border-color: #99a8b5; background: var(--surface-alt); }
+.import-date-trigger:disabled { cursor: not-allowed; opacity: .55; }
+.import-date-trigger span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.import-date-trigger-chevron { flex: 0 0 auto; color: var(--muted); font-size: 17px; line-height: 1; }
 .import-date-list { max-height: 190px; margin-top: 6px; overflow-y: auto; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--surface); }
 .import-date-option { display: flex; align-items: center; gap: 8px; min-height: 42px; margin: 0 !important; padding: 6px 9px; color: var(--ink) !important; font-size: 12px !important; font-weight: 500 !important; cursor: pointer; }
 .import-date-option + .import-date-option { border-top: 1px solid var(--line); }
@@ -940,6 +962,10 @@ fieldset { margin: 0; padding: 0; border: 0; }
 .import-date-option strong,
 .import-date-option small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .import-date-option small { margin-top: 1px; color: var(--muted); font-size: 10px; font-weight: 400; }
+.import-date-dialog { width: min(480px, calc(100vw - 24px)); }
+.import-date-dialog-intro { margin-bottom: 12px !important; font-size: 12px; }
+.import-date-dialog .import-date-list { max-height: min(420px, calc(100vh - 220px)); margin-top: 0; }
+.import-date-empty { padding: 18px 12px; color: var(--muted); font-size: 12px; text-align: center; }
 .import-selection-summary {
   display: grid;
   align-content: center;
