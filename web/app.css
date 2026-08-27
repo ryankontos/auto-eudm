@@ -171,6 +171,8 @@ textarea:focus-visible {
 .product-name { font-size: 18px; font-weight: 700; letter-spacing: .01em; }
 
 .header-actions { display: flex; align-items: center; gap: 10px; }
+.connection-status { display: flex; align-items: center; gap: 7px; color: #fff; font-size: 12px; font-weight: 650; }
+.connection-status-dot { width: 8px; height: 8px; border-radius: 50%; background: #72e08e; box-shadow: 0 0 0 2px rgba(114, 224, 142, .2); }
 .theme-button { gap: 6px; }
 #themeIcon { width: 14px; font-size: 14px; line-height: 1; }
 
@@ -427,25 +429,6 @@ input:hover, select:hover, textarea:hover { border-color: #99a8b5; }
 }
 .connection-dialog::backdrop { background: color-mix(in srgb, #111 72%, transparent); }
 .connection-sheet-card { padding: 34px; }
-.connection-sheet-mark {
-  display: grid;
-  width: 42px;
-  height: 42px;
-  place-items: center;
-  border-radius: 12px;
-  color: #fff;
-  background: var(--primary-blue);
-  font-size: 23px;
-  font-weight: 700;
-}
-.connection-sheet-eyebrow {
-  margin: 24px 0 5px;
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 750;
-  letter-spacing: .08em;
-  text-transform: uppercase;
-}
 .connection-sheet-card h1 { margin: 0; font-size: 25px; letter-spacing: -.02em; }
 .connection-sheet-message { min-height: 42px; margin: 9px 0 0; color: var(--muted); overflow-wrap: anywhere; }
 .connection-sheet-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 26px; }

@@ -19,6 +19,10 @@
   <header class="app-header">
     <div class="product-name">AutoEUDM</div>
     <div class="header-actions">
+      <div id="connectionStatus" class="connection-status" role="status" hidden>
+        <span class="connection-status-dot" aria-hidden="true"></span>
+        <span>Connected</span>
+      </div>
       <button id="historyButton" class="button secondary compact" type="button">Request history</button>
     </div>
   </header>
@@ -221,13 +225,10 @@
 
   <dialog id="connectionDialog" class="connection-dialog">
     <section class="connection-sheet-card" aria-labelledby="connectionSheetTitle">
-      <div class="connection-sheet-mark" aria-hidden="true">↗</div>
-      <p class="connection-sheet-eyebrow">EUDM</p>
       <h1 id="connectionSheetTitle">Checking EUDM connection</h1>
       <p id="connectionSheetMessage" class="connection-sheet-message">Checking your authenticated EUDM session…</p>
       <div class="connection-sheet-actions">
         <button id="connectionAuthenticateButton" class="button primary" type="button">Authenticate in EUDM</button>
-        <button id="connectionContinueButton" class="button secondary" type="button" hidden>Continue</button>
       </div>
     </section>
   </dialog>

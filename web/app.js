@@ -7,7 +7,6 @@ const state = {
   queuePersistTimer: null,
   selectedId: null,
   connection: null,
-  connectionSheetDismissed: false,
   connectionSheetEventsBound: false,
   workbook: null,
   workbookInspection: null,
@@ -75,13 +74,13 @@ const elements = {
   queueTableWrap: $("#queueTableWrap"),
   queueBody: $("#queueBody"),
   queueCounts: $("#queueCounts"),
+  connectionStatus: $("#connectionStatus"),
   queueValidationNotice: $("#queueValidationNotice"),
   queueValidationMessage: $("#queueValidationMessage"),
   connectionDialog: $("#connectionDialog"),
   connectionSheetTitle: $("#connectionSheetTitle"),
   connectionSheetMessage: $("#connectionSheetMessage"),
   connectionAuthenticateButton: $("#connectionAuthenticateButton"),
-  connectionContinueButton: $("#connectionContinueButton"),
   historyButton: $("#historyButton"),
   historyList: $("#historyList"),
   reviewButton: $("#reviewButton"),
@@ -753,6 +752,14 @@ function applyInferredKind(request, status, bulk = request.kind === "bulk_locati
   const kind = kindForStatus(status, bulk);
   const changed = request.kind !== kind;
   const wasUser = request.kind === "user";
+  const userToReturning = changed && wasUser && kind === "location" && String(request.user || "").trim();
+  const returningToUser = changed && !wasUser && kind === "user" && String(request.returning_user || "").trim();
+  const transferredInfo = userToReturning ? request.user_info : request.returning_user_info;
+  const transferredSelected = userToReturning ? request.user_selected : request.returning_user_selected;
+  const transferredValidation = userToReturning ? request.user_validation : request.returning_user_validation;
+  const transferredValidationError = userToReturning
+    ? request.user_validation_error
+    : request.returning_user_validation_error;
   request.kind = kind;
   request.status = status;
   request.group = kind === "user"
@@ -764,12 +771,27 @@ function applyInferredKind(request, status, bulk = request.kind === "bulk_locati
     request.location = null;
     request.returning = false;
     request.returning_user = "";
+    request.returning_user_selected = false;
     request.returning_user_info = null;
     request.returning_user_validation = "empty";
     request.returning_user_validation_error = "";
+    request.returning_user_loading = false;
+    if (returningToUser) {
+      request.user = returningToUser;
+      request.user_selected = Boolean(transferredSelected);
+      request.user_info = transferredInfo || null;
+      request.user_validation = transferredValidation || "pending";
+      request.user_validation_error = transferredValidationError || "";
+      if (!transferredSelected || !transferredInfo) {
+        request.user_validation = "pending";
+        scheduleValidation(request, "user", () => validateUserAfterPause(request, false));
+      }
+    }
     request.serials = request.serials.slice(0, 1);
   } else if (changed) {
     request.user = "";
+    request.user_selected = false;
+    request.user_info = null;
     request.user_validation = "empty";
     request.user_validation_error = "";
     request.location = wasUser || !request.location ? preferredLocation() : request.location;
@@ -780,6 +802,20 @@ function applyInferredKind(request, status, bulk = request.kind === "bulk_locati
       request.returning_user_info = null;
       request.returning_user_validation = "empty";
       request.returning_user_validation_error = "";
+      request.returning_user_selected = false;
+      request.returning_user_loading = false;
+    } else if (userToReturning) {
+      request.returning = true;
+      request.returning_user = userToReturning;
+      request.returning_user_selected = Boolean(transferredSelected);
+      request.returning_user_info = transferredInfo || null;
+      request.returning_user_validation = transferredValidation || "pending";
+      request.returning_user_validation_error = transferredValidationError || "";
+      request.returning_user_loading = !transferredSelected || !transferredInfo;
+      if (!transferredSelected || !transferredInfo) {
+        request.returning_user_validation = "pending";
+        scheduleValidation(request, "returning_user", () => validateUserAfterPause(request, true));
+      }
     }
   }
 }
@@ -1621,7 +1657,10 @@ async function loadSerialSuggestions(request, query, { requireSelection = true }
       request.serial_validation = "valid";
       request.serial_validation_error = "";
       hideSearchResults();
-      if (selectedRequest() === request) setLookupStatus("serial", cachedVerificationMessage("serial"), true);
+      if (selectedRequest() === request) {
+        renderInspector();
+        setLookupStatus("serial", cachedVerificationMessage("serial"), true);
+      }
       verifyCachedValueInBackground("serial", value, false, (freshPayload) => {
         if (!validationStillCurrent(request, "serial", epoch, value)) return;
         const freshAsset = (freshPayload.results || []).find((item) => serialResultMatches(item, value));
@@ -1938,6 +1977,7 @@ function connectionIsReady(status = state.connection) {
 function renderConnectionSheet(status = state.connection) {
   const ready = connectionIsReady(status);
   const stateName = status?.state || "checking";
+  elements.connectionStatus.hidden = stateName !== "connected";
   const account = status?.request_for ? `Signed in as ${status.request_for}.` : "";
   const copy = ready
     ? (stateName === "simulation" ? "Simulation is ready." : account || "Connected to EUDM.")
@@ -1948,13 +1988,12 @@ function renderConnectionSheet(status = state.connection) {
       : stateName === "connecting" ? "Connecting to EUDM" : "EUDM authentication needed";
   elements.connectionSheetMessage.textContent = copy;
   elements.connectionAuthenticateButton.textContent = ready
-    ? "Authenticate again"
-    : stateName === "connecting" ? "Authenticate in EUDM" : "Authenticate in EUDM";
-  elements.connectionContinueButton.hidden = !ready;
-  if (!ready) state.connectionSheetDismissed = false;
-  if (!state.connectionSheetDismissed || !ready) {
-    if (!elements.connectionDialog.open) elements.connectionDialog.showModal();
+    ? "Authenticate again" : "Authenticate in EUDM";
+  if (ready) {
+    if (elements.connectionDialog.open) elements.connectionDialog.close();
+    return;
   }
+  if (!elements.connectionDialog.open) elements.connectionDialog.showModal();
 }
 
 function updateConnection(status) {
@@ -2025,11 +2064,6 @@ function bindConnectionSheetEvents() {
   if (state.connectionSheetEventsBound) return;
   state.connectionSheetEventsBound = true;
   elements.connectionAuthenticateButton.addEventListener("click", connect);
-  elements.connectionContinueButton.addEventListener("click", () => {
-    if (!connectionIsReady()) return;
-    state.connectionSheetDismissed = true;
-    elements.connectionDialog.close();
-  });
   elements.connectionDialog.addEventListener("cancel", (event) => event.preventDefault());
 }
 
