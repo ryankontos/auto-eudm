@@ -621,10 +621,11 @@ class WorkbookImport:
     def prepare(
         self,
         sheet_name: str,
-        selected_date: str,
+        selected_date: str | list[str],
         mode: str,
         location: Location | None = None,
         group_selection: str | int | None = None,
+        group_selections: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if sheet_name not in self.sheets:
             raise eudm.EUDMError("Choose one of the workbook's available sheets.")
@@ -634,19 +635,65 @@ class WorkbookImport:
             raise eudm.EUDMError("Choose what to import.")
         if "all" in selected_modes:
             selected_modes = allowed_modes
-        try:
-            chosen_date = date.fromisoformat(selected_date)
-        except ValueError as exc:
-            raise eudm.EUDMError("Choose a valid deployment date.") from exc
-        actions, ignored = inventory.build_actions(
-            self.sheets[sheet_name],
-            chosen_date,
-            ",".join(sorted(selected_modes)),
-            group_selection=group_selection,
-        )
+        raw_dates = selected_date if isinstance(selected_date, list) else [selected_date]
+        if not raw_dates:
+            raise eudm.EUDMError("Choose at least one deployment date.")
+        chosen_dates: list[date] = []
+        for raw_date in raw_dates:
+            try:
+                chosen = date.fromisoformat(str(raw_date).strip())
+            except ValueError as exc:
+                raise eudm.EUDMError("Choose a valid deployment date.") from exc
+            if chosen not in chosen_dates:
+                chosen_dates.append(chosen)
+        selections = group_selections if isinstance(group_selections, dict) else {}
+        if isinstance(group_selection, dict):
+            selections = group_selection
+            group_selection = None
+        actions: list[inventory.Action] = []
+        ignored: Counter[str] = Counter()
+        for chosen_date in chosen_dates:
+            selected_group = selections.get(chosen_date.isoformat(), group_selection)
+            date_actions, date_ignored = inventory.build_actions(
+                self.sheets[sheet_name],
+                chosen_date,
+                ",".join(sorted(selected_modes)),
+                group_selection=selected_group,
+            )
+            actions.extend(date_actions)
+            ignored.update(date_ignored)
         if not actions:
             raise eudm.EUDMError(
-                "No deployable rows remain for that date and selection."
+                "No deployable rows remain for the selected dates and sections."
+            )
+        serial_spellings: dict[str, str] = {}
+        occurrences: dict[str, list[inventory.Action]] = {}
+        for action in actions:
+            key = action.serial.casefold()
+            serial_spellings.setdefault(key, action.serial)
+            occurrences.setdefault(key, []).append(action)
+        duplicate_keys = [
+            key for key, matching in occurrences.items() if len(matching) > 1
+        ]
+        if duplicate_keys:
+            duplicate_details = []
+            for key in duplicate_keys[:12]:
+                locations = "; ".join(
+                    f"{action.group} row {action.row_number} ({action.username})"
+                    for action in occurrences[key]
+                )
+                duplicate_details.append(f"{serial_spellings[key]} — {locations}")
+            extra = len(duplicate_keys) - len(duplicate_details)
+            if extra:
+                duplicate_details.append(
+                    f"and {extra} more duplicate serial{'' if extra == 1 else 's'}"
+                )
+            scope = "selected date/section" if len(chosen_dates) == 1 else "selected dates/sections"
+            raise eudm.EUDMError(
+                f"Duplicate serial numbers were found across the {scope}. "
+                "Each serial can only be imported once; correct the workbook or "
+                "change the date or section selection before continuing: "
+                + "; ".join(duplicate_details)
             )
         requests = []
         for action in actions:
@@ -685,6 +732,7 @@ class WorkbookImport:
         )
         return {
             "requests": requests,
+            "dates": [chosen.isoformat() for chosen in chosen_dates],
             "ignored": [
                 {"reason": reason, "count": count}
                 for reason, count in sorted(ignored.items())

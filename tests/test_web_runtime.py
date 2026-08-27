@@ -11,6 +11,7 @@ import unittest
 from unittest import mock
 
 from auto_eudm import eudm_request as eudm
+from auto_eudm import eudm_inventory_import as inventory
 from auto_eudm import run_reporting
 from auto_eudm.web_models import RequestSpec, WorkbookImport
 from auto_eudm.web_runtime import (
@@ -32,6 +33,9 @@ def bare_application() -> Application:
     app.import_lock = threading.Lock()
     app.import_jobs = {}
     app.pending_imports = {}
+    app.import_payload_path = Path("imports")
+    app.import_payload_lock = threading.Lock()
+    app._persist_import_payload = mock.Mock()
     return app
 
 
@@ -137,6 +141,41 @@ class ImportJobRetentionTests(unittest.TestCase):
 
 
 class ImportPayloadLifecycleTests(unittest.TestCase):
+    def test_persisted_workbook_can_be_restored_after_runtime_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            import_id = "0123456789abcdef0123456789abcdef"
+            app = bare_application()
+            app.import_payload_path = Path(folder)
+            app.import_payload_lock = threading.Lock()
+            app.imports = {}
+            columns = inventory.ImportColumns(
+                username="User",
+                deployment_serial="Device",
+                pending_return="Old Device",
+            )
+            Application._persist_import_payload(
+                app, import_id, "tracking.xlsx", b"workbook", columns
+            )
+
+            restored_workbook = WorkbookImport(
+                "fresh-id", "tracking.xlsx", {"Sheet": []}
+            )
+            restarted = bare_application()
+            restarted.import_payload_path = Path(folder)
+            restarted.import_payload_lock = threading.Lock()
+            restarted.imports = {}
+            with mock.patch.object(
+                WorkbookImport,
+                "from_payload",
+                return_value=restored_workbook,
+            ) as from_payload:
+                restored = restarted.get_import(import_id)
+
+            self.assertIs(restored, restored_workbook)
+            self.assertEqual(restored.import_id, import_id)
+            from_payload.assert_called_once()
+            self.assertEqual(from_payload.call_args.kwargs["columns"], columns)
+
     @mock.patch.object(
         WorkbookImport,
         "inspect_payload",

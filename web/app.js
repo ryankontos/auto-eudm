@@ -79,7 +79,7 @@ const elements = {
   queueValidationMessage: $("#queueValidationMessage"),
   connectionDialog: $("#connectionDialog"),
   connectionSheetTitle: $("#connectionSheetTitle"),
-  connectionSheetMessage: $("#connectionSheetMessage"),
+  connectionLoading: $("#connectionLoading"),
   connectionAuthenticateButton: $("#connectionAuthenticateButton"),
   historyButton: $("#historyButton"),
   historyList: $("#historyList"),
@@ -1978,17 +1978,9 @@ function renderConnectionSheet(status = state.connection) {
   const ready = connectionIsReady(status);
   const stateName = status?.state || "checking";
   elements.connectionStatus.hidden = stateName !== "connected";
-  const account = status?.request_for ? `Signed in as ${status.request_for}.` : "";
-  const copy = ready
-    ? (stateName === "simulation" ? "Simulation is ready." : account || "Connected to EUDM.")
-    : status?.message || "Checking your authenticated EUDM session…";
-  elements.connectionSheetTitle.textContent = ready
-    ? (stateName === "simulation" ? "AutoEUDM is ready" : "Connected to EUDM")
-    : stateName === "checking" ? "Checking EUDM connection"
-      : stateName === "connecting" ? "Connecting to EUDM" : "EUDM authentication needed";
-  elements.connectionSheetMessage.textContent = copy;
-  elements.connectionAuthenticateButton.textContent = ready
-    ? "Authenticate again" : "Authenticate in EUDM";
+  elements.connectionSheetTitle.textContent = "EUDM authentication required";
+  elements.connectionLoading.hidden = !["checking", "connecting"].includes(stateName);
+  elements.connectionAuthenticateButton.textContent = "Authenticate in EUDM";
   if (ready) {
     if (elements.connectionDialog.open) elements.connectionDialog.close();
     return;
@@ -2693,7 +2685,7 @@ function resetImportDialog(mode = state.importMode || "deploy") {
   $("#importVerificationWarnings").hidden = true;
   $("#importVerificationWarningList").innerHTML = "";
   $("#importDateGroups").hidden = true;
-  $("#importGroupInput").innerHTML = "";
+  $("#importGroupList").innerHTML = "";
   $("#importDateGroupsHelp").textContent = "";
   $("#backImportButton").hidden = true;
   $("#prepareImportButton").disabled = true;
@@ -2791,13 +2783,39 @@ function relativeDateLabel(value) {
 function updateImportDates() {
   const sheet = workbookSheet($("#sheetInput").value);
   const dates = sheet?.dates || [];
-  const previous = $("#dateInput").value;
+  const previous = new Set(selectedImportDates());
   const today = new Date();
   const todayValue = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
-  const selected = dates.some((entry) => entry.value === todayValue) ? todayValue : dates.some((entry) => entry.value === previous) ? previous : dates[0]?.value;
-  $("#dateInput").innerHTML = dates.map((entry) => `<option value="${escapeHtml(entry.value)}" ${entry.value === selected ? "selected" : ""}>${escapeHtml(entry.label)} (${escapeHtml(relativeDateLabel(entry.value))})</option>`).join("");
-  if (selected !== previous) $("#importGroupInput").value = "";
+  const retained = dates.filter((entry) => previous.has(entry.value)).map((entry) => entry.value);
+  const selected = retained.length
+    ? retained
+    : dates.some((entry) => entry.value === todayValue)
+      ? [todayValue]
+      : dates[0]?.value ? [dates[0].value] : [];
+  $("#dateInput").innerHTML = dates.map((entry) => {
+    const requests = Number(entry.deployment_count || 0)
+      + Number(entry.returned_device_count || 0)
+      + Number(entry.pending_return_count || 0);
+    return `<label class="import-date-option">
+      <input type="checkbox" data-import-date="${escapeHtml(entry.value)}" ${selected.includes(entry.value) ? "checked" : ""}>
+      <span><strong>${escapeHtml(entry.label)}</strong><small>${escapeHtml(relativeDateLabel(entry.value))} · ${requests} request${requests === 1 ? "" : "s"}</small></span>
+    </label>`;
+  }).join("");
   updateImportCounts();
+}
+
+function selectedImportDates() {
+  return $$('[data-import-date]:checked').map((input) => input.dataset.importDate).filter(Boolean);
+}
+
+function selectedImportDateEntries() {
+  const selected = new Set(selectedImportDates());
+  return (workbookSheet($("#sheetInput").value)?.dates || []).filter((entry) => selected.has(entry.value));
+}
+
+function setSelectedImportDates(values) {
+  const selected = new Set((values || []).map((value) => String(value)));
+  $$('[data-import-date]').forEach((input) => { input.checked = selected.has(input.dataset.importDate); });
 }
 
 function selectedImportModes() {
@@ -2809,39 +2827,43 @@ function importModeValue() {
   return modes.length === 3 ? "all" : modes.join(",");
 }
 
-function selectedImportGroup() {
-  const value = $("#importGroupInput").value;
-  return value || null;
+function selectedImportGroupSelections() {
+  return Object.fromEntries(
+    $$('[data-import-group-date]').map((select) => [select.dataset.importGroupDate, select.value || "all"]),
+  );
 }
 
-function updateImportGroupChoices(selected) {
-  const groups = selected?.groups || [];
-  const selector = $("#importGroupInput");
+function updateImportGroupChoices() {
+  const selectedDates = selectedImportDateEntries();
   const wrapper = $("#importDateGroups");
   if (state.importMode === "backlog") {
     wrapper.hidden = true;
-    selector.innerHTML = '<option value="all">All sections</option>';
-    selector.value = "all";
+    $("#importGroupList").innerHTML = "";
     $("#importDateGroupsHelp").textContent = "";
     return;
   }
-  if (groups.length <= 1) {
+  const previous = selectedImportGroupSelections();
+  const groupedDates = selectedDates.filter((entry) => (entry.groups || []).length > 1);
+  if (!groupedDates.length) {
     wrapper.hidden = true;
-    selector.innerHTML = '<option value="all">All sections</option>';
-    selector.value = "all";
+    $("#importGroupList").innerHTML = "";
     $("#importDateGroupsHelp").textContent = "";
     return;
   }
-  const previous = selector.value;
-  const validPrevious = previous === "all" || groups.some((group) => group.value === previous);
-  selector.innerHTML = [
-    '<option value="">Choose a section</option>',
-    ...groups.map((group, index) => `<option value="${escapeHtml(group.value)}">Section ${index + 1} · ${group.eligible_row_count ?? 0} valid-user rows</option>`),
-    '<option value="all">All sections</option>',
-  ].join("");
-  selector.value = validPrevious ? previous : "";
+  $("#importGroupList").innerHTML = groupedDates.map((entry) => {
+    const groups = entry.groups || [];
+    const selected = previous[entry.value];
+    const validPrevious = selected === "all" || groups.some((group) => group.value === selected);
+    return `<label class="import-date-group-row"><span>${escapeHtml(entry.label)}</span><select data-import-group-date="${escapeHtml(entry.value)}">
+      <option value="">Choose a section</option>
+      ${groups.map((group, index) => `<option value="${escapeHtml(group.value)}" ${validPrevious && selected === group.value ? "selected" : ""}>Section ${index + 1} · ${group.eligible_row_count ?? 0} valid-user rows</option>`).join("")}
+      <option value="all" ${validPrevious && (selected === "all" || !selected) ? "selected" : ""}>All sections</option>
+    </select></label>`;
+  }).join("");
   wrapper.hidden = false;
-  $("#importDateGroupsHelp").textContent = `This date appears grouped into ${groups.length} sections. Choose one section or all sections.`;
+  $("#importDateGroupsHelp").textContent = groupedDates.length === 1
+    ? `This date appears grouped into ${groupedDates[0].groups.length} sections. Choose one section or all sections.`
+    : "Some selected dates appear grouped into sections. Choose one section or all sections for each date.";
 }
 
 function updateImportCounts() {
@@ -2853,15 +2875,17 @@ function updateImportCounts() {
     prepareButton.textContent = "Find undeployed devices";
     return;
   }
-  const sheet = workbookSheet($("#sheetInput").value);
-  const selected = sheet?.dates.find((entry) => entry.value === $("#dateInput").value);
-  updateImportGroupChoices(selected);
-  const groupValue = selectedImportGroup();
-  const group = selected?.groups?.find((item) => item.value === groupValue);
-  const counts = groupValue && groupValue !== "all" && group ? group : selected;
-  const deploymentCount = counts?.deployment_count || 0;
-  const returnedDeviceCount = counts?.returned_device_count || 0;
-  const pendingReturnCount = counts?.pending_return_count || 0;
+  updateImportGroupChoices();
+  const selectedDates = selectedImportDateEntries();
+  const groupSelections = selectedImportGroupSelections();
+  const counts = selectedDates.map((entry) => {
+    const groupValue = groupSelections[entry.value];
+    const group = entry.groups?.find((item) => item.value === groupValue);
+    return groupValue && groupValue !== "all" && group ? group : entry;
+  });
+  const deploymentCount = counts.reduce((total, item) => total + Number(item?.deployment_count || 0), 0);
+  const returnedDeviceCount = counts.reduce((total, item) => total + Number(item?.returned_device_count || 0), 0);
+  const pendingReturnCount = counts.reduce((total, item) => total + Number(item?.pending_return_count || 0), 0);
   $("#deploymentImportCount").textContent = `${deploymentCount} request${deploymentCount === 1 ? "" : "s"}`;
   $("#returnedDeviceImportCount").textContent = `${returnedDeviceCount} request${returnedDeviceCount === 1 ? "" : "s"}`;
   $("#pendingReturnImportCount").textContent = `${pendingReturnCount} request${pendingReturnCount === 1 ? "" : "s"}`;
@@ -2869,13 +2893,15 @@ function updateImportCounts() {
   const selectedCount = (modes.includes("deployments") ? deploymentCount : 0)
     + (modes.includes("returned_devices") ? returnedDeviceCount : 0)
     + (modes.includes("pending_returns") ? pendingReturnCount : 0);
-  const groupRequired = (selected?.groups || []).length > 1 && !groupValue;
+  const groupRequired = selectedDates.some((entry) =>
+    (entry.groups || []).length > 1 && !groupSelections[entry.value],
+  );
   const needsLocation = modes.includes("returned_devices") && returnedDeviceCount > 0;
   const missingLocation = needsLocation && !hasCompleteLocation(state.importLocation);
   $("#importLocationFields").hidden = !needsLocation;
   if (needsLocation) renderImportLocationFields();
   const prepareButton = $("#prepareImportButton");
-  prepareButton.disabled = !selected || selectedCount === 0 || missingLocation || groupRequired;
+  prepareButton.disabled = !selectedDates.length || selectedCount === 0 || missingLocation || groupRequired;
   prepareButton.textContent = groupRequired
     ? "Choose a date section"
     : missingLocation ? "Choose a destination" : "Review import";
@@ -3220,8 +3246,8 @@ function importDraftSettings() {
   return {
     mode: state.importMode,
     sheet: $("#sheetInput").value || "",
-    date: $("#dateInput").value || "",
-    group: $("#importGroupInput").value || "",
+    dates: selectedImportDates(),
+    groups: selectedImportGroupSelections(),
     modes: selectedImportModes(),
     location: state.importLocation ? JSON.parse(JSON.stringify(state.importLocation)) : null,
     columns: selectedImportColumns(),
@@ -3336,9 +3362,10 @@ function restoreImportDraftOptions(settings = {}) {
     $("#sheetInput").value = settings.sheet;
   }
   updateImportDates();
-  if (settings.date && [...$("#dateInput").options].some((option) => option.value === settings.date)) {
-    $("#dateInput").value = settings.date;
-  }
+  const savedDates = Array.isArray(settings.dates)
+    ? settings.dates
+    : settings.date ? [settings.date] : [];
+  if (savedDates.length) setSelectedImportDates(savedDates);
   if (Array.isArray(settings.modes) && settings.modes.length) {
     $$('input[name="importMode"]').forEach((input) => { input.checked = settings.modes.includes(input.value); });
   }
@@ -3349,9 +3376,11 @@ function restoreImportDraftOptions(settings = {}) {
   }
   $("#almBacklogIncludeToday").checked = Boolean(settings.backlog_include_today);
   updateBacklogDaysLabel();
-  if (settings.group && [...$("#importGroupInput").options].some((option) => option.value === settings.group)) {
-    $("#importGroupInput").value = settings.group;
-  }
+  updateImportCounts();
+  Object.entries(settings.groups || (settings.group ? { [savedDates[0] || ""]: settings.group } : {})).forEach(([date, group]) => {
+    const select = $$('[data-import-group-date]').find((item) => item.dataset.importGroupDate === date);
+    if (select && [...select.options].some((option) => option.value === group)) select.value = group;
+  });
   updateImportCounts();
 }
 
@@ -3587,7 +3616,8 @@ function renderImportPreview() {
   const returnedDeviceCount = included.filter((request) => request.group === "Returned devices").length;
   const pendingReturnCount = included.filter((request) => request.group === "Pending returns").length;
   $("#importPreviewTitle").textContent = `${deploymentCount} deployments · ${returnedDeviceCount} returned devices · ${pendingReturnCount} pending returns`;
-  $("#importPreviewSubtitle").textContent = `${$("#sheetInput").value} · ${$("#dateInput option:checked").textContent}`;
+  const selectedDateLabels = selectedImportDateEntries().map((entry) => entry.label);
+  $("#importPreviewSubtitle").textContent = `${$("#sheetInput").value} · ${selectedDateLabels.join(", ")}`;
   $("#importPreviewCount").textContent = `${included.length} selected`;
 
   const groups = [
@@ -4154,14 +4184,18 @@ async function prepareImport() {
       return;
     }
     if (!mode) throw new Error("Select at least one type of deployment to import.");
-    const groupSelection = selectedImportGroup();
-    const selectedDate = workbookSheet($("#sheetInput").value)?.dates.find((entry) => entry.value === $("#dateInput").value);
-    if ((selectedDate?.groups || []).length > 1 && !groupSelection) {
-      throw new Error("Choose a date section to import, or choose all sections.");
+    const selectedDates = selectedImportDates();
+    if (!selectedDates.length) throw new Error("Choose at least one deployment date.");
+    const groupSelections = selectedImportGroupSelections();
+    const selectedDateEntries = selectedImportDateEntries();
+    if (selectedDateEntries.some((entry) => (entry.groups || []).length > 1 && !groupSelections[entry.value])) {
+      throw new Error("Choose a date section for each grouped date, or choose all sections.");
     }
-    const selectedReturnedCount = selectedDate?.groups?.find((item) => item.value === groupSelection)?.returned_device_count
-      ?? (groupSelection === "all" ? selectedDate?.returned_device_count : 0)
-      ?? 0;
+    const selectedReturnedCount = selectedDateEntries.reduce((total, entry) => {
+      const groupValue = groupSelections[entry.value];
+      const group = entry.groups?.find((item) => item.value === groupValue);
+      return total + Number((groupValue && groupValue !== "all" ? group : entry)?.returned_device_count || 0);
+    }, 0);
     if (selectedReturnedCount > 0 && !hasCompleteLocation(state.importLocation)) {
       throw new Error("Choose a complete destination for returned devices.");
     }
@@ -4170,10 +4204,10 @@ async function prepareImport() {
       body: JSON.stringify({
         import_id: state.workbook.import_id,
         sheet: $("#sheetInput").value,
-        date: $("#dateInput").value,
+        dates: selectedDates,
         mode,
         location: state.importLocation,
-        group_selection: groupSelection || "all",
+        group_selections: groupSelections,
       }),
     });
     payload.requests.forEach((request) => {
@@ -4716,11 +4750,10 @@ function bindEvents() {
   "#importMapNewAssetStatus",
 ].forEach((selector) => $(selector).addEventListener("change", updateImportColumnMapButton));
   $("#sheetInput").addEventListener("change", () => {
-    $("#importGroupInput").value = "";
     updateImportDates();
   });
   $("#dateInput").addEventListener("change", updateImportCounts);
-  $("#importGroupInput").addEventListener("change", updateImportCounts);
+  $("#importDateGroups").addEventListener("change", updateImportCounts);
   $("#almBacklogDaysInput").addEventListener("input", () => {
     updateBacklogDaysLabel();
     saveCurrentImportDraft();

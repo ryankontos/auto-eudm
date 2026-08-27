@@ -464,13 +464,20 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/import/prepare":
             workbook = self.app.get_import(str(payload.get("import_id", "")))
+            selected_dates = payload.get("dates")
+            if not isinstance(selected_dates, list):
+                selected_dates = str(payload.get("date", ""))
+            group_selections = payload.get("group_selections")
+            if group_selections is not None and not isinstance(group_selections, dict):
+                raise eudm.EUDMError("Date section selections were invalid.")
             self._json(
                 workbook.prepare(
                     str(payload.get("sheet", "")),
-                    str(payload.get("date", "")),
+                    selected_dates,
                     str(payload.get("mode", "")),
                     Location.from_json(payload.get("location")) if payload.get("location") else None,
                     payload.get("group_selection"),
+                    group_selections=group_selections,
                 )
             )
             return

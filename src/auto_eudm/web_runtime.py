@@ -1012,6 +1012,8 @@ class Application:
         self.import_drafts_path = ROOT / "results" / "web-alm-import-drafts.json"
         self.import_drafts_lock = threading.Lock()
         self.import_drafts = self._load_import_drafts()
+        self.import_payload_path = ROOT / "results" / "web-alm-imports"
+        self.import_payload_lock = threading.Lock()
         self.request_queue_path = ROOT / "results" / "web-request-queue.json"
         self.request_queue_lock = threading.Lock()
         self.request_queue = self._load_request_queue()
@@ -1447,6 +1449,86 @@ class Application:
                 first = next(iter(self.imports))
                 self.imports.pop(first, None)
 
+    def _import_payload_paths(self, import_id: str) -> tuple[Path, Path] | None:
+        try:
+            parsed = uuid.UUID(str(import_id))
+        except (ValueError, AttributeError, TypeError):
+            return None
+        safe_id = parsed.hex
+        return (
+            self.import_payload_path / f"{safe_id}.workbook",
+            self.import_payload_path / f"{safe_id}.json",
+        )
+
+    def _persist_import_payload(
+        self,
+        import_id: str,
+        filename: str,
+        payload: bytes,
+        columns: inventory.ImportColumns | None = None,
+    ) -> None:
+        paths = self._import_payload_paths(import_id)
+        if not paths:
+            raise eudm.EUDMError("The workbook import identifier was invalid.")
+        payload_path, metadata_path = paths
+        metadata = {
+            "import_id": str(import_id),
+            "filename": filename,
+            "columns": {
+                key: getattr(columns, key)
+                for key in (
+                    "username",
+                    "deployment_serial",
+                    "returned_device",
+                    "pending_return",
+                    "enabled",
+                    "device_allocation",
+                    "new_asset_status",
+                )
+            } if columns else None,
+            "saved_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        try:
+            with self.import_payload_lock:
+                self.import_payload_path.mkdir(parents=True, exist_ok=True)
+                payload_tmp = payload_path.with_name(payload_path.name + ".tmp")
+                metadata_tmp = metadata_path.with_name(metadata_path.name + ".tmp")
+                payload_tmp.write_bytes(payload)
+                metadata_tmp.write_text(
+                    json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                payload_tmp.replace(payload_path)
+                metadata_tmp.replace(metadata_path)
+        except OSError as exc:
+            raise eudm.EUDMError(
+                "The workbook could not be saved for import resume."
+            ) from exc
+
+    def _load_import_payload(
+        self,
+        import_id: str,
+    ) -> tuple[str, bytes, inventory.ImportColumns | None] | None:
+        paths = self._import_payload_paths(import_id)
+        if not paths:
+            return None
+        payload_path, metadata_path = paths
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            payload = payload_path.read_bytes()
+        except (OSError, ValueError, TypeError):
+            return None
+        if not isinstance(metadata, dict) or not payload:
+            return None
+        filename = str(metadata.get("filename", "ALM Workbook"))
+        raw_columns = metadata.get("columns")
+        columns = (
+            inventory.columns_from_mapping(raw_columns)
+            if isinstance(raw_columns, dict)
+            else None
+        )
+        return filename, payload, columns
+
     def _register_import_job(self, job: ImportJob) -> None:
         """Retain bounded history without evicting jobs still being polled."""
         with self.import_lock:
@@ -1483,8 +1565,12 @@ class Application:
         with self.import_lock:
             pending = self.pending_imports.pop(import_id, None)
         if not pending:
-            raise eudm.EUDMError("That workbook import expired. Choose the file again.")
-        filename, payload = pending
+            restored = self._load_import_payload(import_id)
+            if not restored:
+                raise eudm.EUDMError("That workbook import expired. Choose the file again.")
+            filename, payload, _ = restored
+        else:
+            filename, payload = pending
         job = ImportJob(job_id=uuid.uuid4().hex, filename=filename)
         self._register_import_job(job)
         threading.Thread(
@@ -1501,6 +1587,7 @@ class Application:
             inspected = WorkbookImport.inspect_payload(job.filename, payload)
             import_id = uuid.uuid4().hex
             inspected["import_id"] = import_id
+            self._persist_import_payload(import_id, job.filename, payload)
             with self.import_lock:
                 self.pending_imports[import_id] = (job.filename, payload)
                 while len(self.pending_imports) > MAX_PENDING_IMPORTS:
@@ -1530,6 +1617,7 @@ class Application:
             workbook = WorkbookImport.from_payload(
                 job.filename, payload, columns=columns, on_progress=progress
             )
+            self._persist_import_payload(workbook.import_id, job.filename, payload, columns)
             self.add_import(workbook)
             job.finish(workbook.summary())
         except eudm.EUDMError as exc:
@@ -1567,8 +1655,24 @@ class Application:
     def get_import(self, import_id: str) -> WorkbookImport:
         with self.import_lock:
             workbook = self.imports.get(import_id)
-        if not workbook:
+        if workbook:
+            return workbook
+        restored = self._load_import_payload(import_id)
+        if not restored:
             raise eudm.EUDMError(
                 "That spreadsheet import expired. Choose the file again."
             )
+        filename, payload, columns = restored
+        if columns is None:
+            raise eudm.EUDMError(
+                "That workbook still needs its columns mapped. Resume the import from the column step."
+            )
+        try:
+            workbook = WorkbookImport.from_payload(filename, payload, columns=columns)
+        except Exception as exc:
+            raise eudm.EUDMError(
+                "The saved workbook could not be restored. Choose the file again."
+            ) from exc
+        workbook.import_id = str(import_id)
+        self.add_import(workbook)
         return workbook

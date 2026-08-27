@@ -225,8 +225,8 @@
 
   <dialog id="connectionDialog" class="connection-dialog">
     <section class="connection-sheet-card" aria-labelledby="connectionSheetTitle">
-      <h1 id="connectionSheetTitle">Checking EUDM connection</h1>
-      <p id="connectionSheetMessage" class="connection-sheet-message">Checking your authenticated EUDM session…</p>
+      <h1 id="connectionSheetTitle">EUDM authentication required</h1>
+      <div id="connectionLoading" class="connection-loading" role="status" aria-label="Checking EUDM authentication" hidden></div>
       <div class="connection-sheet-actions">
         <button id="connectionAuthenticateButton" class="button primary" type="button">Authenticate in EUDM</button>
       </div>
@@ -371,18 +371,19 @@
               <label>Sheet
                 <select id="sheetInput"></select>
               </label>
-              <label id="importDatePicker">Deployment date
-                <select id="dateInput"></select>
-              </label>
+              <div id="importDatePicker" class="import-date-picker">
+                <strong>Deployment dates</strong>
+                <small>Select one or more days</small>
+                <div id="dateInput" class="import-date-list" role="group" aria-label="Deployment dates"></div>
+              </div>
               <div id="importDateSummary" class="import-selection-summary" role="status" hidden>
                 <strong>Backlog date range</strong>
                 <small id="importDateSummaryDetail">Use the range below to find undeployed devices.</small>
               </div>
             </div>
             <div id="importDateGroups" class="import-date-groups" hidden>
-              <label>Date sections
-                <select id="importGroupInput"></select>
-              </label>
+              <strong>Date sections</strong>
+              <div id="importGroupList"></div>
               <small id="importDateGroupsHelp"></small>
             </div>
             <div id="almDeployOptions">

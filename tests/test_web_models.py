@@ -138,6 +138,75 @@ class RequestValidationTests(unittest.TestCase):
 
 
 class WorkbookUploadTests(unittest.TestCase):
+    def test_workbook_prepare_accepts_multiple_dates(self) -> None:
+        rows = [
+            inventory.SheetRow(
+                row_number=2,
+                deployment_date=date(2025, 2, 3),
+                username="first.user",
+                deployment_serial="SERIAL123",
+                returned_device_serial=None,
+                pending_return_serial=None,
+                marked_red=False,
+                enabled=True,
+            ),
+            inventory.SheetRow(
+                row_number=3,
+                deployment_date=date(2025, 2, 4),
+                username="second.user",
+                deployment_serial="SERIAL456",
+                returned_device_serial=None,
+                pending_return_serial=None,
+                marked_red=False,
+                enabled=True,
+            ),
+        ]
+        workbook = WorkbookImport("import-multiple", "tracking.xlsx", {"Sheet": rows})
+
+        payload = workbook.prepare(
+            "Sheet",
+            ["2025-02-03", "2025-02-04"],
+            "deployments",
+        )
+
+        self.assertEqual(
+            [request["serials"][0] for request in payload["requests"]],
+            ["SERIAL123", "SERIAL456"],
+        )
+        self.assertEqual(payload["dates"], ["2025-02-03", "2025-02-04"])
+
+    def test_workbook_prepare_rejects_duplicates_across_dates(self) -> None:
+        rows = [
+            inventory.SheetRow(
+                row_number=2,
+                deployment_date=date(2025, 2, 3),
+                username="first.user",
+                deployment_serial="SERIAL123",
+                returned_device_serial=None,
+                pending_return_serial=None,
+                marked_red=False,
+                enabled=True,
+            ),
+            inventory.SheetRow(
+                row_number=3,
+                deployment_date=date(2025, 2, 4),
+                username="second.user",
+                deployment_serial="SERIAL123",
+                returned_device_serial=None,
+                pending_return_serial=None,
+                marked_red=False,
+                enabled=True,
+            ),
+        ]
+        workbook = WorkbookImport("import-duplicate-dates", "tracking.xlsx", {"Sheet": rows})
+
+        with self.assertRaisesRegex(eudm.EUDMError, "selected dates/sections"):
+            workbook.prepare(
+                "Sheet",
+                ["2025-02-03", "2025-02-04"],
+                "deployments",
+            )
+
     def test_workbook_prepare_persists_device_allocation(self) -> None:
         row = inventory.SheetRow(
             row_number=2,

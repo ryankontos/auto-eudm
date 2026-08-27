@@ -418,20 +418,20 @@ input:hover, select:hover, textarea:hover { border-color: #99a8b5; }
 .queue-validation-notice strong { color: var(--danger-strong); font-size: 12px; overflow-wrap: anywhere; }
 
 .connection-dialog {
-  width: min(560px, calc(100vw - 32px));
+  width: min(420px, calc(100vw - 32px));
   max-width: none;
   padding: 0;
   border: 0;
-  border-radius: 14px;
+  border-radius: 8px;
   color: var(--ink);
   background: var(--surface);
   box-shadow: var(--shadow);
 }
 .connection-dialog::backdrop { background: color-mix(in srgb, #111 72%, transparent); }
-.connection-sheet-card { padding: 34px; }
-.connection-sheet-card h1 { margin: 0; font-size: 25px; letter-spacing: -.02em; }
-.connection-sheet-message { min-height: 42px; margin: 9px 0 0; color: var(--muted); overflow-wrap: anywhere; }
-.connection-sheet-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 26px; }
+.connection-sheet-card { padding: 24px 26px; }
+.connection-sheet-card h1 { margin: 0; font-size: 19px; font-weight: 600; letter-spacing: 0; }
+.connection-loading { width: 20px; height: 20px; margin-top: 18px; border: 2px solid var(--control-muted); border-top-color: var(--primary-blue); border-radius: 50%; animation: activity-spin .75s linear infinite; }
+.connection-sheet-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
 
 .queue-table-wrap { flex: 1; min-height: 0; overflow: auto; }
 .queue-toolbar {
@@ -926,6 +926,20 @@ fieldset { margin: 0; padding: 0; border: 0; }
 .two-column-form { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 16px; }
 .two-column-form label { color: var(--muted); font-size: 13px; font-weight: 650; }
 .two-column-form select { width: 100%; margin-top: 6px; color: var(--ink); font-size: 14px; }
+.import-date-picker { min-width: 0; color: var(--muted); font-size: 13px; font-weight: 650; }
+.import-date-picker > strong,
+.import-date-picker > small { display: block; }
+.import-date-picker > strong { color: var(--muted); }
+.import-date-picker > small { margin-top: 2px; font-size: 11px; font-weight: 400; }
+.import-date-list { max-height: 190px; margin-top: 6px; overflow-y: auto; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--surface); }
+.import-date-option { display: flex; align-items: center; gap: 8px; min-height: 42px; margin: 0 !important; padding: 6px 9px; color: var(--ink) !important; font-size: 12px !important; font-weight: 500 !important; cursor: pointer; }
+.import-date-option + .import-date-option { border-top: 1px solid var(--line); }
+.import-date-option:hover { background: var(--surface-hover); }
+.import-date-option input { flex: 0 0 auto; min-height: 0; width: 15px; height: 15px; margin: 0; }
+.import-date-option span { min-width: 0; }
+.import-date-option strong,
+.import-date-option small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.import-date-option small { margin-top: 1px; color: var(--muted); font-size: 10px; font-weight: 400; }
 .import-selection-summary {
   display: grid;
   align-content: center;
@@ -1039,16 +1053,17 @@ fieldset { margin: 0; padding: 0; border: 0; }
 .fixed-status { color: var(--ink); font-size: 11px; font-weight: 650; }
 .import-date-groups {
   display: grid;
-  grid-template-columns: minmax(180px, .7fr) 1.3fr;
   gap: 8px;
-  align-items: end;
   margin-top: 10px;
   padding: 9px 11px;
   border: 1px solid var(--line-strong);
   border-radius: 4px;
   background: var(--surface-alt);
 }
-.import-date-groups label { margin: 0; }
+.import-date-groups > strong { font-size: 12px; }
+#importGroupList { display: grid; gap: 7px; }
+.import-date-group-row { display: grid; grid-template-columns: minmax(150px, .7fr) minmax(0, 1.3fr); gap: 8px; align-items: center; margin: 0 !important; color: var(--muted); font-size: 12px; font-weight: 650; }
+.import-date-group-row select { width: 100%; min-width: 0; }
 .import-date-groups > small { padding-bottom: 8px; color: var(--muted); line-height: 1.35; }
 .import-verification-warning {
   margin: 10px 0;
