@@ -397,7 +397,6 @@ input:hover, select:hover, textarea:hover { border-color: #99a8b5; }
   color: var(--danger-text);
   background: var(--red-soft);
 }
-.connection-gate { justify-content: flex-start; }
 .queue-alert-icon {
   display: grid;
   flex: 0 0 auto;
@@ -410,19 +409,46 @@ input:hover, select:hover, textarea:hover { border-color: #99a8b5; }
   font-size: 11px;
   font-weight: 800;
 }
-.connection-gate-copy { min-width: 0; flex: 1; }
-.connection-gate-copy strong,
-.connection-gate-copy p { display: block; overflow-wrap: anywhere; }
-.connection-gate-copy strong { color: var(--danger-strong); font-size: 12px; }
-.connection-gate-copy p { margin: 2px 0 0; font-size: 11px; }
-.connection-gate .button { flex: 0 0 auto; }
-.connection-gate .button.primary { color: #fff; border-color: #8e3030; background: #a73b3b; }
-.connection-gate .button.primary:hover { background: #8e3030; }
 .queue-validation-notice {
   justify-content: center;
   text-align: center;
 }
 .queue-validation-notice strong { color: var(--danger-strong); font-size: 12px; overflow-wrap: anywhere; }
+
+.connection-dialog {
+  width: min(560px, calc(100vw - 32px));
+  max-width: none;
+  padding: 0;
+  border: 0;
+  border-radius: 14px;
+  color: var(--ink);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+.connection-dialog::backdrop { background: color-mix(in srgb, #111 72%, transparent); }
+.connection-sheet-card { padding: 34px; }
+.connection-sheet-mark {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border-radius: 12px;
+  color: #fff;
+  background: var(--primary-blue);
+  font-size: 23px;
+  font-weight: 700;
+}
+.connection-sheet-eyebrow {
+  margin: 24px 0 5px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.connection-sheet-card h1 { margin: 0; font-size: 25px; letter-spacing: -.02em; }
+.connection-sheet-message { min-height: 42px; margin: 9px 0 0; color: var(--muted); overflow-wrap: anywhere; }
+.connection-sheet-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 26px; }
 
 .queue-table-wrap { flex: 1; min-height: 0; overflow: auto; }
 .queue-toolbar {

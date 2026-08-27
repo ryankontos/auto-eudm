@@ -248,6 +248,9 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
         if path == "/api/import-drafts":
             self._json({"drafts": self.app.import_drafts_json()})
             return
+        if path == "/api/queue":
+            self._json({"requests": self.app.request_queue_json()})
+            return
         if path == "/api/status":
             self._json(self.app.clients.status())
             return
@@ -389,6 +392,9 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/import-drafts":
             self._json({"drafts": self.app.save_import_draft(payload)})
+            return
+        if path == "/api/queue":
+            self._json({"requests": self.app.save_request_queue(payload.get("requests"))})
             return
         if path == "/api/connection/health":
             self._json(self.app.clients.check_connection())

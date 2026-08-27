@@ -362,6 +362,24 @@ class SubmissionHistoryTests(unittest.TestCase):
                 },
             )
 
+    def test_unsubmitted_request_queue_is_persisted_and_loaded(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            queue_path = Path(folder) / "web-request-queue.json"
+            app = bare_application()
+            app.request_queue_path = queue_path
+            app.request_queue_lock = threading.Lock()
+            app.request_queue = []
+            requests = [{"id": "request-1", "serials": ["SERIAL123"], "kind": "user"}]
+
+            self.assertEqual(app.save_request_queue(requests), requests)
+            self.assertEqual(json.loads(queue_path.read_text(encoding="utf-8")), requests)
+
+            loaded = bare_application()
+            loaded.request_queue_path = queue_path
+            loaded.request_queue_lock = threading.Lock()
+            loaded.request_queue = loaded._load_request_queue()
+            self.assertEqual(loaded.request_queue_json(), requests)
+
     def test_parallel_completions_are_all_persisted(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             history_path = Path(folder) / "web-request-history.json"

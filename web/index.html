@@ -20,7 +20,6 @@
     <div class="product-name">AutoEUDM</div>
     <div class="header-actions">
       <button id="historyButton" class="button secondary compact" type="button">Request history</button>
-      <button id="connectButton" class="button secondary compact" type="button">Connect to EUDM</button>
     </div>
   </header>
 
@@ -66,15 +65,6 @@
         <span class="tool-icon import-icon" aria-hidden="true">↓</span>
         <strong>Import ALM Workbook</strong>
         <small>Drop an .xlsx or .xlsm file into the queue</small>
-      </div>
-
-      <div id="connectionGate" class="connection-gate queue-alert" role="alert" hidden>
-        <div class="connection-gate-icon queue-alert-icon" aria-hidden="true">!</div>
-        <div class="connection-gate-copy">
-          <strong id="connectionGateTitle">Connect to EUDM before submitting</strong>
-          <p id="connectionGateMessage">An authenticated EUDM connection is required before requests can be submitted.</p>
-        </div>
-        <button id="connectionGateButton" class="button primary compact" type="button">Connect to EUDM</button>
       </div>
 
       <div id="queueValidationNotice" class="queue-validation-notice queue-alert" role="alert" hidden>
@@ -228,6 +218,19 @@
       </div>
     </aside>
   </main>
+
+  <dialog id="connectionDialog" class="connection-dialog">
+    <section class="connection-sheet-card" aria-labelledby="connectionSheetTitle">
+      <div class="connection-sheet-mark" aria-hidden="true">↗</div>
+      <p class="connection-sheet-eyebrow">EUDM</p>
+      <h1 id="connectionSheetTitle">Checking EUDM connection</h1>
+      <p id="connectionSheetMessage" class="connection-sheet-message">Checking your authenticated EUDM session…</p>
+      <div class="connection-sheet-actions">
+        <button id="connectionAuthenticateButton" class="button primary" type="button">Authenticate in EUDM</button>
+        <button id="connectionContinueButton" class="button secondary" type="button" hidden>Continue</button>
+      </div>
+    </section>
+  </dialog>
 
   <dialog id="newRequestDialog" class="modal request-sheet">
     <div class="modal-card request-sheet-card">

@@ -48,6 +48,8 @@ MAX_ALM_IMPORT_DRAFTS = 10
 ALM_IMPORT_DRAFT_MAX_AGE = timedelta(hours=6)
 HISTORY_FILENAME = "request-history.json"
 LEGACY_HISTORY_FILENAMES = ("web-request-history.json",)
+MAX_QUEUED_REQUESTS = 1000
+MAX_QUEUED_REQUEST_BYTES = 5 * 1024 * 1024
 
 
 def populate_spec(
@@ -1010,6 +1012,9 @@ class Application:
         self.import_drafts_path = ROOT / "results" / "web-alm-import-drafts.json"
         self.import_drafts_lock = threading.Lock()
         self.import_drafts = self._load_import_drafts()
+        self.request_queue_path = ROOT / "results" / "web-request-queue.json"
+        self.request_queue_lock = threading.Lock()
+        self.request_queue = self._load_request_queue()
         self.verification_cache_path = ROOT / "results" / "web-verification-cache.json"
         self.verification_cache_lock = threading.Lock()
         self.verification_cache = self._load_verification_cache()
@@ -1273,6 +1278,49 @@ class Application:
             self.import_drafts = [draft for draft in self.import_drafts if draft.get("id") != draft_id]
             self._write_import_drafts(self.import_drafts)
             return json.loads(json.dumps(self.import_drafts))
+
+    @staticmethod
+    def _normalise_request_queue(raw: Any) -> list[dict[str, Any]]:
+        if not isinstance(raw, list):
+            raise eudm.EUDMError("The saved request queue was invalid.")
+        if len(raw) > MAX_QUEUED_REQUESTS:
+            raise eudm.EUDMError(
+                f"The saved request queue can contain at most {MAX_QUEUED_REQUESTS} requests."
+            )
+        if any(not isinstance(request, dict) for request in raw):
+            raise eudm.EUDMError("Each saved queue request must be an object.")
+        try:
+            payload = json.dumps(raw, ensure_ascii=False)
+        except (TypeError, ValueError) as exc:
+            raise eudm.EUDMError("The request queue could not be saved.") from exc
+        if len(payload.encode("utf-8")) > MAX_QUEUED_REQUEST_BYTES:
+            raise eudm.EUDMError("The saved request queue is too large.")
+        return json.loads(payload)
+
+    def _load_request_queue(self) -> list[dict[str, Any]]:
+        try:
+            raw = json.loads(self.request_queue_path.read_text(encoding="utf-8"))
+            return self._normalise_request_queue(raw)
+        except (OSError, ValueError, TypeError, eudm.EUDMError):
+            return []
+
+    def _write_request_queue(self, requests: list[dict[str, Any]]) -> None:
+        payload = json.dumps(requests, ensure_ascii=False, indent=2)
+        self.request_queue_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.request_queue_path.with_suffix(".tmp")
+        temporary.write_text(payload + "\n", encoding="utf-8")
+        temporary.replace(self.request_queue_path)
+
+    def request_queue_json(self) -> list[dict[str, Any]]:
+        with self.request_queue_lock:
+            return json.loads(json.dumps(self.request_queue))
+
+    def save_request_queue(self, raw: Any) -> list[dict[str, Any]]:
+        requests = self._normalise_request_queue(raw)
+        with self.request_queue_lock:
+            self._write_request_queue(requests)
+            self.request_queue = requests
+            return json.loads(json.dumps(self.request_queue))
 
     @staticmethod
     def _verification_cache_key(value: str) -> str:

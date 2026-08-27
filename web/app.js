@@ -2,8 +2,13 @@ const state = {
   config: null,
   preferences: {},
   queue: [],
+  queueLoaded: false,
+  persistedQueueSnapshot: null,
+  queuePersistTimer: null,
   selectedId: null,
   connection: null,
+  connectionSheetDismissed: false,
+  connectionSheetEventsBound: false,
   workbook: null,
   workbookInspection: null,
   importPreview: null,
@@ -65,18 +70,18 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 
 const elements = {
-  connectButton: $("#connectButton"),
   concurrency: $("#concurrencyInput"),
   queueEmpty: $("#queueEmpty"),
   queueTableWrap: $("#queueTableWrap"),
   queueBody: $("#queueBody"),
   queueCounts: $("#queueCounts"),
-  connectionGate: $("#connectionGate"),
   queueValidationNotice: $("#queueValidationNotice"),
   queueValidationMessage: $("#queueValidationMessage"),
-  connectionGateTitle: $("#connectionGateTitle"),
-  connectionGateMessage: $("#connectionGateMessage"),
-  connectionGateButton: $("#connectionGateButton"),
+  connectionDialog: $("#connectionDialog"),
+  connectionSheetTitle: $("#connectionSheetTitle"),
+  connectionSheetMessage: $("#connectionSheetMessage"),
+  connectionAuthenticateButton: $("#connectionAuthenticateButton"),
+  connectionContinueButton: $("#connectionContinueButton"),
   historyButton: $("#historyButton"),
   historyList: $("#historyList"),
   reviewButton: $("#reviewButton"),
@@ -248,14 +253,56 @@ async function api(path, options = {}) {
   return payload;
 }
 
-function verifyCachedValueInBackground(kind, query, returning, onResult) {
+function queueSnapshot() {
+  try {
+    return JSON.stringify(state.queue);
+  } catch (_) {
+    return null;
+  }
+}
+
+async function loadPersistedQueue() {
+  const payload = await api("/api/queue");
+  state.queue = Array.isArray(payload.requests) ? payload.requests : [];
+  state.selectedId = state.queue[0]?.id || null;
+  state.persistedQueueSnapshot = queueSnapshot();
+  state.queueLoaded = true;
+}
+
+function persistQueueSoon() {
+  if (!state.queueLoaded) return;
+  const snapshot = queueSnapshot();
+  if (!snapshot || snapshot === state.persistedQueueSnapshot) return;
+  if (state.queuePersistTimer) window.clearTimeout(state.queuePersistTimer);
+  state.queuePersistTimer = window.setTimeout(async () => {
+    state.queuePersistTimer = null;
+    const queuedSnapshot = queueSnapshot();
+    if (!queuedSnapshot || queuedSnapshot === state.persistedQueueSnapshot) return;
+    try {
+      const payload = await api("/api/queue", {
+        method: "POST",
+        body: JSON.stringify({ requests: state.queue }),
+      });
+      if (queuedSnapshot === queueSnapshot()) {
+        state.persistedQueueSnapshot = JSON.stringify(payload.requests || []);
+      } else {
+        persistQueueSoon();
+      }
+    } catch (error) {
+      toast(`Could not save the request queue: ${error.message}`, "error");
+    }
+  }, 250);
+}
+
+function verifyCachedValueInBackground(kind, query, returning, onResult, onError = null) {
   const path = kind === "serial" ? "/api/search/assets" : "/api/search/users";
   const body = kind === "serial"
     ? { query, fresh: true, bypass_cache: true }
     : { query, returning, fresh: true, bypass_cache: true };
   void api(path, { method: "POST", body: JSON.stringify(body) })
     .then(onResult)
-    .catch(() => {
+    .catch((error) => {
+      if (onError) onError(error);
       // The cached verification remains usable when the background refresh
       // cannot reach EUDM. A later foreground verification can retry it.
     });
@@ -1022,6 +1069,7 @@ function renderQueue() {
     button.addEventListener("click", () => removeRequest(button.dataset.remove));
   });
   refreshSelectedValidation();
+  persistQueueSoon();
 }
 
 function refreshSelectedValidation() {
@@ -1459,6 +1507,11 @@ function setLookupStatus(kind, message = "", busy = false) {
   node.textContent = message;
 }
 
+function cachedVerificationMessage(...fields) {
+  const labels = fields.filter(Boolean);
+  return labels.length ? `Verifying cached ${labels.join(" and ")}…` : "";
+}
+
 function setLookupInputStatus(kind, value) {
   if (!value) return setLookupStatus(kind, "");
   if (value.length < 2) return setLookupStatus(kind, "Type at least 2 characters to search.");
@@ -1568,6 +1621,7 @@ async function loadSerialSuggestions(request, query, { requireSelection = true }
       request.serial_validation = "valid";
       request.serial_validation_error = "";
       hideSearchResults();
+      if (selectedRequest() === request) setLookupStatus("serial", cachedVerificationMessage("serial"), true);
       verifyCachedValueInBackground("serial", value, false, (freshPayload) => {
         if (!validationStillCurrent(request, "serial", epoch, value)) return;
         const freshAsset = (freshPayload.results || []).find((item) => serialResultMatches(item, value));
@@ -1579,9 +1633,12 @@ async function loadSerialSuggestions(request, query, { requireSelection = true }
           request.serial_validation = "failed";
           request.serial_validation_error = "Serial number was not found in EUDM.";
         }
+        if (selectedRequest() === request) setLookupStatus("serial", "");
         refreshSelectedValidation();
         updateLookupControlStates(request);
         renderQueue();
+      }, () => {
+        if (selectedRequest() === request) setLookupStatus("serial", "");
       });
     } else if (selectedRequest() === request) renderSearchResults(elements.serialResults, results, (result) => {
       if (!validationStillCurrent(request, "serial", epoch, value)) return;
@@ -1658,6 +1715,7 @@ async function validateUserAfterPause(request, returning = false) {
       request[`${field}_validation_error`] = "";
       request.returning_user_loading = false;
       hideSearchResults();
+      if (selectedRequest() === request) setLookupStatus(returning ? "returning" : "user", cachedVerificationMessage("user"), true);
       verifyCachedValueInBackground("username", value, returning, (freshPayload) => {
         if (!validationStillCurrent(request, field, epoch, value)) return;
         const freshResult = (freshPayload.results || []).find((item) => userResultMatches(item, value));
@@ -1675,9 +1733,12 @@ async function validateUserAfterPause(request, returning = false) {
           request[`${field}_validation`] = "failed";
           request[`${field}_validation_error`] = "User was not found in EUDM.";
         }
+        if (selectedRequest() === request) setLookupStatus(returning ? "returning" : "user", "");
         refreshSelectedValidation();
         updateLookupControlStates(request);
         renderQueue();
+      }, () => {
+        if (selectedRequest() === request) setLookupStatus(returning ? "returning" : "user", "");
       });
     } else if (selectedRequest() === request) renderSearchResults(container, results, (result) => {
       if (!validationStillCurrent(request, field, epoch, value)) return;
@@ -1787,9 +1848,13 @@ async function searchUsers(returning = false) {
         request[`${field}_validation_error`] = "";
         renderInspector();
         renderQueue();
+        if (selectedRequest() === request) setLookupStatus(returning ? "returning" : "user", "");
+      }, () => {
+        if (selectedRequest() === request) setLookupStatus(returning ? "returning" : "user", "");
       });
       renderInspector();
       renderQueue();
+      if (selectedRequest() === request) setLookupStatus(returning ? "returning" : "user", cachedVerificationMessage("user"), true);
       return;
     }
     renderSearchResults(container, payload.results, (result) => {
@@ -1845,13 +1910,13 @@ async function loadLocations({ city: requestedCity, force = false, quiet = false
   elements.locationInput.innerHTML = '<option>Loading locations…</option>';
   try {
     const results = await fetchLocationResults(city, { force });
-    const current = state.queue.find((item) => item.id === requestId);
-    if (current && current.kind !== "user" && current.location?.city === city) {
-      if (state.selectedId === requestId) renderInspector();
+    const current = selectedRequest();
+    if (current?.id === requestId && current.kind !== "user" && current.location?.city === city) {
+      renderInspector();
       renderQueue();
     }
   } catch (error) {
-    if (state.selectedId === requestId) {
+    if (selectedRequest()?.id === requestId) {
       elements.locationInput.innerHTML = '<option value="">Could not load locations</option>';
     }
     if (!quiet) toast(error.message, "error");
@@ -1866,6 +1931,32 @@ function ensureLocationsLoaded(city) {
   loadLocations({ city, quiet: true });
 }
 
+function connectionIsReady(status = state.connection) {
+  return ["connected", "simulation"].includes(status?.state);
+}
+
+function renderConnectionSheet(status = state.connection) {
+  const ready = connectionIsReady(status);
+  const stateName = status?.state || "checking";
+  const account = status?.request_for ? `Signed in as ${status.request_for}.` : "";
+  const copy = ready
+    ? (stateName === "simulation" ? "Simulation is ready." : account || "Connected to EUDM.")
+    : status?.message || "Checking your authenticated EUDM session…";
+  elements.connectionSheetTitle.textContent = ready
+    ? (stateName === "simulation" ? "AutoEUDM is ready" : "Connected to EUDM")
+    : stateName === "checking" ? "Checking EUDM connection"
+      : stateName === "connecting" ? "Connecting to EUDM" : "EUDM authentication needed";
+  elements.connectionSheetMessage.textContent = copy;
+  elements.connectionAuthenticateButton.textContent = ready
+    ? "Authenticate again"
+    : stateName === "connecting" ? "Authenticate in EUDM" : "Authenticate in EUDM";
+  elements.connectionContinueButton.hidden = !ready;
+  if (!ready) state.connectionSheetDismissed = false;
+  if (!state.connectionSheetDismissed || !ready) {
+    if (!elements.connectionDialog.open) elements.connectionDialog.showModal();
+  }
+}
+
 function updateConnection(status) {
   const previousState = state.connection?.state;
   state.connection = status;
@@ -1875,32 +1966,7 @@ function updateConnection(status) {
     state.locationCache.clear();
     state.locationLoading.clear();
   }
-  elements.connectButton.hidden = status.state === "simulation" || status.state === "connecting";
-  elements.connectButton.disabled = status.state === "connecting";
-  elements.connectButton.textContent = status.state === "connected"
-    ? "Connected"
-    : status.state === "expired"
-      ? "Reconnect to EUDM"
-    : status.state === "error" ? "Try again"
-      : status.state === "connecting" ? "Connecting…" : "Connect to EUDM";
-  const needsConnection = !state.config.simulation && !["connected", "simulation"].includes(status.state);
-  elements.connectionGate.hidden = !needsConnection;
-  elements.connectionGateTitle.textContent = status.state === "connecting"
-    ? "Connecting to EUDM…"
-    : status.state === "expired"
-      ? "Your EUDM session has expired"
-    : status.state === "error"
-      ? "EUDM connection needed before submitting"
-      : "Connect to EUDM before submitting";
-  elements.connectionGateMessage.textContent = status.state === "error"
-    ? status.message || "The authenticated EUDM session could not be established."
-    : status.state === "expired"
-      ? "Reconnect to EUDM. Complete SSO in Chrome if it opens, then return here to continue."
-    : status.state === "connecting"
-      ? "Complete authentication if prompted. The queue will unlock when EUDM is ready."
-      : "An authenticated EUDM connection is required. Your prepared queue is saved here.";
-  elements.connectionGateButton.hidden = status.state === "connecting";
-  elements.connectionGateButton.disabled = status.state === "connecting";
+  renderConnectionSheet(status);
   if (status.state === "connected" && !state.liveOptionsLoaded) {
     refreshFormOptions();
   }
@@ -1924,12 +1990,12 @@ async function refreshFormOptions() {
   }
 }
 
-async function refreshConnection() {
+async function refreshConnection({ verify = false } = {}) {
   try {
     const status = await api("/api/status");
     updateConnection(status);
-    if (status.state === "connecting") setTimeout(refreshConnection, 900);
-    if (status.state === "error") toast(status.message, "error");
+    if (status.state === "connecting") setTimeout(() => refreshConnection({ verify }), 900);
+    if (verify && status.state === "connected") await checkConnection();
   } catch (error) {
     toast(error.message, "error");
   }
@@ -1946,15 +2012,25 @@ async function checkConnection() {
 }
 
 async function connect() {
-  elements.connectButton.disabled = true;
   try {
     const status = await api("/api/connect", { method: "POST", body: "{}" });
     updateConnection(status);
-    setTimeout(refreshConnection, 700);
+    setTimeout(() => refreshConnection({ verify: true }), 700);
   } catch (error) {
     toast(error.message, "error");
-    elements.connectButton.disabled = false;
   }
+}
+
+function bindConnectionSheetEvents() {
+  if (state.connectionSheetEventsBound) return;
+  state.connectionSheetEventsBound = true;
+  elements.connectionAuthenticateButton.addEventListener("click", connect);
+  elements.connectionContinueButton.addEventListener("click", () => {
+    if (!connectionIsReady()) return;
+    state.connectionSheetDismissed = true;
+    elements.connectionDialog.close();
+  });
+  elements.connectionDialog.addEventListener("cancel", (event) => event.preventDefault());
 }
 
 function openPasteDialog() {
@@ -2107,6 +2183,8 @@ function makeQuickImportEntry(serial, username) {
     serialValidationError: "",
     userValidationState: username ? "" : "valid",
     userValidationError: "",
+    serialCacheVerification: false,
+    userCacheVerification: false,
     validationChecked: false,
     kind: username ? "user" : "location",
     userStatus: resolveStatus(state.config.user_statuses, state.config.default_user_status),
@@ -2132,6 +2210,7 @@ function syncQuickImportValidation(entry) {
 function resetQuickImportUserValidation(entry) {
   entry.userValidationState = entry.username ? "" : "valid";
   entry.userValidationError = "";
+  entry.userCacheVerification = false;
   entry.returningUserInfo = null;
   entry.validationChecked = false;
   syncQuickImportValidation(entry);
@@ -2193,10 +2272,16 @@ function renderQuickImportReview() {
     const returnInfo = entry.kind === "location" && entry.username
       ? `<div class="quick-import-return ${entry.returningUserInfo ? "" : "unknown"}"><strong>Returning user</strong><span>${escapeHtml(entry.returningUserInfo?.login || entry.username)}</span><small>${entry.returningUserInfo?.columns?.length ? escapeHtml(entry.returningUserInfo.columns.join(" · ")) : "Details unknown — search and verify before submitting. An email will be sent to this user."}</small></div>`
       : "";
+    const cachedFields = [
+      entry.serialCacheVerification ? "serial" : "",
+      entry.userCacheVerification ? "user" : "",
+    ].filter(Boolean);
     const checking = validationState === "checking"
       ? `<small class="import-checking">${entry.serialValidationState === "valid" ? "✓ Serial verified · Verifying the user in EUDM…" : "Verifying the serial and user in EUDM…"}</small>`
       : validationState === "failed"
         ? `<small class="import-check-failed">${escapeHtml(entry.validationError || "Not found in EUDM")}</small>`
+        : cachedFields.length
+          ? `<small class="import-checking">${cachedVerificationMessage(...cachedFields)}</small>`
         : validationState === "valid"
           ? `<small class="import-check-ok">✓ Serial verified${entry.username ? " · User verified" : ""}</small>`
           : "";
@@ -2287,6 +2372,8 @@ async function resolveQuickImportReturningUsers() {
       entry.serialValidationError = "";
       entry.userValidationState = "valid";
       entry.userValidationError = "";
+      entry.serialCacheVerification = false;
+      entry.userCacheVerification = false;
       syncQuickImportValidation(entry);
     });
     renderQuickImportReview();
@@ -2295,6 +2382,8 @@ async function resolveQuickImportReturningUsers() {
   if (!entries.length || !["connected", "simulation"].includes(state.connection?.state)) return;
   entries.forEach((entry) => {
     entry.validationChecked = true;
+    entry.serialCacheVerification = false;
+    entry.userCacheVerification = false;
     if (entry.serialValidationState !== "valid") {
       entry.serialValidationState = "checking";
       entry.serialValidationError = "";
@@ -2335,8 +2424,10 @@ async function resolveQuickImportReturningUsers() {
           entry.serialValidationError = "";
           entry.eudmDeviceType = deviceTypeFromResult(asset, entry.serial);
           if (assetsResult.value?.cached) {
+            entry.serialCacheVerification = true;
             verifyCachedValueInBackground("serial", entry.serial, false, (freshPayload) => {
               const freshAsset = (freshPayload.results || []).find((item) => serialResultMatches(item, entry.serial));
+              entry.serialCacheVerification = false;
               if (freshAsset) {
                 entry.eudmDeviceType = deviceTypeFromResult(freshAsset, entry.serial);
               } else {
@@ -2344,6 +2435,9 @@ async function resolveQuickImportReturningUsers() {
                 entry.serialValidationError = "Serial number was not found in EUDM.";
               }
               syncQuickImportValidation(entry);
+              renderQuickImportReview();
+            }, () => {
+              entry.serialCacheVerification = false;
               renderQuickImportReview();
             });
           }
@@ -2363,8 +2457,10 @@ async function resolveQuickImportReturningUsers() {
           entry.userValidationState = "valid";
           entry.userValidationError = "";
           if (usersResult.value?.cached) {
+            entry.userCacheVerification = true;
             verifyCachedValueInBackground("username", entry.username, entry.kind === "location", (freshPayload) => {
               const freshResult = (freshPayload.results || []).find((item) => userResultMatches(item, entry.username));
+              entry.userCacheVerification = false;
               if (freshResult) {
                 entry.returningUserInfo = { login: bestLogin(freshResult, entry.username), columns: (freshResult.columns || [freshResult.value]).map(String).filter(Boolean) };
               } else {
@@ -2373,6 +2469,9 @@ async function resolveQuickImportReturningUsers() {
                 entry.returningUserInfo = null;
               }
               syncQuickImportValidation(entry);
+              renderQuickImportReview();
+            }, () => {
+              entry.userCacheVerification = false;
               renderQuickImportReview();
             });
           }
@@ -3362,10 +3461,16 @@ function renderBacklogPreview(payload) {
       </select>
       <button class="button secondary compact" type="button" data-model-status-backlog="${escapeHtml(request.id)}" title="Suggest a status from the checked device model">Suggest</button>
     </div>`;
+    const cachedFields = [
+      request.cached_serial_verification ? "serial" : "",
+      request.cached_user_verification ? "user" : "",
+    ].filter(Boolean);
     const validation = request.import_validation === "checking"
       ? '<small class="import-checking">Verifying serial and user details in EUDM…</small>'
       : request.import_validation === "failed"
         ? `<small class="import-check-failed">${escapeHtml(request.import_error || "Could not verify this row")}</small>`
+        : cachedFields.length
+          ? `<small class="import-checking">${cachedVerificationMessage(...cachedFields)}</small>`
         : request.import_validation === "valid"
           ? '<small class="import-check-ok">✓ Serial and user verified</small>'
           : "";
@@ -3486,12 +3591,18 @@ function renderImportPreview() {
               ${statusOptions.map((option) => `<option value="${escapeHtml(option.value)}" ${request.status === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
             </select>
             <button class="button secondary compact" type="button" data-model-status-import="${escapeHtml(request.id)}" title="Suggest a status from the checked device model">Suggest</button>
-          </div>`
+            </div>`
         : `<span class="fixed-status">Deployed - Pending Return</span>`;
+      const cachedFields = [
+        request.cached_serial_verification ? "serial" : "",
+        request.cached_user_verification ? "user" : "",
+      ].filter(Boolean);
       const validation = request.import_validation === "checking"
         ? `<small class="import-checking">${request.group === "Pending returns" ? "Verifying current asset status and user details in EUDM…" : "Verifying serial and user details in EUDM…"}</small>`
         : request.import_validation === "failed"
           ? `<small class="import-check-failed">${escapeHtml(request.import_error || "Not found in EUDM")}</small>`
+          : cachedFields.length
+            ? `<small class="import-checking">${cachedVerificationMessage(...cachedFields)}</small>`
           : request.import_validation === "valid"
             ? `<small class="import-check-ok">✓ ${request.group === "Pending returns" ? "Serial, current status and user verified" : "Serial and user verified"}</small>`
             : "";
@@ -3655,6 +3766,8 @@ async function validateImportPreview(retryRequests = null) {
       request.import_error = "";
       request.import_failed_fields = [];
       request.returning_user_loading = false;
+      request.cached_serial_verification = false;
+      request.cached_user_verification = false;
     });
     if (!requestsToValidate.length) {
       renderImportPreview();
@@ -3668,6 +3781,8 @@ async function validateImportPreview(retryRequests = null) {
     request.import_failed_fields = [];
     request.eudm_device_type = "";
     request.current_asset_status = "";
+    request.cached_serial_verification = false;
+    request.cached_user_verification = false;
     if (request.kind === "location") request.returning_user_loading = true;
   });
   renderImportPreview();
@@ -3725,9 +3840,12 @@ async function validateImportPreview(retryRequests = null) {
       }
       request.import_validation = "valid";
       if (assets.cached) {
+        request.cached_serial_verification = true;
+        renderImportPreview();
         verifyCachedValueInBackground("serial", serial, false, (freshPayload) => {
           if (request.serials[0] !== serial) return;
           const freshAsset = (freshPayload.results || []).find((item) => serialResultMatches(item, serial));
+          request.cached_serial_verification = false;
           if (freshAsset) {
             request.eudm_device_type = deviceTypeFromResult(freshAsset, serial);
             request.current_asset_status = assetStatusFromResult(freshAsset);
@@ -3744,12 +3862,19 @@ async function validateImportPreview(retryRequests = null) {
           }
           renderImportPreview();
           updateImportPrepareButton(payload);
+        }, () => {
+          request.cached_serial_verification = false;
+          renderImportPreview();
+          updateImportPrepareButton(payload);
         });
       }
       if (importValidationEnabled && users.cached) {
+        request.cached_user_verification = true;
+        renderImportPreview();
         verifyCachedValueInBackground("username", username, request.kind === "location", (freshPayload) => {
           if ((request.user || request.returning_user) !== username) return;
           const freshUser = (freshPayload.results || []).find((item) => userResultMatches(item, username));
+          request.cached_user_verification = false;
           if (freshUser) {
             const info = { login: bestLogin(freshUser, username), columns: (freshUser.columns || [freshUser.value]).map(String).filter(Boolean) };
             if (request.kind === "location") request.returning_user_info = info;
@@ -3759,6 +3884,10 @@ async function validateImportPreview(retryRequests = null) {
             request.import_error = "Username was not found in EUDM.";
             request.import_failed_fields = ["username"];
           }
+          renderImportPreview();
+          updateImportPrepareButton(payload);
+        }, () => {
+          request.cached_user_verification = false;
           renderImportPreview();
           updateImportPrepareButton(payload);
         });
@@ -3782,6 +3911,8 @@ async function validateBacklogPreview(payload = state.importPreview) {
     requests.forEach((request) => {
       request.import_validation = "valid";
       request.import_error = "";
+      request.cached_serial_verification = false;
+      request.cached_user_verification = false;
     });
     renderImportPreview();
     updateImportPrepareButton(payload);
@@ -3790,6 +3921,8 @@ async function validateBacklogPreview(payload = state.importPreview) {
   requests.forEach((request) => {
     request.import_validation = "checking";
     request.import_error = "";
+    request.cached_serial_verification = false;
+    request.cached_user_verification = false;
   });
   renderImportPreview();
   updateImportPrepareButton(payload);
@@ -3809,16 +3942,32 @@ async function validateBacklogPreview(payload = state.importPreview) {
       request.eudm_device_type = deviceTypeFromResult(asset, request.serial);
       request.user_info = { login: bestLogin(user, request.username), columns: (user.columns || [user.value]).map(String).filter(Boolean) };
       request.import_validation = "valid";
-      if (assets.cached) verifyCachedValueInBackground("serial", request.serial, false, (freshPayload) => {
-        const freshAsset = (freshPayload.results || []).find((item) => serialResultMatches(item, request.serial));
-        if (freshAsset) request.eudm_device_type = deviceTypeFromResult(freshAsset, request.serial);
+      if (assets.cached) {
+        request.cached_serial_verification = true;
         renderImportPreview();
-      });
-      if (users.cached) verifyCachedValueInBackground("username", request.username, false, (freshPayload) => {
-        const freshUser = (freshPayload.results || []).find((item) => userResultMatches(item, request.username));
-        if (freshUser) request.user_info = { login: bestLogin(freshUser, request.username), columns: (freshUser.columns || [freshUser.value]).map(String).filter(Boolean) };
+        verifyCachedValueInBackground("serial", request.serial, false, (freshPayload) => {
+          const freshAsset = (freshPayload.results || []).find((item) => serialResultMatches(item, request.serial));
+          request.cached_serial_verification = false;
+          if (freshAsset) request.eudm_device_type = deviceTypeFromResult(freshAsset, request.serial);
+          renderImportPreview();
+        }, () => {
+          request.cached_serial_verification = false;
+          renderImportPreview();
+        });
+      }
+      if (users.cached) {
+        request.cached_user_verification = true;
         renderImportPreview();
-      });
+        verifyCachedValueInBackground("username", request.username, false, (freshPayload) => {
+          const freshUser = (freshPayload.results || []).find((item) => userResultMatches(item, request.username));
+          request.cached_user_verification = false;
+          if (freshUser) request.user_info = { login: bestLogin(freshUser, request.username), columns: (freshUser.columns || [freshUser.value]).map(String).filter(Boolean) };
+          renderImportPreview();
+        }, () => {
+          request.cached_user_verification = false;
+          renderImportPreview();
+        });
+      }
     } catch (error) {
       request.import_validation = "failed";
       request.import_error = error.message || "Could not verify this row.";
@@ -4569,8 +4718,7 @@ function bindEvents() {
       renderAll();
     }
   });
-  elements.connectButton.addEventListener("click", connect);
-  elements.connectionGateButton.addEventListener("click", connect);
+  bindConnectionSheetEvents();
   elements.historyButton.addEventListener("click", openHistory);
   $("#duplicateButton").addEventListener("click", duplicateSelected);
   $("#removeButton").addEventListener("click", () => removeRequest(state.selectedId));
@@ -4786,6 +4934,8 @@ function bindEvents() {
 }
 
 async function init() {
+  bindConnectionSheetEvents();
+  renderConnectionSheet();
   try {
     updateThemeButton();
     const updateForSystemTheme = () => {
@@ -4800,6 +4950,7 @@ async function init() {
       api("/api/config"),
       api("/api/preferences"),
     ]);
+    await loadPersistedQueue();
     if (state.preferences.save_alm_import_drafts !== false) await loadImportDrafts();
     const spreadsheetEnabled = Boolean(state.config.spreadsheet_import_enabled);
     $("#importSheetButton").hidden = !spreadsheetEnabled;
@@ -4807,7 +4958,8 @@ async function init() {
     if (spreadsheetSettings) spreadsheetSettings.hidden = !spreadsheetEnabled;
     configureConcurrency(state.config.concurrency);
     bindEvents();
-    await refreshConnection();
+    renderConnectionSheet();
+    await refreshConnection({ verify: true });
     state.connectionHeartbeatTimer = window.setInterval(checkConnection, 30_000);
     renderAll();
   } catch (error) {

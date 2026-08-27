@@ -35,6 +35,7 @@ class FakeApp:
         self.jobs = FakeJobs()
         self.saved_preferences: list[dict[str, object]] = []
         self.import_drafts: list[dict[str, object]] = []
+        self.request_queue: list[dict[str, object]] = []
         self.cached: dict[tuple[str, str], dict[str, object]] = {}
 
     @staticmethod
@@ -60,6 +61,13 @@ class FakeApp:
     def delete_import_draft(self, draft_id: str) -> list[dict[str, object]]:
         self.import_drafts = [draft for draft in self.import_drafts if draft.get("id") != draft_id]
         return self.import_drafts
+
+    def request_queue_json(self) -> list[dict[str, object]]:
+        return self.request_queue
+
+    def save_request_queue(self, requests: object) -> list[dict[str, object]]:
+        self.request_queue = list(requests) if isinstance(requests, list) else []
+        return self.request_queue
 
     def verification_cache_lookup(self, kind: str, value: str) -> dict[str, object] | None:
         return self.cached.get((kind, value.casefold()))
@@ -179,6 +187,17 @@ class LocalWebServerTests(unittest.TestCase):
         response, raw = self.request("DELETE", "/api/import-drafts/draft-1")
         self.assertEqual(response.status, 200)
         self.assertEqual(json.loads(raw), {"drafts": []})
+
+    def test_unsubmitted_queue_is_read_and_written_through_local_api(self) -> None:
+        requests = [{"id": "queue-1", "kind": "user", "serials": ["SERIAL123"]}]
+
+        response, raw = self.request("POST", "/api/queue", payload={"requests": requests})
+        self.assertEqual(response.status, 200)
+        self.assertEqual(json.loads(raw), {"requests": requests})
+
+        response, raw = self.request("GET", "/api/queue")
+        self.assertEqual(response.status, 200)
+        self.assertEqual(json.loads(raw), {"requests": requests})
 
     def test_non_loopback_host_header_is_rejected(self) -> None:
         response, raw = self.request(
