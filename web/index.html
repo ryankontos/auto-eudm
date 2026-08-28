@@ -103,16 +103,20 @@
       </div>
     </section>
 
-    <aside id="inspector" class="inspector" aria-labelledby="inspectorHeading">
-      <div id="inspectorEmpty" class="inspector-empty">
-        <h2>Request details</h2>
-        <p>Select a request to edit it.</p>
-      </div>
-      <div id="inspectorContent" hidden>
-        <div class="inspector-header">
-          <h2 id="inspectorHeading">Request details</h2>
-          <button id="duplicateButton" class="button quiet compact" type="button">Duplicate</button>
+    <div id="inspectorShell" class="inspector-shell">
+      <aside id="inspector" class="inspector is-closed" aria-labelledby="inspectorHeading" aria-hidden="true">
+        <div id="inspectorEmpty" class="inspector-empty">
+          <h2>Request details</h2>
+          <p>Select a request to edit it.</p>
         </div>
+        <div id="inspectorContent" hidden>
+          <div class="inspector-header">
+            <h2 id="inspectorHeading">Request details</h2>
+            <div class="inspector-header-actions">
+              <button id="duplicateButton" class="button quiet compact" type="button">Duplicate</button>
+              <button id="closeInspectorButton" class="icon-button inspector-close-button" type="button" aria-label="Close request editor" title="Close request editor">×</button>
+            </div>
+          </div>
 
         <div id="requestSizeFields" class="form-field">
           <label for="requestSizeInput">Request type</label>
@@ -217,10 +221,11 @@
           </div>
         </div>
 
-        <div id="validationPanel" class="validation-panel" hidden></div>
-        <button id="removeButton" class="button danger full" type="button">Remove request</button>
-      </div>
-    </aside>
+          <div id="validationPanel" class="validation-panel" hidden></div>
+          <button id="removeButton" class="button danger full" type="button">Remove request</button>
+        </div>
+      </aside>
+    </div>
   </main>
 
   <dialog id="connectionDialog" class="connection-dialog">
@@ -551,7 +556,7 @@
   </dialog>
 
   <dialog id="progressDialog" class="modal progress-modal">
-    <div class="modal-card extra-wide">
+    <div class="modal-card extra-wide progress-card">
       <div class="modal-header">
         <h2 id="progressHeading">Submitting requests</h2>
         <button id="closeProgressButton" class="icon-button" type="button" aria-label="Close" hidden>×</button>

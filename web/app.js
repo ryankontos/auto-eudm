@@ -70,6 +70,7 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 
 const elements = {
+  workspace: $(".workspace"),
   concurrency: $("#concurrencyInput"),
   queueEmpty: $("#queueEmpty"),
   queueTableWrap: $("#queueTableWrap"),
@@ -1142,9 +1143,12 @@ function fillSelect(select, options, selected, placeholder = null) {
 
 function renderInspector() {
   const request = selectedRequest();
-  elements.inspector.hidden = !request;
-  elements.inspectorEmpty.hidden = Boolean(request);
-  elements.inspectorContent.hidden = !request;
+  const open = Boolean(request);
+  elements.workspace.classList.toggle("inspector-closed", !open);
+  elements.inspector.classList.toggle("is-closed", !open);
+  elements.inspector.setAttribute("aria-hidden", String(!open));
+  elements.inspectorEmpty.hidden = open;
+  elements.inspectorContent.hidden = !open;
   hideSearchResults();
   setLookupStatus("serial", "");
   setLookupStatus("user", "");
@@ -1485,12 +1489,18 @@ function setLookupStatus(kind, message = "", busy = false) {
   if (!node) return;
   node.hidden = !message;
   node.classList.toggle("busy", Boolean(message && busy));
+  if (message && busy) node.style.setProperty("--spinner-delay", `${-(performance.now() % 700)}ms`);
+  else node.style.removeProperty("--spinner-delay");
   node.textContent = message;
 }
 
 function cachedVerificationMessage(...fields) {
   const labels = fields.filter(Boolean);
   return labels.length ? `Verifying cached ${labels.join(" and ")}…` : "";
+}
+
+function spinnerPhaseStyle(duration) {
+  return `style="--spinner-delay: -${Math.floor(performance.now() % duration)}ms"`;
 }
 
 function setLookupInputStatus(kind, value) {
@@ -2248,11 +2258,11 @@ function renderQuickImportReview() {
       entry.userCacheVerification ? "user" : "",
     ].filter(Boolean);
     const checking = validationState === "checking"
-      ? `<small class="import-checking">${entry.serialValidationState === "valid" ? "✓ Serial verified · Verifying the user in EUDM…" : "Verifying the serial and user in EUDM…"}</small>`
+      ? `<small class="import-checking" ${spinnerPhaseStyle(750)}>${entry.serialValidationState === "valid" ? "✓ Serial verified · Verifying the user in EUDM…" : "Verifying the serial and user in EUDM…"}</small>`
       : validationState === "failed"
         ? `<small class="import-check-failed">${escapeHtml(entry.validationError || "Not found in EUDM")}</small>`
         : cachedFields.length
-          ? `<small class="import-checking">${cachedVerificationMessage(...cachedFields)}</small>`
+          ? `<small class="import-checking" ${spinnerPhaseStyle(750)}>${cachedVerificationMessage(...cachedFields)}</small>`
         : validationState === "valid"
           ? `<small class="import-check-ok">✓ Serial verified${entry.username ? " · User verified" : ""}</small>`
           : "";
@@ -3545,11 +3555,11 @@ function renderBacklogPreview(payload) {
       request.cached_user_verification ? "user" : "",
     ].filter(Boolean);
     const validation = request.import_validation === "checking"
-      ? '<small class="import-checking">Verifying serial and user details in EUDM…</small>'
+      ? `<small class="import-checking" ${spinnerPhaseStyle(750)}>Verifying serial and user details in EUDM…</small>`
       : request.import_validation === "failed"
         ? `<small class="import-check-failed">${escapeHtml(request.import_error || "Could not verify this row")}</small>`
         : cachedFields.length
-          ? `<small class="import-checking">${cachedVerificationMessage(...cachedFields)}</small>`
+          ? `<small class="import-checking" ${spinnerPhaseStyle(750)}>${cachedVerificationMessage(...cachedFields)}</small>`
         : request.import_validation === "valid"
           ? '<small class="import-check-ok">✓ Serial and user verified</small>'
           : "";
@@ -3678,11 +3688,11 @@ function renderImportPreview() {
         request.cached_user_verification ? "user" : "",
       ].filter(Boolean);
       const validation = request.import_validation === "checking"
-        ? '<small class="import-checking">Verifying serial and user details in EUDM…</small>'
+      ? `<small class="import-checking" ${spinnerPhaseStyle(750)}>Verifying serial and user details in EUDM…</small>`
         : request.import_validation === "failed"
           ? `<small class="import-check-failed">${escapeHtml(request.import_error || "Not found in EUDM")}</small>`
           : cachedFields.length
-            ? `<small class="import-checking">${cachedVerificationMessage(...cachedFields)}</small>`
+            ? `<small class="import-checking" ${spinnerPhaseStyle(750)}>${cachedVerificationMessage(...cachedFields)}</small>`
           : request.import_validation === "valid"
             ? '<small class="import-check-ok">✓ Serial and user verified</small>'
             : "";
@@ -4234,17 +4244,38 @@ async function openReview() {
   if (!state.queue.length || elements.reviewButton.disabled) return;
   const validations = queueValidation();
   const invalid = [...validations.values()].filter((errors) => errors.length);
-  $("#reviewList").innerHTML = state.queue.map((request) => {
-    const errors = validations.get(request.id) || [];
-    const secondary = request.source
-      || (request.group && request.group !== kindLabel(request.kind) ? request.group : "");
-    return `<div class="review-row">
-      <span class="${errors.length ? "invalid-mark" : "ready-mark"}">${errors.length ? "!" : "✓"}</span>
-      <div><strong>${escapeHtml(request.serials.join(", ") || "No serial")}</strong><small>${escapeHtml(kindLabel(request.kind))}${request.kind === "bulk_location" ? ` · ${request.serials.length} devices` : ""}</small>${request.device_allocation ? `<small>${escapeHtml(request.device_allocation)}</small>` : ""}</div>
-      <div><strong>${escapeHtml(statusLabel(request))}</strong>${secondary ? `<small>${escapeHtml(secondary)}</small>` : ""}</div>
-      <div><strong>${escapeHtml(destinationLabel(request))}</strong>${errors.length ? `<small>${escapeHtml(errors[0])}</small>` : request.returning_user ? `<small>Returned by ${escapeHtml(request.returning_user)}</small>` : ""}</div>
-    </div>`;
-  }).join("");
+  $("#reviewList").innerHTML = `
+    <div class="review-row review-heading" aria-hidden="true">
+      <span></span><span>Device</span><span>Status</span><span>Destination</span>
+    </div>
+    ${state.queue.map((request) => {
+      const errors = validations.get(request.id) || [];
+      const secondary = request.source
+        || (request.group && request.group !== kindLabel(request.kind) ? request.group : "");
+      return `<div class="review-row">
+        <span class="review-state ${errors.length ? "invalid-mark" : "ready-mark"}" aria-label="${errors.length ? "Needs attention" : "Ready"}">${errors.length ? "!" : "✓"}</span>
+        <div class="review-field review-request">
+          <small class="review-label">Device</small>
+          <strong>${escapeHtml(request.serials.join(", ") || "No serial")}</strong>
+          <small class="review-meta">${escapeHtml(kindLabel(request.kind))}${request.kind === "bulk_location" ? ` · ${request.serials.length} devices` : ""}</small>
+          ${request.device_allocation ? `<small class="review-meta">${escapeHtml(request.device_allocation)}</small>` : ""}
+        </div>
+        <div class="review-field review-status">
+          <small class="review-label">Status</small>
+          <strong>${escapeHtml(statusLabel(request))}</strong>
+          ${secondary ? `<small class="review-meta">${escapeHtml(secondary)}</small>` : ""}
+        </div>
+        <div class="review-field review-destination">
+          <small class="review-label">Destination</small>
+          <strong>${escapeHtml(destinationLabel(request))}</strong>
+          ${errors.length
+            ? `<small class="review-error">${escapeHtml(errors[0])}</small>`
+            : request.returning_user
+              ? `<small class="review-meta">Returned by ${escapeHtml(request.returning_user)}</small>`
+              : ""}
+        </div>
+      </div>`;
+    }).join("")}`;
   $("#submitQueueButton").disabled = invalid.length > 0;
   $("#reviewDialog").showModal();
 }
@@ -4308,11 +4339,18 @@ function renderProgress(job) {
     return `
     <div class="progress-row ${entry.state}">
       <span class="progress-state" aria-label="${progressStateLabel(entry)}">${entry.state === "running" ? `<i class="activity-spinner" style="animation-delay:${spinnerDelay}ms"></i>` : progressStateSymbol(entry)}</span>
-      <div class="progress-device"><strong>${escapeHtml(entry.serials.join(", "))}</strong><small>${escapeHtml(progressDestinationLine(entry))}</small></div>
-      <div class="progress-message"><strong>Step ${entry.step || 0} of ${entry.step_count || 0} · ${escapeHtml(entry.message)}</strong></div>
-      <div class="request-id">${entry.request_id && entry.state !== "running"
+      <div class="progress-device">
+        <small class="progress-field-label">Device</small>
+        <strong>${escapeHtml(entry.serials.join(", "))}</strong>
+        <small class="progress-destination">${escapeHtml(progressDestinationLine(entry))}</small>
+      </div>
+      <div class="progress-message">
+        <small class="progress-field-label">Progress</small>
+        <strong>Step ${entry.step || 0} of ${entry.step_count || 0} · ${escapeHtml(entry.message)}</strong>
+      </div>
+      <div class="progress-request-cell">${entry.request_id && entry.state !== "running"
         ? requestIdDisplay(entry.request_id, "progress-request-id")
-        : ""}</div>
+        : '<span class="progress-pending-id">Request ID pending</span>'}</div>
     </div>`;
   }).join("");
   const finished = job.state === "finished";
@@ -4788,6 +4826,11 @@ function bindEvents() {
   bindConnectionSheetEvents();
   elements.historyButton.addEventListener("click", openHistory);
   $("#duplicateButton").addEventListener("click", duplicateSelected);
+  $("#closeInspectorButton").addEventListener("click", () => {
+    if (state.newRequest) return;
+    state.selectedId = null;
+    renderAll();
+  });
   $("#removeButton").addEventListener("click", () => removeRequest(state.selectedId));
   $("#searchSerialButton").addEventListener("click", searchAssets);
   $("#resetSerialSelection").addEventListener("click", () => resetLookupSelection("serial"));
