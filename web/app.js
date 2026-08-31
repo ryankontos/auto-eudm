@@ -1578,7 +1578,7 @@ function focusRequestSerialInput(request = selectedRequest()) {
   const input = request?.kind === "bulk_location"
     ? bulkSerialMode(request) === "individual" ? $("#bulkSerialAddInput") : elements.serialsInput
     : elements.serialInput;
-  input?.focus();
+  input?.focus({ preventScroll: true });
 }
 
 function setBulkSerialEntryError(message = "") {
@@ -3968,9 +3968,22 @@ function flushImportDraftSave({ keepalive = false } = {}) {
 }
 
 function deleteImportDraft(id) {
+  if (!id) return Promise.resolve();
+  const deletingCurrent = state.importDraftId === id;
+  if (deletingCurrent) {
+    if (importDraftSaveTimer) window.clearTimeout(importDraftSaveTimer);
+    importDraftSaveTimer = null;
+    // A late validation/render callback must not enqueue this draft again after
+    // the requests have been moved into the queue.
+    importDraftSavePending = null;
+    state.importDraftId = null;
+  }
   state.importDrafts = readImportDrafts().filter((draft) => draft.id !== id);
   renderImportDrafts();
-  return flushImportDraftSave().then(() => api(`/api/import-drafts/${encodeURIComponent(id)}`, { method: "DELETE" }))
+  const pendingSave = deletingCurrent
+    ? importDraftSaveInFlight.catch(() => {})
+    : flushImportDraftSave();
+  return pendingSave.then(() => api(`/api/import-drafts/${encodeURIComponent(id)}`, { method: "DELETE" }))
     .then((payload) => {
       state.importDrafts = Array.isArray(payload.drafts) ? payload.drafts : state.importDrafts;
       renderImportDrafts();
