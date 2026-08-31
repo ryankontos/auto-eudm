@@ -76,6 +76,12 @@
         <strong id="queueValidationMessage"></strong>
       </div>
 
+      <div id="submissionNotice" class="submission-notice" role="status" aria-live="polite" hidden>
+        <span class="submission-notice-state" aria-hidden="true"></span>
+        <span class="submission-notice-copy"><strong id="submissionNoticeTitle">Submitting requests</strong><small id="submissionNoticeDetail"></small></span>
+        <button id="viewSubmissionButton" class="button secondary compact" type="button">View progress</button>
+      </div>
+
       <div id="queueEmpty" class="empty-state">
         <h2>Build a request queue</h2>
         <p>Add a request, import serial/user pairs, or import an ALM Workbook.</p>
@@ -118,6 +124,9 @@
             </div>
           </div>
 
+        <div id="inspectorSubmittingNotice" class="inspector-submitting-notice" role="status" hidden>This request is currently being submitted.</div>
+        <fieldset id="requestEditorFields">
+
         <div id="requestSizeFields" class="form-field">
           <label for="requestSizeInput">Request type</label>
           <select id="requestSizeInput">
@@ -137,7 +146,25 @@
             <span><strong id="serialConfirmedValue"></strong></span>
             <button id="resetSerialSelection" class="text-button" type="button">Change</button>
           </div>
-          <textarea id="serialsInput" rows="5" spellcheck="false" placeholder="Enter serials separated by commas, spaces, or new lines" hidden></textarea>
+          <div id="bulkSerialEditor" class="bulk-serial-editor" hidden>
+            <div class="bulk-serial-mode" role="group" aria-label="Bulk serial entry mode">
+              <button id="bulkSerialEntryModeButton" class="button secondary compact active" type="button" aria-pressed="true">Add individually</button>
+              <button id="bulkSerialTextModeButton" class="button secondary compact" type="button" aria-pressed="false">Text field</button>
+            </div>
+            <div id="bulkSerialEntryMode">
+              <div class="bulk-serial-add-row">
+                <input id="bulkSerialAddInput" type="text" autocomplete="off" spellcheck="false" placeholder="Enter a serial number" aria-label="Serial number to add">
+                <button id="addBulkSerialButton" class="button secondary compact" type="button">Add</button>
+              </div>
+              <small class="bulk-serial-help">Press Enter or Add to verify each serial.</small>
+              <div id="bulkSerialEntryError" class="bulk-serial-error" role="alert" hidden></div>
+              <div id="bulkSerialList" class="bulk-serial-list" aria-live="polite"></div>
+            </div>
+            <div id="bulkSerialTextMode" hidden>
+              <textarea id="serialsInput" rows="5" spellcheck="false" placeholder="Enter serials separated by commas, spaces, or new lines" aria-label="Bulk serial numbers"></textarea>
+              <small class="bulk-serial-help">Use the Verify button after editing the list.</small>
+            </div>
+          </div>
           <div id="serialLookupStatus" class="lookup-status" role="status" aria-live="polite" hidden></div>
           <div class="field-actions">
             <span id="serialHint" class="hint"></span>
@@ -222,7 +249,12 @@
         </div>
 
           <div id="validationPanel" class="validation-panel" hidden></div>
-          <button id="removeButton" class="button danger full" type="button">Remove request</button>
+          <div id="inspectorActions" class="inspector-actions">
+            <button id="discardNewRequestButton" class="button secondary" type="button" hidden>Cancel</button>
+            <button id="removeButton" class="button danger" type="button">Remove request</button>
+            <button id="saveNewRequestButton" class="button primary" type="button" disabled hidden>Add to queue</button>
+          </div>
+        </fieldset>
         </div>
       </aside>
     </div>
@@ -236,20 +268,6 @@
         <button id="connectionAuthenticateButton" class="button primary" type="button">Authenticate in EUDM</button>
       </div>
     </section>
-  </dialog>
-
-  <dialog id="newRequestDialog" class="modal request-sheet">
-    <div class="modal-card request-sheet-card">
-      <div class="modal-header">
-        <h2>Prepare request</h2>
-        <button id="cancelNewRequestButton" class="icon-button" type="button" aria-label="Discard request">×</button>
-      </div>
-      <div id="newRequestEditorMount"></div>
-      <div class="modal-actions request-sheet-actions">
-        <button id="discardNewRequestButton" class="button secondary" type="button">Cancel</button>
-        <button id="saveNewRequestButton" class="button primary" type="button" disabled>Add to queue</button>
-      </div>
-    </div>
   </dialog>
 
   <dialog id="pasteDialog" class="modal">
@@ -464,6 +482,7 @@
         <button class="settings-tab" data-settings-tab="validation" type="button">Validation</button>
         <button class="settings-tab" data-settings-tab="spreadsheet" type="button">ALM Workbook</button>
         <button class="settings-tab" data-settings-tab="models" type="button">Device models</button>
+        <button class="settings-tab" data-settings-tab="statuses" type="button">Request statuses</button>
       </div>
       <section data-settings-panel="run">
         <label>Appearance
@@ -500,6 +519,13 @@
         <div id="deviceModelMappings" class="device-model-mappings"></div>
         <button id="addDeviceModelMappingButton" class="button secondary compact" type="button">Add model mapping</button>
       </section>
+      <section data-settings-panel="statuses" hidden>
+        <p class="settings-help">Choose which deployment statuses appear in the request editor and arrange their order. Hidden statuses remain available on existing requests.</p>
+        <div class="request-status-group">
+          <div class="request-status-group-heading"><h3>Request editor statuses</h3><small>Use the arrows to set the order shown in the status list.</small></div>
+          <div id="requestStatuses" class="request-status-list" data-request-status-list></div>
+        </div>
+      </section>
       <div class="modal-actions"><button class="button secondary" value="cancel">Cancel</button><button id="saveSettingsButton" class="button primary" value="default" type="button">Save settings</button></div>
     </form>
   </dialog>
@@ -518,7 +544,7 @@
       <div id="modelStatusError" class="inline-error" hidden></div>
       <div class="modal-actions">
         <button class="button secondary" value="cancel">Cancel</button>
-        <button id="applyModelStatusButton" class="button primary" value="default" type="button" disabled>Apply status</button>
+        <button id="applyModelStatusButton" class="button primary" value="default" type="submit" disabled>Apply status</button>
       </div>
     </form>
   </dialog>
@@ -550,7 +576,7 @@
       <div id="reviewList" class="review-list"></div>
       <div class="modal-actions">
         <button class="button secondary" value="cancel">Back to queue</button>
-        <button id="submitQueueButton" class="button primary" value="default" type="button">Submit requests</button>
+        <button id="submitQueueButton" class="button primary" value="default" type="submit">Submit requests</button>
       </div>
     </form>
   </dialog>
@@ -559,11 +585,11 @@
     <div class="modal-card extra-wide progress-card">
       <div class="modal-header">
         <h2 id="progressHeading">Submitting requests</h2>
-        <button id="closeProgressButton" class="icon-button" type="button" aria-label="Close" hidden>×</button>
+        <button id="closeProgressButton" class="icon-button" type="button" aria-label="Close progress" title="Continue in the background">×</button>
       </div>
       <div class="progress-overview">
         <div class="progress-track"><span id="progressBar"></span></div>
-        <div id="progressCounts">Starting…</div>
+        <div id="progressCounts" role="status" aria-live="polite">Starting…</div>
       </div>
       <div id="progressList" class="progress-list"></div>
       <div id="progressActions" class="modal-actions" hidden>

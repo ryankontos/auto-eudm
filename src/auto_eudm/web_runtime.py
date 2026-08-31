@@ -1068,6 +1068,9 @@ class Application:
             "validate_workbook_import": True,
             "save_alm_import_drafts": True,
             "device_model_mappings": [],
+            "request_statuses": [
+                value for _, value in USER_STATUSES + LOCATION_STATUSES
+            ],
             "import_columns": {
                 "username": "Username",
                 "deployment_serial": "SN",
@@ -1111,6 +1114,45 @@ class Application:
                 raise eudm.EUDMError("A settings toggle had an invalid value.")
             if key in raw:
                 values[key] = raw[key]
+
+        if "request_statuses" in raw:
+            request_statuses = raw["request_statuses"]
+            if isinstance(request_statuses, dict):
+                # Accept the short-lived grouped format so settings saved by
+                # an earlier build are upgraded without being discarded.
+                grouped_user = request_statuses.get("user", [])
+                grouped_location = request_statuses.get("location", [])
+                if not isinstance(grouped_user, list) or not isinstance(grouped_location, list):
+                    raise eudm.EUDMError("Request status settings must be a list.")
+                selected_statuses = [*grouped_user, *grouped_location]
+            elif isinstance(request_statuses, list):
+                selected_statuses = request_statuses
+            else:
+                raise eudm.EUDMError("Request status settings must be a list.")
+            available_statuses = {
+                value for _, value in USER_STATUSES + LOCATION_STATUSES
+            }
+            normalised_statuses: list[str] = []
+            seen: set[str] = set()
+            for status in selected_statuses:
+                value = str(status or "").strip()
+                if value not in available_statuses:
+                    raise eudm.EUDMError(
+                        f"'{value or 'Blank'}' is not a valid deployment status."
+                    )
+                if value in seen:
+                    raise eudm.EUDMError(
+                        f"The deployment status '{value}' is listed more than once."
+                    )
+                seen.add(value)
+                normalised_statuses.append(value)
+            user_statuses = {value for _, value in USER_STATUSES}
+            location_statuses = {value for _, value in LOCATION_STATUSES}
+            if not any(value in user_statuses for value in normalised_statuses):
+                raise eudm.EUDMError("Keep at least one user deployment status visible.")
+            if not any(value in location_statuses for value in normalised_statuses):
+                raise eudm.EUDMError("Keep at least one location deployment status visible.")
+            values["request_statuses"] = normalised_statuses
 
         if "device_model_mappings" in raw:
             mappings = raw["device_model_mappings"]

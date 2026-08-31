@@ -70,6 +70,49 @@ def valid_request(client_id: str) -> RequestSpec:
     )
 
 
+class RequestStatusPreferenceTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.app = Application.__new__(Application)
+        self.app.config = SimpleNamespace(concurrency=4)
+
+    def test_request_statuses_keep_the_saved_order_and_visibility(self) -> None:
+        preferences = self.app._normalise_preferences(
+            {
+                "request_statuses": [
+                    "Pending Rebuild",
+                    "Deployed - New Stock",
+                    "New Stock",
+                ]
+            }
+        )
+
+        self.assertEqual(
+            preferences["request_statuses"],
+            ["Pending Rebuild", "Deployed - New Stock", "New Stock"],
+        )
+
+    def test_legacy_grouped_statuses_are_upgraded(self) -> None:
+        preferences = self.app._normalise_preferences(
+            {
+                "request_statuses": {
+                    "user": ["Deployed - New Stock"],
+                    "location": ["Pending Rebuild"],
+                }
+            }
+        )
+
+        self.assertEqual(
+            preferences["request_statuses"],
+            ["Deployed - New Stock", "Pending Rebuild"],
+        )
+
+    def test_statuses_must_keep_each_destination_available(self) -> None:
+        with self.assertRaises(eudm.EUDMError):
+            self.app._normalise_preferences(
+                {"request_statuses": ["Deployed - New Stock"]}
+            )
+
+
 class ImportJobRetentionTests(unittest.TestCase):
     def test_completed_jobs_are_pruned_from_both_import_stages(self) -> None:
         app = bare_application()
