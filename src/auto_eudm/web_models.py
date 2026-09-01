@@ -152,9 +152,6 @@ class RequestSpec:
     serials: tuple[str, ...]
     status: str
     user: str | None
-    returning_requested: bool
-    returning_user: str | None
-    returning_user_info: dict[str, Any] | None
     location: Location | None
     group: str
     user_info: dict[str, Any] | None = None
@@ -166,22 +163,6 @@ class RequestSpec:
         if not isinstance(raw, dict):
             raise eudm.EUDMError("Each queue entry must be an object.")
         kind = clean(raw.get("kind"))
-        returning = raw.get("returning", False)
-        if not isinstance(returning, bool):
-            raise eudm.EUDMError("The returning-user toggle must be true or false.")
-        returning_user = clean(raw.get("returning_user")) or None
-        raw_returning_info = raw.get("returning_user_info")
-        if raw_returning_info is not None and not isinstance(raw_returning_info, dict):
-            raise eudm.EUDMError("Returning-user details must be an object.")
-        returning_user_info = None
-        if isinstance(raw_returning_info, dict):
-            raw_columns = raw_returning_info.get("columns", [])
-            if not isinstance(raw_columns, list):
-                raise eudm.EUDMError("Returning-user detail columns must be a list.")
-            returning_user_info = {
-                "login": clean(raw_returning_info.get("login")),
-                "columns": [clean(value) for value in raw_columns if clean(value)],
-            }
         raw_user_info = raw.get("user_info")
         if raw_user_info is not None and not isinstance(raw_user_info, dict):
             raise eudm.EUDMError("User details must be an object.")
@@ -205,9 +186,6 @@ class RequestSpec:
             serials=tuple(parse_serials(raw.get("serials"))),
             status=clean(raw.get("status")),
             user=clean(raw.get("user")) or None,
-            returning_requested=returning or bool(returning_user),
-            returning_user=returning_user,
-            returning_user_info=returning_user_info,
             location=location,
             group=clean(raw.get("group")) or "Requests",
             user_info=user_info,
@@ -254,8 +232,6 @@ class RequestSpec:
                 errors.append("Choose the receiving user.")
             elif not is_login_id(self.user):
                 errors.append("The receiving user must be a login ID, not a display name or email address.")
-            if self.returning_requested:
-                errors.append("Deploy to user cannot have a returning user.")
             if self.location:
                 errors.append("Deploy to user cannot include a location.")
         else:
@@ -277,18 +253,6 @@ class RequestSpec:
                 )
             ):
                 errors.append("Choose both the city and the location.")
-            if self.returning_requested and not self.returning_user:
-                errors.append("Choose the returning user or turn off the return option.")
-            elif self.returning_user and not is_login_id(self.returning_user):
-                errors.append("The returning user must be a login ID, not a display name or email address.")
-            if self.returning_user and not self.returning_user_info:
-                errors.append("Search and verify the returning user's details before submitting; an email will be sent to them.")
-            elif self.returning_user and clean(self.returning_user_info.get("login")).casefold() != self.returning_user.casefold():
-                errors.append("Verify the returning user again because the saved user details do not match.")
-            if self.kind == "bulk_location" and self.returning_requested:
-                errors.append(
-                    "Bulk add to location stock cannot include a returning user."
-                )
         return errors
 
     def device_count(self) -> int:
@@ -306,10 +270,7 @@ class RequestSpec:
             "serials": list(self.serials),
             "status": self.status,
             "user": self.user or "",
-            "returning": self.returning_requested,
-            "returning_user": self.returning_user or "",
             "user_info": self.user_info or None,
-            "returning_user_info": self.returning_user_info or None,
             "location": self.location.to_json() if self.location else None,
             "group": self.group,
             "source": self.source or "",
@@ -723,9 +684,6 @@ class WorkbookImport:
                 serials=(action.serial,),
                 status=action.status if action.group == "Pending returns" else "",
                 user=action.username if action.kind == "user" else None,
-                returning_requested=action.kind == "location",
-                returning_user=action.username if action.kind == "location" else None,
-                returning_user_info=None,
                 location=location if action.kind == "location" else None,
                 group=action.group,
                 source=f"{self.filename} · {sheet_name}",

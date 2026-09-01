@@ -118,15 +118,9 @@ const elements = {
   cityInput: $("#cityInput"),
   locationInput: $("#locationInput"),
   locationDetail: $("#locationDetail"),
-  returningUserFields: $("#returningUserFields"),
-  returningToggle: $("#returningToggle"),
-  returningSearch: $("#returningSearch"),
-  returningUserInput: $("#returningUserInput"),
-  returnConfirmation: $("#returnConfirmation"),
   validationPanel: $("#validationPanel"),
   serialResults: $("#serialResults"),
   userResults: $("#userResults"),
-  returningResults: $("#returningResults"),
 };
 
 function escapeHtml(value) {
@@ -329,9 +323,6 @@ function resetPersistedValidationState(request) {
   }
   if (request.user_validation === "checking") {
     request.user_validation = request.user ? "pending" : "empty";
-  }
-  if (request.returning_user_validation === "checking") {
-    request.returning_user_validation = request.returning_user ? "pending" : "empty";
   }
   if (request.kind === "bulk_location" && request.bulk_serial_mode === "individual") {
     request.bulk_serial_states = request.bulk_serial_states || {};
@@ -900,8 +891,6 @@ function makeRequest(kind) {
     eudm_device_types: {},
     user_validation: "empty",
     user_validation_error: "",
-    returning_user_validation: "empty",
-    returning_user_validation_error: "",
     bulk_validation: "empty",
     bulk_validation_error: "",
     bulk_validation_missing: [],
@@ -910,8 +899,6 @@ function makeRequest(kind) {
     bulk_serial_errors: {},
     status: "",
     user: "",
-    returning: false,
-    returning_user: "",
     location: user ? null : preferredLocation(),
     group: kind === "bulk_location" ? "Bulk add to location stock" : user ? "Deploy to user" : "Add to location stock",
     source: "",
@@ -941,14 +928,6 @@ function applyInferredKind(request, status, bulk = request.kind === "bulk_locati
   const kind = kindForStatus(status, bulk);
   const changed = request.kind !== kind;
   const wasUser = request.kind === "user";
-  const userToReturning = changed && wasUser && kind === "location" && String(request.user || "").trim();
-  const returningToUser = changed && !wasUser && kind === "user" && String(request.returning_user || "").trim();
-  const transferredInfo = userToReturning ? request.user_info : request.returning_user_info;
-  const transferredSelected = userToReturning ? request.user_selected : request.returning_user_selected;
-  const transferredValidation = userToReturning ? request.user_validation : request.returning_user_validation;
-  const transferredValidationError = userToReturning
-    ? request.user_validation_error
-    : request.returning_user_validation_error;
   request.kind = kind;
   request.status = status;
   request.group = kind === "user"
@@ -958,24 +937,6 @@ function applyInferredKind(request, status, bulk = request.kind === "bulk_locati
       : "Add to location stock";
   if (kind === "user") {
     request.location = null;
-    request.returning = false;
-    request.returning_user = "";
-    request.returning_user_selected = false;
-    request.returning_user_info = null;
-    request.returning_user_validation = "empty";
-    request.returning_user_validation_error = "";
-    request.returning_user_loading = false;
-    if (returningToUser) {
-      request.user = returningToUser;
-      request.user_selected = Boolean(transferredSelected);
-      request.user_info = transferredInfo || null;
-      request.user_validation = transferredValidation || "pending";
-      request.user_validation_error = transferredValidationError || "";
-      if (!transferredSelected || !transferredInfo) {
-        request.user_validation = "pending";
-        scheduleValidation(request, "user", () => validateUserAfterPause(request, false));
-      }
-    }
     request.serials = request.serials.slice(0, 1);
   } else if (changed) {
     request.user = "";
@@ -985,27 +946,6 @@ function applyInferredKind(request, status, bulk = request.kind === "bulk_locati
     request.user_validation_error = "";
     request.location = wasUser || !request.location ? preferredLocation() : request.location;
     if (kind === "location") request.serials = request.serials.slice(0, 1);
-    if (kind === "bulk_location") {
-      request.returning = false;
-      request.returning_user = "";
-      request.returning_user_info = null;
-      request.returning_user_validation = "empty";
-      request.returning_user_validation_error = "";
-      request.returning_user_selected = false;
-      request.returning_user_loading = false;
-    } else if (userToReturning) {
-      request.returning = true;
-      request.returning_user = userToReturning;
-      request.returning_user_selected = Boolean(transferredSelected);
-      request.returning_user_info = transferredInfo || null;
-      request.returning_user_validation = transferredValidation || "pending";
-      request.returning_user_validation_error = transferredValidationError || "";
-      request.returning_user_loading = !transferredSelected || !transferredInfo;
-      if (!transferredSelected || !transferredInfo) {
-        request.returning_user_validation = "pending";
-        scheduleValidation(request, "returning_user", () => validateUserAfterPause(request, true));
-      }
-    }
   }
 }
 
@@ -1052,7 +992,6 @@ function validateRequest(request) {
     if (request.user && /^[A-Za-z][A-Za-z0-9._-]*$/.test(request.user.trim()) && request.user_validation !== "valid") {
       errors.push("__field_user__");
     }
-    if (request.returning || request.returning_user) errors.push("Deploy to user cannot include a returning user.");
     if (request.location) errors.push("Deploy to user cannot include a location.");
   } else {
     if (!locationStatusValues().has(request.status)) errors.push("Choose a status for Add to location stock.");
@@ -1060,22 +999,6 @@ function validateRequest(request) {
     const location = request.location || {};
     if (![location.city, location.building, location.floor, location.room].every((value) => String(value || "").trim())) {
       errors.push("Choose both the city and the location.");
-    }
-    if (request.returning && !request.returning_user.trim()) {
-      errors.push("Choose the returning user or turn off the return option.");
-    }
-    const returningUserHasLoginFormat = /^[A-Za-z][A-Za-z0-9._-]*$/.test(request.returning_user.trim());
-    const returningUserPending = isVerificationPending(request.returning_user_validation)
-      || request.returning_user_loading;
-    if (request.returning_user && returningUserPending) {
-      errors.push("__field_returning_user__");
-    } else if (request.returning_user && !returningUserHasLoginFormat) {
-      errors.push("The returning username is not in a valid login ID format.");
-    } else if (request.returning_user && !request.returning_user_info) {
-      errors.push(request.returning_user_validation_error || "Search and verify the returning user's details before submitting; an email will be sent to them.");
-    }
-    if (request.kind === "bulk_location" && request.returning) {
-      errors.push("Bulk add to location stock cannot include a returning user.");
     }
   }
   return errors;
@@ -1097,12 +1020,6 @@ function canDeferNewRequestValidation(request, error) {
   }
   if (error === "__field_user__") {
     return Boolean(request.user.trim() && isVerificationPending(request.user_validation));
-  }
-  if (error === "__field_returning_user__") {
-    return Boolean(
-      request.returning_user.trim()
-      && (isVerificationPending(request.returning_user_validation) || request.returning_user_loading),
-    );
   }
   return false;
 }
@@ -1131,13 +1048,6 @@ function validationErrorText(request, error) {
       || (isVerificationPending(request.user_validation)
         ? "User verification is still in progress."
         : "Choose a verified receiving user.");
-  }
-  if (error === "__field_returning_user__") {
-    if (!request.returning_user.trim()) return "Choose the returning user.";
-    return request.returning_user_validation_error
-      || (isVerificationPending(request.returning_user_validation) || request.returning_user_loading
-        ? "Returning user verification is still in progress."
-        : "Choose a verified returning user.");
   }
   return error;
 }
@@ -1474,7 +1384,7 @@ function renderQueue() {
         <td><span class="cell-primary">${escapeHtml(serialDisplay)}</span>${request.kind === "bulk_location" ? `<span class="cell-secondary">${request.serials.length} devices</span>` : ""}${request.device_allocation ? `<span class="cell-secondary">${escapeHtml(request.device_allocation)}</span>` : ""}${requestId}</td>
         <td><span class="cell-primary">${escapeHtml(kindLabel(request.kind))}</span>${secondary ? `<span class="cell-secondary">${escapeHtml(secondary)}</span>` : ""}</td>
         <td title="${escapeHtml(statusLabel(request))}">${escapeHtml(statusLabel(request))}</td>
-        <td title="${escapeHtml(destinationLabel(request))}"><span class="cell-primary">${escapeHtml(destinationLabel(request))}</span>${request.returning_user ? `<span class="cell-secondary">Returned by ${escapeHtml(request.returning_user)}</span>` : ""}</td>
+        <td title="${escapeHtml(destinationLabel(request))}"><span class="cell-primary">${escapeHtml(destinationLabel(request))}</span></td>
         <td class="state-column" title="${escapeHtml(stateTitle)}">${readinessMarkup}</td>
         <td><button class="row-menu" data-remove="${escapeHtml(request.id)}" aria-label="Remove request" title="${submitting ? "This request is being submitted" : "Remove request"}" ${submitting ? "disabled" : ""}><span class="trash-icon" aria-hidden="true"></span></button></td>
       </tr>`;
@@ -1505,12 +1415,6 @@ function renderQueue() {
 function refreshSelectedValidation() {
   const request = selectedRequest();
   if (!request) return;
-  if (request.kind !== "user") {
-    $("#confirmSerial").textContent = request.serials[0] || "Not selected";
-    $("#confirmUser").textContent = request.returning_user || "Not selected";
-    $("#confirmLocation").textContent = destinationLabel(request);
-    renderReturningUserInfo(request);
-  }
   const errors = state.newRequest === request
     ? newRequestValidationErrors(request)
     : queueValidation().get(request.id) || [];
@@ -1725,7 +1629,6 @@ function renderInspector() {
   hideSearchResults();
   setLookupStatus("serial", "");
   setLookupStatus("user", "");
-  setLookupStatus("returning", "");
   if (!request) return;
 
   const bulk = request.kind === "bulk_location";
@@ -1767,20 +1670,6 @@ function renderInspector() {
     const hasExact = hasCompleteLocation(location);
     populateLocationPicker(elements.locationInput, location, results, locationEmptyText(location.city));
     elements.locationDetail.textContent = hasExact ? "" : "Choose a location.";
-    elements.returningUserFields.hidden = bulk;
-    elements.returningToggle.checked = Boolean(request.returning);
-    elements.returningSearch.hidden = !request.returning;
-    elements.returningUserInput.value = request.returning_user || "";
-    elements.returnConfirmation.hidden = !(
-      request.returning
-      && request.returning_user
-      && request.returning_user_selected
-      && request.returning_user_validation === "valid"
-      && request.returning_user_info
-    );
-    $("#confirmSerial").textContent = request.serials[0] || "Not selected";
-    $("#confirmUser").textContent = request.returning_user || "Not selected";
-    $("#confirmLocation").textContent = destinationLabel(request);
     ensureLocationsLoaded(location.city);
   }
 
@@ -1827,11 +1716,6 @@ function changeRequestSize(size) {
     request.user = "";
     request.user_validation = "empty";
     request.user_validation_error = "";
-    request.returning = false;
-    request.returning_user = "";
-    request.returning_user_info = null;
-    request.returning_user_validation = "empty";
-    request.returning_user_validation_error = "";
     request.location = request.location || preferredLocation();
     request.bulk_validation = request.serials.length ? "pending" : "empty";
     request.bulk_validation_error = "";
@@ -1926,7 +1810,7 @@ function duplicateSelected() {
 }
 
 function hideSearchResults() {
-  [elements.serialResults, elements.userResults, elements.returningResults].forEach((node) => {
+  [elements.serialResults, elements.userResults].forEach((node) => {
     node.hidden = true;
     node.replaceChildren();
   });
@@ -2115,9 +1999,8 @@ function setLookupInputStatus(kind, value) {
 function updateLookupControlStates(request = selectedRequest()) {
   const serialButton = $("#searchSerialButton");
   const userButton = $("#searchUserButton");
-  const returningButton = $("#searchReturningButton");
   if (!request) {
-    [serialButton, userButton, returningButton].forEach((button) => { if (button) button.disabled = true; });
+    [serialButton, userButton].forEach((button) => { if (button) button.disabled = true; });
     return;
   }
   serialButton.disabled = request.kind === "bulk_location"
@@ -2126,9 +2009,6 @@ function updateLookupControlStates(request = selectedRequest()) {
   userButton.disabled = request.kind !== "user"
     || elements.userInput.value.trim().length < 2
     || request.user_validation === "checking";
-  returningButton.disabled = !request.returning
-    || elements.returningUserInput.value.trim().length < 2
-    || request.returning_user_validation === "checking";
 }
 
 function confirmedPersonLabel(login, info) {
@@ -2158,33 +2038,22 @@ function renderLookupConfirmations(request, { bulk, user }) {
     elements.userResults.replaceChildren();
   }
 
-  const returningConfirmed = !user && request.returning && Boolean(request.returning_user_selected && request.returning_user);
-  $("#returningSearchControl").hidden = !request.returning || returningConfirmed;
-  $("#returningConfirmed").hidden = !returningConfirmed;
-  const selectedReturningUser = confirmedPersonLabel(request.returning_user || "", request.returning_user_info);
-  $("#returningConfirmedValue").textContent = selectedReturningUser.fullName;
-  $("#returningConfirmedUsername").textContent = selectedReturningUser.login;
-  if (returningConfirmed) {
-    elements.returningResults.hidden = true;
-    elements.returningResults.replaceChildren();
-  }
 }
 
 function resetLookupSelection(kind) {
   const request = selectedRequest();
   if (!request) return;
-  const field = kind === "serial" ? "serial" : kind === "user" ? "user" : "returning_user";
+  const field = kind === "serial" ? "serial" : "user";
   const value = field === "serial" ? request.serials[0] || "" : request[field] || "";
   request[`${field}_selected`] = false;
   request[`${field}_validation_epoch`] = Number(request[`${field}_validation_epoch`] || 0) + 1;
   request[`${field}_validation`] = value ? "pending" : "empty";
   request[`${field}_validation_error`] = "";
-  if (field === "returning_user") request.returning_user_loading = false;
   renderInspector();
-  const input = field === "serial" ? elements.serialInput : field === "user" ? elements.userInput : elements.returningUserInput;
+  const input = field === "serial" ? elements.serialInput : elements.userInput;
   input.focus();
   input.select();
-  setLookupInputStatus(kind === "returning_user" ? "returning" : kind, value);
+  setLookupInputStatus(kind, value);
   updateLookupControlStates(request);
   renderQueue();
 }
@@ -2323,7 +2192,6 @@ async function validateUserAfterPause(request, returning = false) {
       request[`${field}_info`] = info;
       request[`${field}_validation`] = "valid";
       request[`${field}_validation_error`] = "";
-      request.returning_user_loading = false;
       hideSearchResults();
       if (cachedResult) {
         if (selectedRequest() === request) setLookupStatus(returning ? "returning" : "user", cachedVerificationMessage("user"), true);
@@ -2827,10 +2695,11 @@ function makeQuickImportEntry(serial, username) {
 
 function syncQuickImportValidation(entry) {
   const serialFailed = entry.serialValidationState === "failed";
-  const userFailed = entry.userValidationState === "failed";
-  const checking = entry.serialValidationState === "checking" || entry.userValidationState === "checking";
+  const requiresUser = entry.kind === "user";
+  const userFailed = requiresUser && entry.userValidationState === "failed";
+  const checking = entry.serialValidationState === "checking" || (requiresUser && entry.userValidationState === "checking");
   const valid = entry.serialValidationState === "valid"
-    && (!entry.username || entry.userValidationState === "valid");
+    && (!requiresUser || (entry.username && entry.userValidationState === "valid"));
   entry.validationState = checking ? "checking" : serialFailed || userFailed ? "failed" : valid ? "valid" : "";
   entry.validationError = serialFailed
     ? entry.serialValidationError
@@ -2842,10 +2711,9 @@ function syncQuickImportValidation(entry) {
 
 function resetQuickImportUserValidation(entry) {
   entry.validationEpoch = Number(entry.validationEpoch || 0) + 1;
-  entry.userValidationState = entry.username ? "" : "valid";
+  entry.userValidationState = entry.kind === "user" && entry.username ? "" : "valid";
   entry.userValidationError = "";
   entry.userCacheVerification = false;
-  entry.returningUserInfo = null;
   entry.validationChecked = false;
   syncQuickImportValidation(entry);
 }
@@ -2890,9 +2758,7 @@ function renderQuickImportReview() {
     const usernameRequired = entry.kind === "user" && !entry.username;
     const username = entry.kind === "user"
       ? entry.username ? `To ${escapeHtml(entry.username)}` : "Username required"
-      : entry.username
-        ? `Returned by ${escapeHtml(entry.username)}`
-        : "No returning user";
+      : "Add to selected location";
     const statusOptions = singleRequestStatusOptions();
     const selectedStatus = entry.kind === "location" ? entry.locationStatus : entry.userStatus;
     const deploymentStatus = `<label class="quick-import-status">Status
@@ -2903,9 +2769,6 @@ function renderQuickImportReview() {
             <button class="button secondary compact" type="button" data-model-status-pairs="${index}" title="Suggest a status from the checked device model">Suggest</button>
           </div>
         </label>`;
-    const returnInfo = entry.kind === "location" && entry.username
-      ? `<div class="quick-import-return ${entry.returningUserInfo ? "" : "unknown"}"><strong>Returning user</strong><span>${escapeHtml(entry.returningUserInfo?.login || entry.username)}</span><small>${entry.returningUserInfo?.columns?.length ? escapeHtml(entry.returningUserInfo.columns.join(" · ")) : "Details unknown — search and verify before submitting. An email will be sent to this user."}</small></div>`
-      : "";
     const cachedFields = [
       entry.serialCacheVerification ? "serial" : "",
       entry.userCacheVerification ? "user" : "",
@@ -2923,7 +2786,7 @@ function renderQuickImportReview() {
       ? `<div class="quick-import-row-error"><input data-pairs-username="${index}" type="text" autocomplete="off" spellcheck="false" placeholder="Enter username" aria-label="Username for ${escapeHtml(entry.serial)}"><small>Username required for Deploy to user</small></div>`
       : "";
     return `<div class="quick-import-row">
-      <div><strong>${escapeHtml(entry.serial)}</strong><small>${username}</small>${usernameError}${returnInfo}${checking}</div>
+      <div><strong>${escapeHtml(entry.serial)}</strong><small>${username}</small>${usernameError}${checking}</div>
       <div class="quick-import-row-actions">
         ${deploymentStatus}
         <button class="row-menu" type="button" data-pairs-remove="${index}" aria-label="Remove ${escapeHtml(entry.serial)}" title="Remove device"><span class="trash-icon" aria-hidden="true"></span></button>
@@ -3043,7 +2906,7 @@ async function resolveQuickImportReturningUsers() {
       entry.serialValidationState = "checking";
       entry.serialValidationError = "";
     }
-    if (entry.username && entry.userValidationState !== "valid") {
+    if (entry.kind === "user" && entry.username && entry.userValidationState !== "valid") {
       entry.userValidationState = "checking";
       entry.userValidationError = "";
     } else if (!entry.username) {
@@ -3063,7 +2926,7 @@ async function resolveQuickImportReturningUsers() {
           ? settled(api("/api/search/assets", { method: "POST", body: JSON.stringify({ query: entry.serial, fresh: true }) }))
           : Promise.resolve({ value: null }),
         userChecking
-          ? settled(api("/api/search/users", { method: "POST", body: JSON.stringify({ query: entry.username, returning: entry.kind === "location", fresh: true }) }))
+          ? settled(api("/api/search/users", { method: "POST", body: JSON.stringify({ query: entry.username, fresh: true }) }))
           : Promise.resolve({ value: null }),
       ]);
       if (entry.validationEpoch !== validationEpoch) return;
@@ -3110,14 +2973,13 @@ async function resolveQuickImportReturningUsers() {
         if (usersResult.error || !result) {
           entry.userValidationState = "failed";
           entry.userValidationError = usersResult.error?.message || "Username was not found in EUDM.";
-          entry.returningUserInfo = null;
         } else {
           entry.returningUserInfo = { login: bestLogin(result, entry.username), columns: (result.columns || [result.value]).map(String).filter(Boolean) };
           entry.userValidationState = "valid";
           entry.userValidationError = "";
           if (usersResult.value?.cached) {
             entry.userCacheVerification = true;
-            verifyCachedValueInBackground("username", entry.username, entry.kind === "location", (freshPayload) => {
+            verifyCachedValueInBackground("username", entry.username, false, (freshPayload) => {
               if (entry.validationEpoch !== validationEpoch) return;
               const freshResult = (freshPayload.results || []).find((item) => userResultMatches(item, entry.username));
               entry.userCacheVerification = false;
@@ -3148,7 +3010,6 @@ async function resolveQuickImportReturningUsers() {
       if (userChecking) {
         entry.userValidationState = "failed";
         entry.userValidationError = message;
-        entry.returningUserInfo = null;
       }
       syncQuickImportValidation(entry);
     } finally {
@@ -3278,14 +3139,6 @@ function addPairs() {
     request.source = "Quick import";
     if (locationMode) {
       request.location = structuredClone(state.pasteLocation || preferredLocation());
-      request.returning = Boolean(username);
-      request.returning_user = username;
-      request.returning_user_selected = Boolean(username && userValidated);
-      request.returning_user_info = returningUserInfo || null;
-      request.returning_user_validation = username
-        ? (userValidated ? "valid" : (userValidationState || validationState || "pending"))
-        : "empty";
-      request.returning_user_validation_error = username ? (userValidationError || validationError || "") : "";
       request.group = "Quick import · Add to location stock";
     } else {
       request.user = username;
@@ -3303,7 +3156,6 @@ function addPairs() {
   state.selectedId = requests[0].id;
   $("#pasteDialog").close();
   renderAll();
-  resolveQueueReturningUsers(requests);
   toast(`${requests.length} request${requests.length === 1 ? "" : "s"} added.`, "success");
 }
 
@@ -4730,11 +4582,7 @@ async function validateImportPreview(retryRequests = null) {
     request.cached_serial_verification = false;
     request.cached_user_verification = false;
     request.serial_validation = "checking";
-    if (request.kind === "location") {
-      request.returning_user_info = null;
-      request.returning_user_validation = request.returning_user ? "checking" : "empty";
-      request.returning_user_loading = Boolean(request.returning_user);
-    } else {
+    if (request.kind === "user") {
       request.user_info = null;
       request.user_validation = request.user ? "checking" : "empty";
     }
@@ -4744,7 +4592,8 @@ async function validateImportPreview(retryRequests = null) {
   await forEachWithConcurrency(requests, VALIDATION_CONCURRENCY, async (request) => {
     const epoch = request.import_validation_epoch;
     const serial = String(request.serials?.[0] || "").trim();
-    const username = String(request.user || request.returning_user || "").trim();
+    const username = String(request.user || "").trim();
+    const needsUserVerification = request.kind === "user";
     try {
       const [assets, users] = await Promise.all([
         api("/api/search/assets", {
@@ -4754,19 +4603,19 @@ async function validateImportPreview(retryRequests = null) {
             fresh: true,
           }),
         }),
-        importValidationEnabled
-          ? api("/api/search/users", { method: "POST", body: JSON.stringify({ query: username, returning: request.kind === "location", fresh: true }) })
+        needsUserVerification
+          ? api("/api/search/users", { method: "POST", body: JSON.stringify({ query: username, fresh: true }) })
           : Promise.resolve({ results: [] }),
       ]);
       if (!importValidationIsCurrent(payload, request, epoch)) return;
       const asset = (assets.results || []).find((item) => serialResultMatches(item, serial));
-      const user = importValidationEnabled
+      const user = needsUserVerification
         ? (users.results || []).find((item) => userResultMatches(item, username))
         : null;
-      const userInfo = importValidationEnabled ? verifiedUserInfo(user, username) : null;
+      const userInfo = needsUserVerification ? verifiedUserInfo(user, username) : null;
       const missingFields = [];
       if (!asset) missingFields.push("serial");
-      if (importValidationEnabled && !userInfo) missingFields.push("username");
+      if (needsUserVerification && !userInfo) missingFields.push("username");
       if (missingFields.length) {
         const missingLabels = missingFields.map((field) => field === "serial" ? "Serial number" : "Username");
         const validationError = new Error(`${missingLabels.join(" and ")} ${missingLabels.length === 1 ? "was" : "were"} not found in EUDM.`);
@@ -4774,16 +4623,10 @@ async function validateImportPreview(retryRequests = null) {
         throw validationError;
       }
       request.eudm_device_type = deviceTypeFromResult(asset, serial);
-      if (importValidationEnabled) {
-        if (request.kind === "location") {
-          request.returning_user = userInfo.login;
-          request.returning_user_info = userInfo;
-          request.returning_user_validation = "valid";
-        } else {
-          request.user = userInfo.login;
-          request.user_info = userInfo;
-          request.user_validation = "valid";
-        }
+      if (needsUserVerification) {
+        request.user = userInfo.login;
+        request.user_info = userInfo;
+        request.user_validation = "valid";
       }
       request.serial_validation = "valid";
       request.import_validation = "valid";
@@ -4809,25 +4652,22 @@ async function validateImportPreview(retryRequests = null) {
           scheduleImportPreviewUpdate(payload);
         });
       }
-      if (importValidationEnabled && users.cached) {
+      if (needsUserVerification && users.cached) {
         request.cached_user_verification = true;
         scheduleImportPreviewUpdate(payload);
-        verifyCachedValueInBackground("username", username, request.kind === "location", (freshPayload) => {
+        verifyCachedValueInBackground("username", username, false, (freshPayload) => {
           if (!importValidationIsCurrent(payload, request, epoch)) return;
           const freshUser = (freshPayload.results || []).find((item) => userResultMatches(item, username));
           const freshUserInfo = verifiedUserInfo(freshUser, username);
           request.cached_user_verification = false;
           if (freshUserInfo) {
-            if (request.kind === "location") request.returning_user_info = freshUserInfo;
-            else request.user_info = freshUserInfo;
+            request.user_info = freshUserInfo;
           } else {
             request.import_validation = "failed";
-            if (request.kind === "location") request.returning_user_validation = "failed";
-            else request.user_validation = "failed";
+            request.user_validation = "failed";
             addImportFailedField(request, "username");
             request.import_error = "Username was not found in EUDM.";
-            if (request.kind === "location") request.returning_user_info = null;
-            else request.user_info = null;
+            request.user_info = null;
           }
           scheduleImportPreviewUpdate(payload);
         }, () => {
@@ -4842,10 +4682,8 @@ async function validateImportPreview(retryRequests = null) {
       request.import_error = error.message || "Could not validate this request.";
       request.import_failed_fields = error.failedFields || ["serial", "username"];
       request.user_info = null;
-      request.returning_user_info = null;
     } finally {
       if (importValidationIsCurrent(payload, request, epoch)) {
-        request.returning_user_loading = false;
         scheduleImportPreviewUpdate(payload);
       }
     }
@@ -6077,9 +5915,7 @@ function bindEvents() {
     renderQueue();
   });
   $("#searchUserButton").addEventListener("click", () => searchUsers(false));
-  $("#searchReturningButton").addEventListener("click", () => searchUsers(true));
   $("#resetUserSelection").addEventListener("click", () => resetLookupSelection("user"));
-  $("#resetReturningSelection").addEventListener("click", () => resetLookupSelection("returning"));
   $("#loadLocationsButton").addEventListener("click", loadLocations);
   elements.serialInput.addEventListener("input", () => {
     hideSearchResults();
@@ -6164,51 +6000,14 @@ function bindEvents() {
     elements.locationDetail.textContent = "";
     renderQueue();
   });
-  elements.returningToggle.addEventListener("change", () => {
-    const request = selectedRequest();
-    if (!request) return;
-    request.returning = elements.returningToggle.checked;
-    if (!request.returning) {
-      request.returning_user = "";
-      request.returning_user_info = null;
-      request.returning_user_validation = "empty";
-      request.returning_user_validation_error = "";
-      request.returning_user_loading = false;
-    }
-    renderInspector();
-    renderQueue();
-  });
-  elements.returningUserInput.addEventListener("input", () => {
-    hideSearchResults();
-    setLookupStatus("returning", "");
-    const request = selectedRequest();
-    if (!request) return;
-    request.returning_user = elements.returningUserInput.value.trim();
-    request.returning_user_info = null;
-    request.returning_user_validation_epoch = Number(request.returning_user_validation_epoch || 0) + 1;
-    request.returning_user_selected = false;
-    request.returning_user_validation = request.returning_user ? "pending" : "empty";
-    request.returning_user_validation_error = "";
-    request.cached_user_verification = false;
-    request.returning_user_loading = Boolean(request.returning_user);
-    if (request.returning_user) setLookupInputStatus("returning", request.returning_user);
-    if (request.returning_user) scheduleValidation(request, "returning_user", () => validateUserAfterPause(request, true));
-    renderReturningUserInfo(request);
-    refreshSelectedValidation();
-    updateLookupControlStates(request);
-    renderQueue();
-  });
   elements.serialInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !$("#searchSerialButton").disabled) { event.preventDefault(); searchAssets(); }
   });
   elements.userInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !$("#searchUserButton").disabled) { event.preventDefault(); searchUsers(false); }
   });
-  elements.returningUserInput.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && !$("#searchReturningButton").disabled) { event.preventDefault(); searchUsers(true); }
-  });
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && [elements.serialResults, elements.userResults, elements.returningResults].some((node) => !node.hidden)) {
+    if (event.key === "Escape" && [elements.serialResults, elements.userResults].some((node) => !node.hidden)) {
       hideSearchResults();
     }
   });

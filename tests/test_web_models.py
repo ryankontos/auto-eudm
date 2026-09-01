@@ -54,22 +54,6 @@ class RequestValidationTests(unittest.TestCase):
     def test_user_deployment_requires_a_receiving_user(self) -> None:
         self.assertIn("Choose the receiving user.", user_request(user="").validate())
 
-    def test_returning_user_details_must_match_the_selected_login(self) -> None:
-        errors = location_request(
-            returning=True,
-            returning_user="selected.user",
-            returning_user_info={"login": "different.user", "columns": []},
-        ).validate()
-        self.assertTrue(any("do not match" in error for error in errors))
-
-    def test_returning_user_match_is_case_insensitive(self) -> None:
-        errors = location_request(
-            returning=True,
-            returning_user="Selected.User",
-            returning_user_info={"login": "selected.user", "columns": []},
-        ).validate()
-        self.assertEqual(errors, [])
-
     def test_requesting_user_must_be_a_login_id(self) -> None:
         errors = validate_queue([user_request()], "person@example.com")
         self.assertIn("_queue", errors)
@@ -120,21 +104,6 @@ class RequestValidationTests(unittest.TestCase):
     def test_reserved_queue_id_is_rejected(self) -> None:
         errors = validate_queue([user_request(id="_queue")], "valid.user")
         self.assertTrue(any("reserved internal ID" in message for message in errors["_queue"]))
-
-    def test_returning_toggle_must_be_a_json_boolean(self) -> None:
-        with self.assertRaisesRegex(eudm.EUDMError, "true or false"):
-            location_request(returning="false")
-
-    def test_returning_user_columns_must_be_a_json_list(self) -> None:
-        with self.assertRaisesRegex(eudm.EUDMError, "columns must be a list"):
-            location_request(
-                returning=True,
-                returning_user="valid.user",
-                returning_user_info={
-                    "login": "valid.user",
-                    "columns": "Valid User",
-                },
-            )
 
 
 class WorkbookUploadTests(unittest.TestCase):

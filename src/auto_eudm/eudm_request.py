@@ -1188,7 +1188,6 @@ def deploy_device_to_location(
     floor: str,
     room: str,
     cabinet: str | None = None,
-    returning_user: str | None = None,
     bulk: bool = False,
     submit: bool = True,
     on_request_created: Any | None = None,
@@ -1196,8 +1195,6 @@ def deploy_device_to_location(
     """Populate and optionally submit one strict location deployment.
 
     A bulk deployment is one EUDM request containing multiple serial numbers.
-    EUDM does not associate a returning user with that path; callers must create
-    individual location requests when a returning user is required.
     """
     cleaned_serials = [serial.strip() for serial in serials]
     if not cleaned_serials or any(not serial for serial in cleaned_serials):
@@ -1213,10 +1210,6 @@ def deploy_device_to_location(
             "Serial numbers must be at least 6 characters and contain only letters, "
             "numbers, periods, underscores, or hyphens."
         )
-    if bulk and returning_user:
-        raise EUDMError(
-            "Bulk location requests cannot include a returning user; use individual requests."
-        )
     for label, value in (
         ("request-for login ID", request_for),
         ("status", status),
@@ -1230,10 +1223,6 @@ def deploy_device_to_location(
     if not is_login_id(request_for):
         raise EUDMError(
             "The request-for user must be a login ID, not a display name or email address."
-        )
-    if returning_user and not is_login_id(returning_user):
-        raise EUDMError(
-            "The returning user must be a login ID, not a display name or email address."
         )
 
     created = request_step(
@@ -1329,42 +1318,13 @@ def deploy_device_to_location(
             location_value,
         )
 
-        if not bulk and returning_user:
-            # EUDM now exposes the drop-off details directly; the old
-            # “Is this a return from a user” branch is no longer present.
-            add_dropoff = field_by_label(
-                all_items,
-                "Add Name of person who dropped off device",
-                type_="YesNo",
-            )
-            answer(client, request_id, questionnaire_id, add_dropoff, "true")
-            search_question_and_answer_exact(
-                client,
-                request_id,
-                questionnaire_id,
-                all_items,
-                "Search Name or User ID that dropped off devices",
-                "Select person who dropped device/s off",
-                returning_user,
-            )
-            confirmation = field_by_label(
-                all_items, "Does this look right?", type_="RadioButtons"
-            )
-            answer(
-                client,
-                request_id,
-                questionnaire_id,
-                confirmation,
-                "YES",
-            )
-
         if not submit:
             return DeploymentResult(
                 request_id=request_id,
                 order_id=None,
                 not_submitted_reason="final submission was not requested",
                 resolved_serial=",".join(selected_serials),
-                resolved_username=returning_user,
+                resolved_username=None,
             )
         order = request_step(
             client,
@@ -1383,7 +1343,7 @@ def deploy_device_to_location(
             order_id=order_id,
             submitted=True,
             resolved_serial=",".join(selected_serials),
-            resolved_username=returning_user,
+            resolved_username=None,
         )
     except EUDMError as exc:
         raise DeploymentExecutionError(request_id, str(exc)) from exc
@@ -1668,30 +1628,6 @@ Safety:
         )
         answer(client, request_id, questionnaire_id, location_table, location_value)
 
-        # Bulk mode ends after location selection. Individual requests can
-        # still record the person returning the device directly.
-        if not args.batch and args.dropped_by:
-            add_dropoff = field_by_label(all_items, "Add Name of person who dropped off device", type_="YesNo")
-            answer(client, request_id, questionnaire_id, add_dropoff, "true")
-            search_question_and_answer(
-                client,
-                request_id,
-                questionnaire_id,
-                all_items,
-                "Search Name or User ID that dropped off devices",
-                "Select person who dropped device/s off",
-                args.dropped_by,
-            )
-            confirmation = field_by_label(
-                all_items, "Does this look right?", type_="RadioButtons"
-            )
-            answer(
-                client,
-                request_id,
-                questionnaire_id,
-                confirmation,
-                "YES",
-            )
         location_summary = " --> ".join([args.building, args.floor, args.room])
         if args.cabinet:
             location_summary += f" --> {args.cabinet}"
