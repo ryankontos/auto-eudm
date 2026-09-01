@@ -819,7 +819,8 @@ class WorkbookImport:
                 "current_status": current_status or "No status",
                 "device_allocation": row.device_allocation or "",
                 "attending": row.enabled,
-                "included": True,
+                "included": row.enabled,
+                "default_excluded": not row.enabled,
                 "status": "",
             })
         return {

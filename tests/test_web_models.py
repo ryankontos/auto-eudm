@@ -290,6 +290,8 @@ class WorkbookUploadTests(unittest.TestCase):
         self.assertEqual([item["serial"] for item in payload["candidates"]], ["SERIAL999"])
         self.assertEqual(payload["candidates"][0]["row_number"], 5)
         self.assertFalse(payload["candidates"][0]["attending"])
+        self.assertFalse(payload["candidates"][0]["included"])
+        self.assertTrue(payload["candidates"][0]["default_excluded"])
 
         with self.assertRaisesRegex(eudm.EUDMError, "between 1 and 3650"):
             workbook.prepare_backlog("Sheet", 0, True, set(), today=date(2025, 2, 10))
