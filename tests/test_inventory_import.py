@@ -71,7 +71,7 @@ class ImportActionTests(unittest.TestCase):
             enabled=True,
         )
 
-    def test_cli_modes_create_deployments_and_pending_returns(self) -> None:
+    def test_modes_create_deployments_and_pending_returns(self) -> None:
         actions, ignored = inventory.build_actions(
             [self.row],
             self.selected_date,

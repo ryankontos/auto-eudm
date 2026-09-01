@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import base64
 from datetime import date
-from pathlib import Path
+from io import BytesIO
 import unittest
 from unittest import mock
 
@@ -353,16 +353,20 @@ class WorkbookUploadTests(unittest.TestCase):
             with self.assertRaisesRegex(eudm.EUDMError, "100 MB"):
                 WorkbookImport.decode_upload("tracking.xlsx", encoded)
 
-    def test_sample_workbook_can_be_inspected_and_read_from_one_payload(self) -> None:
-        path = (
-            Path(__file__).resolve().parents[1]
-            / "samples"
-            / "Inventory Tracking - Sydney - Test Data.xlsx"
-        )
-        payload = path.read_bytes()
+    def test_workbook_can_be_inspected_and_read_from_one_payload(self) -> None:
+        from openpyxl import Workbook as OpenPyXLWorkbook
 
-        inspection = WorkbookImport.inspect_payload(path.name, payload)
-        workbook = WorkbookImport.from_payload(path.name, payload)
+        source = OpenPyXLWorkbook()
+        source.active.title = "Bookings 2026"
+        sheet = source.active
+        sheet.append(["Date", "Username", "SN", "OLD Device SN", "Attend"])
+        sheet.append([date(2025, 2, 3), "valid.user", "SERIAL123", "PENDING123", True])
+        buffer = BytesIO()
+        source.save(buffer)
+        payload = buffer.getvalue()
+
+        inspection = WorkbookImport.inspect_payload("tracking.xlsx", payload)
+        workbook = WorkbookImport.from_payload("tracking.xlsx", payload)
 
         self.assertEqual(inspection["default_sheet"], "Bookings 2026")
         self.assertIn("Bookings 2026", workbook.sheets)
