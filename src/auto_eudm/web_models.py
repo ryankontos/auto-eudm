@@ -781,18 +781,19 @@ class WorkbookImport:
         current_day = today or date.today()
         start_day = current_day - timedelta(days=days)
         ignored = ignored_keys or set()
-        latest_username_rows: dict[str, int] = {}
-        for row_index, row in reversed(list(enumerate(self.sheets[sheet_name]))):
+        username_occurrences: dict[int, int] = {}
+        username_totals: dict[str, int] = {}
+        for row_index, row in enumerate(self.sheets[sheet_name]):
             if not inventory.looks_like_username(row.username):
                 continue
             username_key = " ".join(str(row.username or "").split()).casefold()
-            latest_username_rows.setdefault(username_key, row_index)
+            occurrence = username_totals.get(username_key, 0) + 1
+            username_occurrences[row_index] = occurrence
+            username_totals[username_key] = occurrence
         candidates: list[dict[str, Any]] = []
         ignored_count = 0
         for row_index, row in enumerate(self.sheets[sheet_name]):
             username_key = " ".join(str(row.username or "").split()).casefold()
-            if latest_username_rows.get(username_key) != row_index:
-                continue
             if row.deployment_date < start_day or row.deployment_date > current_day:
                 continue
             if row.deployment_date == current_day and not include_today:
@@ -810,12 +811,15 @@ class WorkbookImport:
             if key in ignored:
                 ignored_count += 1
                 continue
+            occurrence = username_occurrences[row_index]
             candidates.append({
                 "id": f"{self.import_id}-{row.row_number}-{serial}",
                 "row_number": row.row_number,
                 "date": row.deployment_date.isoformat(),
                 "serial": serial,
                 "username": username,
+                "username_occurrence": occurrence,
+                "username_occurrence_total": username_totals[username_key],
                 "current_status": current_status or "No status",
                 "device_allocation": row.device_allocation or "",
                 "attending": row.enabled,

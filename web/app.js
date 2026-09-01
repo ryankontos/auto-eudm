@@ -4198,8 +4198,16 @@ function renderBacklogPreview(payload) {
   const rows = payload.requests.map((request, index) => {
     const options = DEVICE_MODEL_STATUS_OPTIONS.user;
     const notAttending = request.attending === false;
+    const usernameOccurrence = Number(request.username_occurrence || 0);
+    const usernameOccurrenceTotal = Number(request.username_occurrence_total || 0);
+    const occurrenceSuffix = usernameOccurrence % 100 >= 11 && usernameOccurrence % 100 <= 13
+      ? "th"
+      : ({ 1: "st", 2: "nd", 3: "rd" }[usernameOccurrence % 10] || "th");
+    const occurrenceLabel = usernameOccurrence > 1
+      ? `${usernameOccurrence}${occurrenceSuffix} occurrence in this sheet${usernameOccurrenceTotal > usernameOccurrence ? ` of ${usernameOccurrenceTotal}` : ""}`
+      : "";
     const exclusionLabel = request.default_excluded === true
-      ? "Not marked as attending"
+      ? "Did not attend"
       : "Ignored in future backlog checks";
     const statusControl = `<div class="import-status-control">
       <select data-backlog-status="${escapeHtml(request.id)}" aria-label="Deployment status for ${escapeHtml(request.serial)}">
@@ -4228,7 +4236,7 @@ function renderBacklogPreview(payload) {
         <span>${index + 1}</span>
       </label>
       <div><small class="import-field-title">Deployment serial</small><strong>${escapeHtml(request.serial)}</strong><small class="import-device-allocation">${escapeHtml(request.date)}${request.device_allocation ? ` · ${escapeHtml(request.device_allocation)}` : ""}</small></div>
-      <div><small class="import-field-title">User</small><strong>${escapeHtml(request.username)}</strong><small class="import-device-allocation">Current: ${escapeHtml(request.current_status)}</small>${notAttending ? '<small class="import-attendance-warning">Not marked as attending</small>' : ""}</div>
+      <div><small class="import-field-title">User</small><strong>${escapeHtml(request.username)}</strong><small class="import-device-allocation">Current: ${escapeHtml(request.current_status)}</small>${occurrenceLabel ? `<small class="import-duplicate-warning">${escapeHtml(occurrenceLabel)}</small>` : ""}${notAttending ? '<small class="import-attendance-warning">Did not attend</small>' : ""}</div>
       <div>${statusControl}${includedRow ? validation : `<small class="${notAttending ? "import-attendance-warning" : ""}">${escapeHtml(exclusionLabel)}</small>`}<div class="backlog-row-actions"><button class="text-button" type="button" data-backlog-ignore="${escapeHtml(request.id)}">Ignore in future</button></div></div>
     </div>`;
   }).join("");

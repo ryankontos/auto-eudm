@@ -227,7 +227,7 @@ class WorkbookUploadTests(unittest.TestCase):
             payload["requests"][0]["device_allocation"], "MacBookPro18,3"
         )
 
-    def test_backlog_filters_rows_and_uses_latest_username_occurrence(self) -> None:
+    def test_backlog_filters_rows_and_labels_duplicate_username_occurrences(self) -> None:
         rows = [
             inventory.SheetRow(
                 row_number=2,
@@ -281,17 +281,23 @@ class WorkbookUploadTests(unittest.TestCase):
             "Sheet", 5, True, ignored, today=date(2025, 2, 10)
         )
 
-        self.assertEqual(payload["candidates"], [])
+        self.assertEqual([item["serial"] for item in payload["candidates"]], ["SERIAL123"])
+        self.assertEqual(payload["candidates"][0]["username_occurrence"], 1)
         self.assertEqual(payload["ignored_count"], 1)
 
         payload = workbook.prepare_backlog(
             "Sheet", 5, True, set(), today=date(2025, 2, 10)
         )
-        self.assertEqual([item["serial"] for item in payload["candidates"]], ["SERIAL999"])
-        self.assertEqual(payload["candidates"][0]["row_number"], 5)
-        self.assertFalse(payload["candidates"][0]["attending"])
-        self.assertFalse(payload["candidates"][0]["included"])
-        self.assertTrue(payload["candidates"][0]["default_excluded"])
+        candidates = payload["candidates"]
+        self.assertEqual([item["serial"] for item in candidates], ["SERIAL123", "SERIAL999"])
+        self.assertEqual([item["row_number"] for item in candidates], [2, 5])
+        self.assertEqual([item["username_occurrence"] for item in candidates], [1, 2])
+        self.assertEqual([item["username_occurrence_total"] for item in candidates], [2, 2])
+        self.assertTrue(candidates[0]["attending"])
+        self.assertTrue(candidates[0]["included"])
+        self.assertFalse(candidates[1]["attending"])
+        self.assertFalse(candidates[1]["included"])
+        self.assertTrue(candidates[1]["default_excluded"])
 
         with self.assertRaisesRegex(eudm.EUDMError, "between 1 and 3650"):
             workbook.prepare_backlog("Sheet", 0, True, set(), today=date(2025, 2, 10))
