@@ -1393,6 +1393,10 @@ function renderQueue() {
   elements.queueBody.querySelectorAll("tr").forEach((row) => {
     row.addEventListener("click", (event) => {
       if (event.target.closest("[data-remove], [data-copy-request-id]")) return;
+      // Selecting text in a row also produces a click. Re-rendering here would
+      // replace the row and clear the selection before it can be copied.
+      const selection = window.getSelection?.();
+      if (selection && !selection.isCollapsed && selection.toString()) return;
       state.selectedId = state.selectedId === row.dataset.id ? null : row.dataset.id;
       renderAll();
     });

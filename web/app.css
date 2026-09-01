@@ -143,6 +143,7 @@ body {
   font-size: 14px;
   line-height: 1.42;
   overflow: hidden;
+  user-select: text;
 }
 
 button, input, select, textarea { font: inherit; }
@@ -497,6 +498,7 @@ input:hover, select:hover, textarea:hover { border-color: #99a8b5; }
   vertical-align: middle;
   overflow-wrap: anywhere;
   white-space: normal;
+  user-select: text;
 }
 .queue-table tbody tr { cursor: pointer; }
 .queue-table tbody tr:hover td { background: var(--surface-hover); }
