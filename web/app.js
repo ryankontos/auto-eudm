@@ -4313,9 +4313,15 @@ function renderBacklogPreview(payload) {
       <div>${statusControl}${includedRow ? validation : `<small class="${notAttending ? "import-attendance-warning" : ""}">${escapeHtml(exclusionLabel)}</small>`}<div class="backlog-row-actions"><button class="text-button" type="button" data-backlog-ignore="${escapeHtml(request.id)}">Ignore in future</button></div></div>
     </div>`;
   }).join("");
+  const counts = payload.counts || {};
+  const emptyMessage = Number(counts.already_deployed || 0) > 0
+    ? "Every matching row is already marked Deployed."
+    : Number(counts.today_excluded || 0) > 0 && !payload.include_today
+      ? "No prior days matched. Include today to check today's rows."
+      : "No undeployed devices were found in this range.";
   $("#importPreviewList").innerHTML = rows
     ? `<section class="import-preview-section"><div class="import-group-heading"><div><strong>Undeployed devices</strong><small>${included.length} of ${requests.length} selected</small></div><div class="import-group-actions"><button class="text-button" type="button" data-backlog-group="all">All</button><button class="text-button" type="button" data-backlog-group="none">None</button></div></div>${rows}</section>`
-    : '<div class="import-empty">No undeployed devices were found in this range.</div>';
+    : `<div class="import-empty">${escapeHtml(emptyMessage)}</div>`;
   $("#importPreviewList").querySelectorAll("[data-backlog-status]").forEach((select) => select.addEventListener("change", () => {
     const request = requests.find((item) => item.id === select.dataset.backlogStatus);
     if (request) request.status = select.value;

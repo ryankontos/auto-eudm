@@ -273,6 +273,17 @@ class WorkbookUploadTests(unittest.TestCase):
                 enabled=False,
                 new_asset_status="In Inventory",
             ),
+            inventory.SheetRow(
+                row_number=6,
+                deployment_date=date(2025, 2, 9),
+                username="review.user",
+                deployment_serial="SERIAL321",
+                returned_device_serial=None,
+                pending_return_serial=None,
+                marked_red=False,
+                enabled=True,
+                new_asset_status="Deployed - awaiting review",
+            ),
         ]
         workbook = WorkbookImport("import-backlog", "tracking.xlsx", {"Sheet": rows})
         ignored = {WorkbookImport.backlog_key("SERIAL999", "valid.user")}
@@ -281,7 +292,10 @@ class WorkbookUploadTests(unittest.TestCase):
             "Sheet", 5, True, ignored, today=date(2025, 2, 10)
         )
 
-        self.assertEqual([item["serial"] for item in payload["candidates"]], ["SERIAL123"])
+        self.assertEqual(
+            [item["serial"] for item in payload["candidates"]],
+            ["SERIAL123", "SERIAL321"],
+        )
         self.assertEqual(payload["candidates"][0]["username_occurrence"], 1)
         self.assertEqual(payload["ignored_count"], 1)
         self.assertEqual(payload["counts"]["ignored"], 1)
@@ -290,12 +304,15 @@ class WorkbookUploadTests(unittest.TestCase):
             "Sheet", 5, True, set(), today=date(2025, 2, 10)
         )
         candidates = payload["candidates"]
-        self.assertEqual([item["serial"] for item in candidates], ["SERIAL123", "SERIAL999"])
-        self.assertEqual([item["row_number"] for item in candidates], [2, 5])
-        self.assertEqual([item["username_occurrence"] for item in candidates], [1, 2])
-        self.assertEqual([item["username_occurrence_total"] for item in candidates], [2, 2])
-        self.assertEqual(len({item["id"] for item in candidates}), 2)
-        self.assertEqual(payload["counts"]["candidates"], 2)
+        self.assertEqual(
+            [item["serial"] for item in candidates],
+            ["SERIAL123", "SERIAL999", "SERIAL321"],
+        )
+        self.assertEqual([item["row_number"] for item in candidates], [2, 5, 6])
+        self.assertEqual([item["username_occurrence"] for item in candidates], [1, 2, 1])
+        self.assertEqual([item["username_occurrence_total"] for item in candidates], [2, 2, 1])
+        self.assertEqual(len({item["id"] for item in candidates}), 3)
+        self.assertEqual(payload["counts"]["candidates"], 3)
         self.assertTrue(candidates[0]["attending"])
         self.assertTrue(candidates[0]["included"])
         self.assertFalse(candidates[1]["attending"])

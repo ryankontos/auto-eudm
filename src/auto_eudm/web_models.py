@@ -808,7 +808,12 @@ class WorkbookImport:
                 filtered["invalid_username"] += 1
                 continue
             current_status = " ".join(str(row.new_asset_status or "").split())
-            if current_status.casefold().startswith("deployed"):
+            # The workbook's status is authoritative here: backlog mode is
+            # specifically for rows whose *New Asset Status* is not the
+            # completed "Deployed" value.  Do not discard other status text
+            # merely because it begins with that word; ALM uses longer status
+            # labels which still need an explicit review in this workflow.
+            if current_status.casefold() == "deployed":
                 filtered["already_deployed"] += 1
                 continue
             serial = str(row.deployment_serial).strip()
