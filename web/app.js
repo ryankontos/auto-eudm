@@ -5289,17 +5289,20 @@ function historyEntryMatches(entry, run, query, filter) {
 function renderHistory(runs) {
   const query = String($("#historySearchInput")?.value || "").trim().toLocaleLowerCase();
   const filter = $("#historyStateFilter")?.value || "all";
-  const matchingRuns = runs.map((run) => ({
+  // Active submission jobs are kept in the history response so startup can
+  // restore progress, but they are not historical requests yet.
+  const completedRuns = runs.filter((run) => run.state === "finished");
+  const matchingRuns = completedRuns.map((run) => ({
     ...run,
     entries: (run.entries || []).filter((entry) => historyEntryMatches(entry, run, query, filter)),
   })).filter((run) => run.entries.length);
   const matchedEntries = matchingRuns.reduce((total, run) => total + run.entries.length, 0);
   const summary = $("#historyResultsSummary");
-  if (summary) summary.textContent = runs.length
+  if (summary) summary.textContent = completedRuns.length
     ? `${matchedEntries} request${matchedEntries === 1 ? "" : "s"} in ${matchingRuns.length} run${matchingRuns.length === 1 ? "" : "s"}`
     : "";
   if (!matchingRuns.length) {
-    elements.historyList.innerHTML = `<div class="history-empty">${runs.length ? "No requests match these filters." : "No request runs yet."}</div>`;
+    elements.historyList.innerHTML = `<div class="history-empty">${completedRuns.length ? "No requests match these filters." : "No request runs yet."}</div>`;
     return;
   }
   elements.historyList.innerHTML = matchingRuns.map((run) => {
@@ -5313,9 +5316,13 @@ function renderHistory(runs) {
       const requestLink = entry.request_id
         ? requestIdDisplay(entry.request_id, "history-request-id")
         : '<strong class="history-request-id">No request ID</strong>';
+      const serials = (entry.serials || []).filter(Boolean);
+      const serialMarkup = serials.length
+        ? serials.map((serial) => `<button class="history-filter-link" type="button" data-history-filter="${escapeHtml(serial)}" title="Show requests containing ${escapeHtml(serial)}">${escapeHtml(serial)}</button>`).join("")
+        : "No serial";
       return `<div class="history-entry ${entry.state === "failed" ? "failed" : ""}">
-        <div class="history-device"><strong>${escapeHtml((entry.serials || []).join(", ") || "No serial")}</strong><span>${escapeHtml(entry.status || kindLabel(entry.kind))}</span></div>
-        <div class="history-person"><small>${escapeHtml(person.role)}</small><strong>${escapeHtml(person.name)}</strong>${person.login ? `<span>${escapeHtml(person.login)}</span>` : ""}</div>
+        <div class="history-device"><div class="history-device-serials">${serialMarkup}</div><span>${escapeHtml(entry.status || kindLabel(entry.kind))}</span></div>
+        <div class="history-person"><small>${escapeHtml(person.role)}</small><strong>${escapeHtml(person.name)}</strong>${person.login ? `<button class="history-filter-link" type="button" data-history-filter="${escapeHtml(person.login)}" title="Show requests for ${escapeHtml(person.login)}">${escapeHtml(person.login)}</button>` : ""}</div>
         <div class="history-result"><span class="history-result-state ${entry.state === "failed" ? "failed" : ""}">${escapeHtml(entry.state === "succeeded" ? "Submitted" : entry.state)}</span>${requestLink}<small>${escapeHtml(entry.message || "")}</small></div>
         <div class="history-entry-actions"><button class="button secondary compact" type="button" data-history-readd="${escapeHtml(entry.id)}">Re-add to queue</button></div>
       </div>`;
@@ -5333,6 +5340,13 @@ function renderHistory(runs) {
       const run = runs.find((item) => (item.entries || []).some((entry) => entry.id === button.dataset.historyReadd));
       const entry = run?.entries?.find((item) => item.id === button.dataset.historyReadd);
       if (entry) reAddHistoryEntry(entry, run);
+    });
+  });
+  elements.historyList.querySelectorAll("[data-history-filter]").forEach((button) => {
+    button.addEventListener("click", () => {
+      $("#historySearchInput").value = button.dataset.historyFilter || "";
+      $("#historyStateFilter").value = "all";
+      renderHistory(state.historyRuns);
     });
   });
 }

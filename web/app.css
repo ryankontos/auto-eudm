@@ -704,6 +704,7 @@ fieldset { margin: 0; padding: 0; border: 0; }
 }
 #pasteDialog { width: min(650px, calc(100vw - 24px)); }
 .modal.wide-modal { width: min(760px, calc(100vw - 24px)); }
+#historyDialog { width: min(920px, calc(100vw - 24px)); }
 .modal::backdrop { background: rgba(0, 0, 0, .62); }
 .modal-card { width: 100%; min-width: 0; max-height: calc(100vh - 24px); padding: 20px; overflow-x: hidden; overflow-y: auto; background: var(--surface); }
 .modal-card.wide,
@@ -1254,6 +1255,25 @@ fieldset { margin: 0; padding: 0; border: 0; }
 .history-entry span { margin-top: 3px; color: var(--muted); font-size: 12px; }
 .history-device strong { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 14px; }
 .history-device span { color: var(--ink); font-weight: 650; }
+.history-device-serials { display: flex; flex-wrap: wrap; gap: 4px 8px; }
+.history-filter-link {
+  display: inline;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-bottom: 1px dashed var(--line-strong);
+  border-radius: 0;
+  color: var(--ink);
+  background: transparent;
+  font: inherit;
+  font-weight: 650;
+  text-align: left;
+  cursor: pointer;
+}
+.history-filter-link:hover { color: var(--blue); border-bottom-color: var(--blue); }
+.history-device .history-filter-link { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 14px; }
+.history-person .history-filter-link { margin-top: 3px; color: var(--muted); font-size: 12px; }
+.history-person .history-filter-link:hover { color: var(--blue); }
 .history-person small { margin: 0; color: var(--subtle); font-size: 11px; font-weight: 750; letter-spacing: .03em; text-transform: uppercase; }
 .history-person strong { margin-top: 2px; font-size: 14px; }
 .history-result { display: grid; gap: 2px; }
