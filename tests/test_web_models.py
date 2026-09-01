@@ -284,6 +284,17 @@ class WorkbookUploadTests(unittest.TestCase):
                 enabled=True,
                 new_asset_status="Deployed - awaiting review",
             ),
+            inventory.SheetRow(
+                row_number=7,
+                deployment_date=date(2025, 2, 9),
+                username="Full Name",
+                deployment_serial="SERIAL654",
+                returned_device_serial=None,
+                pending_return_serial=None,
+                marked_red=False,
+                enabled=True,
+                new_asset_status="In Inventory",
+            ),
         ]
         workbook = WorkbookImport("import-backlog", "tracking.xlsx", {"Sheet": rows})
         ignored = {WorkbookImport.backlog_key("SERIAL999", "valid.user")}
@@ -294,7 +305,7 @@ class WorkbookUploadTests(unittest.TestCase):
 
         self.assertEqual(
             [item["serial"] for item in payload["candidates"]],
-            ["SERIAL123", "SERIAL321"],
+            ["SERIAL123", "SERIAL321", "SERIAL654"],
         )
         self.assertEqual(payload["candidates"][0]["username_occurrence"], 1)
         self.assertEqual(payload["ignored_count"], 1)
@@ -306,13 +317,13 @@ class WorkbookUploadTests(unittest.TestCase):
         candidates = payload["candidates"]
         self.assertEqual(
             [item["serial"] for item in candidates],
-            ["SERIAL123", "SERIAL999", "SERIAL321"],
+            ["SERIAL123", "SERIAL999", "SERIAL321", "SERIAL654"],
         )
-        self.assertEqual([item["row_number"] for item in candidates], [2, 5, 6])
-        self.assertEqual([item["username_occurrence"] for item in candidates], [1, 2, 1])
-        self.assertEqual([item["username_occurrence_total"] for item in candidates], [2, 2, 1])
-        self.assertEqual(len({item["id"] for item in candidates}), 3)
-        self.assertEqual(payload["counts"]["candidates"], 3)
+        self.assertEqual([item["row_number"] for item in candidates], [2, 5, 6, 7])
+        self.assertEqual([item["username_occurrence"] for item in candidates], [1, 2, 1, 1])
+        self.assertEqual([item["username_occurrence_total"] for item in candidates], [2, 2, 1, 1])
+        self.assertEqual(len({item["id"] for item in candidates}), 4)
+        self.assertEqual(payload["counts"]["candidates"], 4)
         self.assertTrue(candidates[0]["attending"])
         self.assertTrue(candidates[0]["included"])
         self.assertFalse(candidates[1]["attending"])
@@ -372,6 +383,19 @@ class WorkbookUploadTests(unittest.TestCase):
 
         self.assertEqual(restored.device_allocation, "MacBookPro18,3")
         self.assertEqual(restored.to_json()["device_allocation"], "MacBookPro18,3")
+
+    def test_request_spec_preserves_selected_user_details_for_history(self) -> None:
+        request = user_request(user_info={
+            "login": "valid.user",
+            "columns": ["Valid User", "valid.user"],
+        })
+
+        restored = RequestSpec.from_json(request.to_json())
+
+        self.assertEqual(restored.user_info, {
+            "login": "valid.user",
+            "columns": ["Valid User", "valid.user"],
+        })
 
     def test_upload_is_decoded_to_bytes(self) -> None:
         encoded = base64.b64encode(b"workbook bytes").decode("ascii")

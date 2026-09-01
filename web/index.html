@@ -605,7 +605,22 @@
         <h2>Request history</h2>
         <button class="icon-button" value="cancel" aria-label="Close">×</button>
       </div>
-      <p class="history-intro">Saved request runs. Re-add a request when you need to correct and submit it again.</p>
+      <div class="history-toolbar">
+        <label class="history-search" for="historySearchInput">
+          <span class="visually-hidden">Search request history</span>
+          <input id="historySearchInput" type="search" placeholder="Search serial, person, status or request ID">
+        </label>
+        <label class="history-filter" for="historyStateFilter">
+          <span>Show</span>
+          <select id="historyStateFilter">
+            <option value="all">All requests</option>
+            <option value="submitted">Submitted</option>
+            <option value="failed">Needs attention</option>
+            <option value="active">In progress</option>
+          </select>
+        </label>
+      </div>
+      <div id="historyResultsSummary" class="history-results-summary" aria-live="polite"></div>
       <div id="historyList" class="history-list"></div>
       <div class="modal-actions">
         <button class="button secondary" value="cancel">Close</button>

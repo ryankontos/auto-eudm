@@ -43,6 +43,7 @@ const state = {
   bulkValidationNeedsFullRender: false,
   quickImportRenderFrame: null,
   importPreviewRenderFrame: null,
+  historyRuns: [],
 };
 
 const THEME_STORAGE_KEY = "auto-eudm-theme";
@@ -50,7 +51,7 @@ const RECENT_LOCATIONS_STORAGE_KEY = "auto-eudm-recent-locations";
 const CONCURRENCY_STORAGE_KEY = "auto-eudm-concurrency";
 const IMPORT_COLUMNS_STORAGE_KEY = "auto-eudm-import-columns";
 const IMPORT_LOCATION_STORAGE_KEY = "auto-eudm-import-location";
-const VALIDATION_DEBOUNCE_MS = 650;
+const VALIDATION_DEBOUNCE_MS = 300;
 // Verification is a read-only fan-out; the server-side submission limit stays
 // separate so a large import can finish checking without serialising the UI.
 const VALIDATION_CONCURRENCY = 200;
@@ -2108,7 +2109,7 @@ function spinnerPhaseStyle(duration) {
 function setLookupInputStatus(kind, value) {
   if (!value) return setLookupStatus(kind, "");
   if (value.length < 2) return setLookupStatus(kind, "Type at least 2 characters to search.");
-  setLookupStatus(kind, "Press Enter or Search to look up in EUDM.");
+  setLookupStatus(kind, "Checking EUDM automatically…", true);
 }
 
 function updateLookupControlStates(request = selectedRequest()) {
@@ -2207,7 +2208,10 @@ async function loadSerialSuggestions(request, query, { requireSelection = true }
     const results = payload.results || [];
     const exactAsset = results.find((item) => serialResultMatches(item, value));
     const cachedExact = Boolean(payload.cached && exactAsset);
-    const autoSelectedExact = Boolean(exactAsset && results.length === 1);
+    // A serial is unique. If EUDM also returns fuzzy matches, an exact serial
+    // is still safe to select immediately instead of making the user search
+    // again or click a result.
+    const autoSelectedExact = Boolean(exactAsset);
     request.eudm_device_type = exactAsset ? deviceTypeFromResult(exactAsset, value) : "";
     if (cachedExact || autoSelectedExact) {
       request.serials = [bestSerial(exactAsset, value)];
@@ -2307,7 +2311,9 @@ async function validateUserAfterPause(request, returning = false) {
       ? results.find((item) => userResultMatches(item, value))
       : null;
     const exactUser = results.find((item) => userResultMatches(item, value));
-    const autoSelectedResult = cachedResult || (results.length === 1 ? exactUser : null);
+    // Full names and usernames can both be exact matches. Prefer that exact
+    // result even when EUDM includes additional fuzzy suggestions.
+    const autoSelectedResult = cachedResult || exactUser;
     const container = returning ? elements.returningResults : elements.userResults;
     if (autoSelectedResult) {
       const login = bestLogin(autoSelectedResult, value);
@@ -5403,25 +5409,73 @@ function formatHistoryDate(value) {
   return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
 }
 
+function historyPerson(entry) {
+  const login = String(entry.user || entry.returning_user || "").trim();
+  const info = entry.user_info || entry.returning_user_info;
+  const label = confirmedPersonLabel(login, info);
+  return {
+    role: entry.user ? "Deployed to" : entry.returning_user ? "Returning user" : "Destination",
+    name: label.fullName || entry.destination || "No destination",
+    login: label.login,
+  };
+}
+
+function historyEntryMatches(entry, run, query, filter) {
+  if (filter === "submitted" && entry.state !== "succeeded") return false;
+  if (filter === "failed" && entry.state !== "failed") return false;
+  if (filter === "active" && !["queued", "running"].includes(entry.state)) return false;
+  if (!query) return true;
+  const person = historyPerson(entry);
+  const values = [
+    ...(entry.serials || []),
+    entry.status,
+    kindLabel(entry.kind),
+    entry.destination,
+    entry.request_id,
+    entry.order_id,
+    entry.message,
+    entry.user,
+    entry.returning_user,
+    person.name,
+    person.login,
+    ...(entry.user_info?.columns || []),
+    ...(entry.returning_user_info?.columns || []),
+    run.request_for,
+  ];
+  return values.some((value) => String(value || "").toLocaleLowerCase().includes(query));
+}
+
 function renderHistory(runs) {
-  if (!runs.length) {
-    elements.historyList.innerHTML = '<div class="history-empty">No request runs yet.</div>';
+  const query = String($("#historySearchInput")?.value || "").trim().toLocaleLowerCase();
+  const filter = $("#historyStateFilter")?.value || "all";
+  const matchingRuns = runs.map((run) => ({
+    ...run,
+    entries: (run.entries || []).filter((entry) => historyEntryMatches(entry, run, query, filter)),
+  })).filter((run) => run.entries.length);
+  const matchedEntries = matchingRuns.reduce((total, run) => total + run.entries.length, 0);
+  const summary = $("#historyResultsSummary");
+  if (summary) summary.textContent = runs.length
+    ? `${matchedEntries} request${matchedEntries === 1 ? "" : "s"} in ${matchingRuns.length} run${matchingRuns.length === 1 ? "" : "s"}`
+    : "";
+  if (!matchingRuns.length) {
+    elements.historyList.innerHTML = `<div class="history-empty">${runs.length ? "No requests match these filters." : "No request runs yet."}</div>`;
     return;
   }
-  elements.historyList.innerHTML = runs.map((run) => {
+  elements.historyList.innerHTML = matchingRuns.map((run) => {
     const succeeded = run.counts?.succeeded || 0;
     const failed = run.counts?.failed || 0;
     const stateLabel = run.state === "finished"
       ? `${succeeded} submitted · ${failed} failed`
       : run.state;
     const entries = (run.entries || []).map((entry) => {
+      const person = historyPerson(entry);
       const requestLink = entry.request_id
         ? requestIdDisplay(entry.request_id, "history-request-id")
         : '<strong class="history-request-id">No request ID</strong>';
       return `<div class="history-entry ${entry.state === "failed" ? "failed" : ""}">
-        <div><strong>${escapeHtml(entry.serials.join(", ") || "No serial")}</strong><small>${escapeHtml(kindLabel(entry.kind))} · ${escapeHtml(entry.status)}</small></div>
-        <div><strong>${escapeHtml(entry.destination || "No destination")}</strong><small>${escapeHtml(entry.message || "")}</small></div>
-        <div>${requestLink}</div>
+        <div class="history-device"><strong>${escapeHtml((entry.serials || []).join(", ") || "No serial")}</strong><span>${escapeHtml(entry.status || kindLabel(entry.kind))}</span></div>
+        <div class="history-person"><small>${escapeHtml(person.role)}</small><strong>${escapeHtml(person.name)}</strong>${person.login ? `<span>${escapeHtml(person.login)}</span>` : ""}</div>
+        <div class="history-result"><span class="history-result-state ${entry.state === "failed" ? "failed" : ""}">${escapeHtml(entry.state === "succeeded" ? "Submitted" : entry.state)}</span>${requestLink}<small>${escapeHtml(entry.message || "")}</small></div>
         <div class="history-entry-actions"><button class="button secondary compact" type="button" data-history-readd="${escapeHtml(entry.id)}">Re-add to queue</button></div>
       </div>`;
     }).join("");
@@ -5480,7 +5534,10 @@ async function openHistory() {
   elements.historyButton.disabled = true;
   try {
     const payload = await api("/api/history");
-    renderHistory(payload.runs || []);
+    state.historyRuns = payload.runs || [];
+    $("#historySearchInput").value = "";
+    $("#historyStateFilter").value = "all";
+    renderHistory(state.historyRuns);
     $("#historyDialog").showModal();
   } catch (error) {
     toast(error.message, "error");
@@ -5999,6 +6056,8 @@ function bindEvents() {
   });
   bindConnectionSheetEvents();
   elements.historyButton.addEventListener("click", openHistory);
+  $("#historySearchInput").addEventListener("input", () => renderHistory(state.historyRuns));
+  $("#historyStateFilter").addEventListener("change", () => renderHistory(state.historyRuns));
   $("#duplicateButton").addEventListener("click", duplicateSelected);
   $("#closeInspectorButton").addEventListener("click", () => {
     if (state.newRequest) {

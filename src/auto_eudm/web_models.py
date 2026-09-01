@@ -158,6 +158,7 @@ class RequestSpec:
     returning_user_info: dict[str, Any] | None
     location: Location | None
     group: str
+    user_info: dict[str, Any] | None = None
     source: str | None = None
     device_allocation: str | None = None
 
@@ -182,6 +183,18 @@ class RequestSpec:
                 "login": clean(raw_returning_info.get("login")),
                 "columns": [clean(value) for value in raw_columns if clean(value)],
             }
+        raw_user_info = raw.get("user_info")
+        if raw_user_info is not None and not isinstance(raw_user_info, dict):
+            raise eudm.EUDMError("User details must be an object.")
+        user_info = None
+        if isinstance(raw_user_info, dict):
+            raw_columns = raw_user_info.get("columns", [])
+            if not isinstance(raw_columns, list):
+                raise eudm.EUDMError("User detail columns must be a list.")
+            user_info = {
+                "login": clean(raw_user_info.get("login")),
+                "columns": [clean(value) for value in raw_columns if clean(value)],
+            }
         location = (
             Location.from_json(raw.get("location"))
             if kind in {"location", "bulk_location"}
@@ -203,6 +216,7 @@ class RequestSpec:
             returning_user_info=returning_user_info,
             location=location,
             group=clean(raw.get("group")) or "Requests",
+            user_info=user_info,
             source=clean(raw.get("source")) or None,
             device_allocation=clean(raw.get("device_allocation")) or None,
         )
@@ -301,6 +315,7 @@ class RequestSpec:
             "returning": self.returning_requested,
             "returning_user": self.returning_user or "",
             "return_confirmed": self.return_confirmed,
+            "user_info": self.user_info or None,
             "returning_user_info": self.returning_user_info or None,
             "location": self.location.to_json() if self.location else None,
             "group": self.group,
@@ -785,7 +800,7 @@ class WorkbookImport:
         username_occurrences: dict[int, int] = {}
         username_totals: dict[str, int] = {}
         for row_index, row in enumerate(self.sheets[sheet_name]):
-            if not inventory.looks_like_username(row.username):
+            if not " ".join(str(row.username or "").split()):
                 continue
             username_key = " ".join(str(row.username or "").split()).casefold()
             occurrence = username_totals.get(username_key, 0) + 1
@@ -804,8 +819,8 @@ class WorkbookImport:
             if not inventory.looks_like_serial(row.deployment_serial):
                 filtered["missing_serial"] += 1
                 continue
-            if not inventory.looks_like_username(row.username):
-                filtered["invalid_username"] += 1
+            if not " ".join(str(row.username or "").split()):
+                filtered["missing_username"] += 1
                 continue
             current_status = " ".join(str(row.new_asset_status or "").split())
             # The workbook's status is authoritative here: backlog mode is
@@ -858,6 +873,6 @@ class WorkbookImport:
                 "outside_range": filtered["outside_range"],
                 "today_excluded": filtered["today_excluded"],
                 "missing_serial": filtered["missing_serial"],
-                "invalid_username": filtered["invalid_username"],
+                "missing_username": filtered["missing_username"],
             },
         }
