@@ -84,6 +84,8 @@ class Action:
     kind: str = "user"
     device_allocation: str | None = None
     new_asset_status: str | None = None
+    has_returned_device_serial: bool = False
+    has_pending_return_serial: bool = False
 
 
 def normalized_header(value: Any) -> str:
@@ -543,6 +545,8 @@ def build_actions(
                     NEW_STOCK,
                     device_allocation=row.device_allocation,
                     new_asset_status=row.new_asset_status,
+                    has_returned_device_serial=looks_like_serial(row.returned_device_serial),
+                    has_pending_return_serial=looks_like_serial(row.pending_return_serial),
                 ))
             else:
                 ignored["Deployment serial is blank or invalid"] += 1

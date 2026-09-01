@@ -196,6 +196,24 @@ class WorkbookUploadTests(unittest.TestCase):
             payload["requests"][0]["device_allocation"], "MacBookPro18,3"
         )
 
+    def test_workbook_prepare_marks_missing_return_serials_on_deployments(self) -> None:
+        row = inventory.SheetRow(
+            row_number=2,
+            deployment_date=date(2025, 2, 3),
+            username="valid.user",
+            deployment_serial="SERIAL123",
+            returned_device_serial=None,
+            pending_return_serial=None,
+            marked_red=False,
+            enabled=True,
+        )
+        workbook = WorkbookImport("import-returns", "tracking.xlsx", {"Sheet": [row]})
+
+        request = workbook.prepare("Sheet", "2025-02-03", "deployments")["requests"][0]
+
+        self.assertFalse(request["has_returned_device_serial"])
+        self.assertFalse(request["has_pending_return_serial"])
+
     def test_backlog_filters_rows_and_labels_duplicate_username_occurrences(self) -> None:
         rows = [
             inventory.SheetRow(

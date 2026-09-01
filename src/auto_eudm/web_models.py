@@ -690,6 +690,8 @@ class WorkbookImport:
                 device_allocation=action.device_allocation,
             ).to_json()
             request["new_asset_status"] = action.new_asset_status or ""
+            request["has_returned_device_serial"] = action.has_returned_device_serial
+            request["has_pending_return_serial"] = action.has_pending_return_serial
             requests.append(request)
         requests.sort(
             key=lambda request: 0

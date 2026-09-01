@@ -4315,9 +4315,14 @@ function renderImportPreview() {
         <button class="text-button" data-import-retry="${escapeHtml(request.id)}" type="button">Retry</button>
       </div>` : "";
       const destination = locationDisplay(state.importLocation) || "Location stock";
+      const missingReturnWarning = isDeployment
+        && !request.has_returned_device_serial
+        && !request.has_pending_return_serial
+        ? '<small class="import-return-warning">User has no return or pending return</small>'
+        : "";
       const personColumn = isReturnedDevice
         ? `<div><small class="import-field-title">Destination</small><strong>${escapeHtml(destination)}</strong></div>`
-        : `<div><small class="import-field-title">User</small><strong>${escapeHtml(request.user || "No user")}</strong></div>`;
+        : `<div><small class="import-field-title">User</small><strong>${escapeHtml(request.user || "No user")}</strong>${missingReturnWarning}</div>`;
       return `<div class="import-preview-row ${isIncluded ? "" : "excluded"}">
         <label class="include-control" title="${isIncluded ? "Included" : "Do not deploy"}">
           <input type="checkbox" data-import-include="${escapeHtml(request.id)}" ${isIncluded ? "checked" : ""}>
