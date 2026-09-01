@@ -4197,6 +4197,7 @@ function renderBacklogPreview(payload) {
   $("#importPreviewCount").textContent = `${included.length} selected`;
   const rows = payload.requests.map((request, index) => {
     const options = DEVICE_MODEL_STATUS_OPTIONS.user;
+    const notAttending = request.attending === false;
     const statusControl = `<div class="import-status-control">
       <select data-backlog-status="${escapeHtml(request.id)}" aria-label="Deployment status for ${escapeHtml(request.serial)}">
         <option value="">Choose a deployment status</option>
@@ -4218,13 +4219,13 @@ function renderBacklogPreview(payload) {
           ? '<small class="import-check-ok">✓ Serial and user verified</small>'
           : "";
     const includedRow = request.included !== false;
-    return `<div class="import-preview-row ${includedRow ? "" : "excluded"}">
+    return `<div class="import-preview-row ${includedRow ? "" : "excluded"}${notAttending ? " not-attending" : ""}">
       <label class="include-control" title="${includedRow ? "Included" : "Ignored in future backlog checks"}">
         <input type="checkbox" data-backlog-include="${escapeHtml(request.id)}" ${includedRow ? "checked" : ""}>
         <span>${index + 1}</span>
       </label>
       <div><small class="import-field-title">Deployment serial</small><strong>${escapeHtml(request.serial)}</strong><small class="import-device-allocation">${escapeHtml(request.date)}${request.device_allocation ? ` · ${escapeHtml(request.device_allocation)}` : ""}</small></div>
-      <div><small class="import-field-title">User</small><strong>${escapeHtml(request.username)}</strong><small class="import-device-allocation">Current: ${escapeHtml(request.current_status)}</small></div>
+      <div><small class="import-field-title">User</small><strong>${escapeHtml(request.username)}</strong><small class="import-device-allocation">Current: ${escapeHtml(request.current_status)}</small>${notAttending ? '<small class="import-attendance-warning">Not marked as attending</small>' : ""}</div>
       <div>${statusControl}${includedRow ? validation : "<small>Ignored in future checks</small>"}<div class="backlog-row-actions"><button class="text-button" type="button" data-backlog-ignore="${escapeHtml(request.id)}">Ignore in future</button></div></div>
     </div>`;
   }).join("");

@@ -1122,6 +1122,8 @@ fieldset { margin: 0; padding: 0; border: 0; }
 .include-control { display: flex; align-items: center; gap: 5px; color: var(--subtle); font-variant-numeric: tabular-nums; }
 .include-control input { min-height: auto; }
 .import-preview-row.excluded { opacity: .58; background: var(--surface-alt); }
+.import-preview-row.not-attending { background: var(--red-soft); }
+.import-attendance-warning { color: var(--red) !important; font-weight: 700; }
 .import-preview-row strong,
 .import-preview-row small { display: block; min-width: 0; overflow-wrap: anywhere; }
 .import-preview-row small { color: var(--muted); font-size: 10px; }

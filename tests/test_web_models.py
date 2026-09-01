@@ -227,7 +227,7 @@ class WorkbookUploadTests(unittest.TestCase):
             payload["requests"][0]["device_allocation"], "MacBookPro18,3"
         )
 
-    def test_backlog_filters_deployed_rows_date_range_and_persistent_ignores(self) -> None:
+    def test_backlog_filters_rows_and_uses_latest_username_occurrence(self) -> None:
         rows = [
             inventory.SheetRow(
                 row_number=2,
@@ -262,9 +262,20 @@ class WorkbookUploadTests(unittest.TestCase):
                 enabled=True,
                 new_asset_status="In Inventory",
             ),
+            inventory.SheetRow(
+                row_number=5,
+                deployment_date=date(2025, 2, 9),
+                username="VALID.USER",
+                deployment_serial="SERIAL999",
+                returned_device_serial=None,
+                pending_return_serial=None,
+                marked_red=False,
+                enabled=False,
+                new_asset_status="In Inventory",
+            ),
         ]
         workbook = WorkbookImport("import-backlog", "tracking.xlsx", {"Sheet": rows})
-        ignored = {WorkbookImport.backlog_key("SERIAL123", "valid.user")}
+        ignored = {WorkbookImport.backlog_key("SERIAL999", "valid.user")}
 
         payload = workbook.prepare_backlog(
             "Sheet", 5, True, ignored, today=date(2025, 2, 10)
@@ -276,7 +287,9 @@ class WorkbookUploadTests(unittest.TestCase):
         payload = workbook.prepare_backlog(
             "Sheet", 5, True, set(), today=date(2025, 2, 10)
         )
-        self.assertEqual([item["serial"] for item in payload["candidates"]], ["SERIAL123"])
+        self.assertEqual([item["serial"] for item in payload["candidates"]], ["SERIAL999"])
+        self.assertEqual(payload["candidates"][0]["row_number"], 5)
+        self.assertFalse(payload["candidates"][0]["attending"])
 
         with self.assertRaisesRegex(eudm.EUDMError, "between 1 and 3650"):
             workbook.prepare_backlog("Sheet", 0, True, set(), today=date(2025, 2, 10))

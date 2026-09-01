@@ -781,9 +781,18 @@ class WorkbookImport:
         current_day = today or date.today()
         start_day = current_day - timedelta(days=days)
         ignored = ignored_keys or set()
+        latest_username_rows: dict[str, int] = {}
+        for row_index, row in reversed(list(enumerate(self.sheets[sheet_name]))):
+            if not inventory.looks_like_username(row.username):
+                continue
+            username_key = " ".join(str(row.username or "").split()).casefold()
+            latest_username_rows.setdefault(username_key, row_index)
         candidates: list[dict[str, Any]] = []
         ignored_count = 0
-        for row in self.sheets[sheet_name]:
+        for row_index, row in enumerate(self.sheets[sheet_name]):
+            username_key = " ".join(str(row.username or "").split()).casefold()
+            if latest_username_rows.get(username_key) != row_index:
+                continue
             if row.deployment_date < start_day or row.deployment_date > current_day:
                 continue
             if row.deployment_date == current_day and not include_today:
@@ -809,6 +818,7 @@ class WorkbookImport:
                 "username": username,
                 "current_status": current_status or "No status",
                 "device_allocation": row.device_allocation or "",
+                "attending": row.enabled,
                 "included": True,
                 "status": "",
             })
