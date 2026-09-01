@@ -5063,7 +5063,6 @@ async function prepareImport() {
         user: request.username,
         returning: false,
         returning_user: "",
-        return_confirmed: true,
         returning_user_info: null,
         location: null,
         group: "Deployments",

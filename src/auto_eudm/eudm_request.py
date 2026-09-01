@@ -323,12 +323,6 @@ class SimulationClient:
                 ],
             ),
             self._item("DataTable", "location", "Please select location"),
-            self._item(
-                "RadioButtons",
-                "is-return",
-                "Is this a return from a user",
-                [("YES", "Yes"), ("NO", "No")],
-            ),
             self._item("YesNo", "add-dropoff", "Add Name of person who dropped off device"),
             self._item(
                 "TextField",
@@ -1195,7 +1189,6 @@ def deploy_device_to_location(
     room: str,
     cabinet: str | None = None,
     returning_user: str | None = None,
-    return_confirmed: bool = False,
     bulk: bool = False,
     submit: bool = True,
     on_request_created: Any | None = None,
@@ -1223,10 +1216,6 @@ def deploy_device_to_location(
     if bulk and returning_user:
         raise EUDMError(
             "Bulk location requests cannot include a returning user; use individual requests."
-        )
-    if returning_user and not return_confirmed:
-        raise EUDMError(
-            "Confirm that the returning user, device, and location details are correct."
         )
     for label, value in (
         ("request-for login ID", request_for),
@@ -1340,39 +1329,34 @@ def deploy_device_to_location(
             location_value,
         )
 
-        if not bulk:
-            returned = field_by_label(
-                all_items, "Is this a return from a user", type_="RadioButtons"
+        if not bulk and returning_user:
+            # EUDM now exposes the drop-off details directly; the old
+            # “Is this a return from a user” branch is no longer present.
+            add_dropoff = field_by_label(
+                all_items,
+                "Add Name of person who dropped off device",
+                type_="YesNo",
             )
-            if returning_user:
-                answer(client, request_id, questionnaire_id, returned, "YES")
-                add_dropoff = field_by_label(
-                    all_items,
-                    "Add Name of person who dropped off device",
-                    type_="YesNo",
-                )
-                answer(client, request_id, questionnaire_id, add_dropoff, "true")
-                search_question_and_answer_exact(
-                    client,
-                    request_id,
-                    questionnaire_id,
-                    all_items,
-                    "Search Name or User ID that dropped off devices",
-                    "Select person who dropped device/s off",
-                    returning_user,
-                )
-                confirmation = field_by_label(
-                    all_items, "Does this look right?", type_="RadioButtons"
-                )
-                answer(
-                    client,
-                    request_id,
-                    questionnaire_id,
-                    confirmation,
-                    "YES",
-                )
-            else:
-                answer(client, request_id, questionnaire_id, returned, "NO")
+            answer(client, request_id, questionnaire_id, add_dropoff, "true")
+            search_question_and_answer_exact(
+                client,
+                request_id,
+                questionnaire_id,
+                all_items,
+                "Search Name or User ID that dropped off devices",
+                "Select person who dropped device/s off",
+                returning_user,
+            )
+            confirmation = field_by_label(
+                all_items, "Does this look right?", type_="RadioButtons"
+            )
+            answer(
+                client,
+                request_id,
+                questionnaire_id,
+                confirmation,
+                "YES",
+            )
 
         if not submit:
             return DeploymentResult(
@@ -1684,11 +1668,9 @@ Safety:
         )
         answer(client, request_id, questionnaire_id, location_table, location_value)
 
-        # Bulk mode ends after location selection. Individual location returns
-        # additionally activate and complete EUDM's returning-user branch.
-        if not args.batch:
-            returned = field_by_label(all_items, "Is this a return from a user", type_="RadioButtons")
-            answer(client, request_id, questionnaire_id, returned, "YES")
+        # Bulk mode ends after location selection. Individual requests can
+        # still record the person returning the device directly.
+        if not args.batch and args.dropped_by:
             add_dropoff = field_by_label(all_items, "Add Name of person who dropped off device", type_="YesNo")
             answer(client, request_id, questionnaire_id, add_dropoff, "true")
             search_question_and_answer(

@@ -85,7 +85,6 @@ def populate_spec(
         room=location.room,
         cabinet=location.cabinet,
         returning_user=spec.returning_user,
-        return_confirmed=spec.return_confirmed,
         bulk=spec.kind == "bulk_location",
         submit=submit,
         on_request_created=on_request_created,

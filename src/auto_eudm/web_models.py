@@ -154,7 +154,6 @@ class RequestSpec:
     user: str | None
     returning_requested: bool
     returning_user: str | None
-    return_confirmed: bool
     returning_user_info: dict[str, Any] | None
     location: Location | None
     group: str
@@ -208,11 +207,6 @@ class RequestSpec:
             user=clean(raw.get("user")) or None,
             returning_requested=returning or bool(returning_user),
             returning_user=returning_user,
-            # The web UI shows return details in the request editor and again
-            # in final review. That visible review replaces the old per-row
-            # confirmation checkbox while the core API still receives the
-            # explicit confirmation flag it requires.
-            return_confirmed=True,
             returning_user_info=returning_user_info,
             location=location,
             group=clean(raw.get("group")) or "Requests",
@@ -314,7 +308,6 @@ class RequestSpec:
             "user": self.user or "",
             "returning": self.returning_requested,
             "returning_user": self.returning_user or "",
-            "return_confirmed": self.return_confirmed,
             "user_info": self.user_info or None,
             "returning_user_info": self.returning_user_info or None,
             "location": self.location.to_json() if self.location else None,
@@ -732,7 +725,6 @@ class WorkbookImport:
                 user=action.username if action.kind == "user" else None,
                 returning_requested=action.kind == "location",
                 returning_user=action.username if action.kind == "location" else None,
-                return_confirmed=action.kind != "location",
                 returning_user_info=None,
                 location=location if action.kind == "location" else None,
                 group=action.group,
