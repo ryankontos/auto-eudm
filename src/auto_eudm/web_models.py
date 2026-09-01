@@ -525,11 +525,23 @@ class WorkbookImport:
                 deployment_count, returned_device_count, pending_return_count = inventory.eligible_counts(
                     rows, selected_date=selected
                 )
+                missing_username_deployment_count = sum(
+                    row.enabled
+                    and inventory.looks_like_serial(row.deployment_serial)
+                    and not str(row.username or "").strip()
+                    for row in selected_rows
+                )
                 groups = []
                 for group_number in sorted({row.date_group for row in selected_rows}):
                     group_rows = [row for row in selected_rows if row.date_group == group_number]
                     group_deployments, group_returned, group_pending = inventory.eligible_counts(
                         rows, selected_date=selected, date_group=group_number
+                    )
+                    group_missing_username_deployments = sum(
+                        row.enabled
+                        and inventory.looks_like_serial(row.deployment_serial)
+                        and not str(row.username or "").strip()
+                        for row in group_rows
                     )
                     groups.append(
                         {
@@ -543,6 +555,7 @@ class WorkbookImport:
                                 )
                             ),
                             "deployment_count": group_deployments,
+                            "missing_username_deployment_count": group_missing_username_deployments,
                             "returned_device_count": group_returned,
                             "pending_return_count": group_pending,
                         }
@@ -553,6 +566,7 @@ class WorkbookImport:
                         "value": selected.isoformat(),
                         "label": inventory.format_date_label(selected),
                         "deployment_count": deployment_count,
+                        "missing_username_deployment_count": missing_username_deployment_count,
                         "returned_device_count": returned_device_count,
                         "pending_return_count": pending_return_count,
                         "row_count": len(selected_rows),
@@ -621,6 +635,7 @@ class WorkbookImport:
             group_selection = None
         actions: list[inventory.Action] = []
         ignored: Counter[str] = Counter()
+        missing_username_deployments: list[dict[str, Any]] = []
         for chosen_date in chosen_dates:
             selected_group = selections.get(chosen_date.isoformat(), group_selection)
             date_actions, date_ignored = inventory.build_actions(
@@ -631,7 +646,26 @@ class WorkbookImport:
             )
             actions.extend(date_actions)
             ignored.update(date_ignored)
-        if not actions:
+            if "deployments" in selected_modes:
+                raw_group = str(selected_group or "all").strip().casefold()
+                selected_group_number = None if raw_group in {"", "all"} else int(raw_group)
+                for row in self.sheets[sheet_name]:
+                    if row.deployment_date != chosen_date:
+                        continue
+                    if selected_group_number is not None and row.date_group != selected_group_number:
+                        continue
+                    if not row.enabled or str(row.username or "").strip():
+                        continue
+                    if not inventory.looks_like_serial(row.deployment_serial):
+                        continue
+                    missing_username_deployments.append(
+                        {
+                            "row_number": row.row_number,
+                            "date": chosen_date.isoformat(),
+                            "serial": str(row.deployment_serial).strip(),
+                        }
+                    )
+        if not actions and not missing_username_deployments:
             raise eudm.EUDMError(
                 "No deployable rows remain for the selected dates and sections."
             )
@@ -699,6 +733,9 @@ class WorkbookImport:
         )
         return {
             "requests": requests,
+            "warnings": {
+                "missing_username_deployments": missing_username_deployments,
+            },
             "dates": [chosen.isoformat() for chosen in chosen_dates],
             "ignored": [
                 {"reason": reason, "count": count}

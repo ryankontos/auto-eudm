@@ -3426,13 +3426,14 @@ function updateImportCounts() {
     return groupValue && groupValue !== "all" && group ? group : entry;
   });
   const deploymentCount = counts.reduce((total, item) => total + Number(item?.deployment_count || 0), 0);
+  const missingUsernameDeploymentCount = counts.reduce((total, item) => total + Number(item?.missing_username_deployment_count || 0), 0);
   const returnedDeviceCount = counts.reduce((total, item) => total + Number(item?.returned_device_count || 0), 0);
   const pendingReturnCount = counts.reduce((total, item) => total + Number(item?.pending_return_count || 0), 0);
-  $("#deploymentImportCount").textContent = `${deploymentCount} request${deploymentCount === 1 ? "" : "s"}`;
+  $("#deploymentImportCount").textContent = `${deploymentCount} request${deploymentCount === 1 ? "" : "s"}${missingUsernameDeploymentCount ? ` · ${missingUsernameDeploymentCount} warning${missingUsernameDeploymentCount === 1 ? "" : "s"}` : ""}`;
   $("#returnedDeviceImportCount").textContent = `${returnedDeviceCount} request${returnedDeviceCount === 1 ? "" : "s"}`;
   $("#pendingReturnImportCount").textContent = `${pendingReturnCount} request${pendingReturnCount === 1 ? "" : "s"}`;
   const modes = selectedImportModes();
-  const selectedCount = (modes.includes("deployments") ? deploymentCount : 0)
+  const selectedCount = (modes.includes("deployments") ? deploymentCount + missingUsernameDeploymentCount : 0)
     + (modes.includes("returned_devices") ? returnedDeviceCount : 0)
     + (modes.includes("pending_returns") ? pendingReturnCount : 0);
   const groupRequired = selectedDates.some((entry) =>
@@ -4289,7 +4290,10 @@ function renderImportPreview() {
   ];
   $("#importPreviewList").innerHTML = groups.map((group) => {
     const requests = payload.requests.filter((request) => request.group === group.key);
-    if (!requests.length) return "";
+    const missingUsernameWarnings = group.key === "Deployments"
+      ? (Array.isArray(payload.warnings?.missing_username_deployments) ? payload.warnings.missing_username_deployments : [])
+      : [];
+    if (!requests.length && !missingUsernameWarnings.length) return "";
     const selectedCount = requests.filter((request) => request.included !== false).length;
     const expanded = state.importExpandedGroups.has(group.key);
     const visibleRequests = expanded ? requests : requests.slice(0, IMPORT_PREVIEW_ROW_LIMIT);
@@ -4333,6 +4337,9 @@ function renderImportPreview() {
         <div>${statusControl}${isIncluded ? validation : "<small>Do not deploy</small>"}${editable}</div>
       </div>`;
     }).join("");
+    const missingUsernameWarning = missingUsernameWarnings.length
+      ? `<div class="import-data-warning" role="status"><strong>Deployment serial${missingUsernameWarnings.length === 1 ? "" : "s"} without a username</strong><small>These rows have no username in the Username column.</small><ul>${missingUsernameWarnings.map((warning) => `<li>${escapeHtml(warning.serial)} · row ${escapeHtml(warning.row_number)} · ${escapeHtml(warning.date)}</li>`).join("")}</ul></div>`
+      : "";
     const bulkStatusOptions = ALM_IMPORT_STATUS_OPTIONS[group.key] || [];
     const bulkStatusControl = bulkStatusOptions.length
       ? `<select data-import-status-all="${escapeHtml(group.key)}" aria-label="Set status for all ${escapeHtml(group.key.toLowerCase())}">
@@ -4359,6 +4366,7 @@ function renderImportPreview() {
           <button class="text-button" type="button" data-import-group="${escapeHtml(group.key)}" data-include="false">None</button>
         </div>
       </div>
+      ${missingUsernameWarning}
       ${rows}
       ${visibleRequests.length < requests.length ? `<button class="import-show-more" type="button" data-import-expand="${escapeHtml(group.key)}">Show ${requests.length - visibleRequests.length} more</button>` : ""}
     </section>`;

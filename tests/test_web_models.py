@@ -214,6 +214,27 @@ class WorkbookUploadTests(unittest.TestCase):
         self.assertFalse(request["has_returned_device_serial"])
         self.assertFalse(request["has_pending_return_serial"])
 
+    def test_workbook_prepare_reports_deployment_serial_without_username(self) -> None:
+        row = inventory.SheetRow(
+            row_number=2,
+            deployment_date=date(2025, 2, 3),
+            username=None,
+            deployment_serial="SERIAL123",
+            returned_device_serial=None,
+            pending_return_serial=None,
+            marked_red=False,
+            enabled=True,
+        )
+        workbook = WorkbookImport("import-missing-user", "tracking.xlsx", {"Sheet": [row]})
+
+        payload = workbook.prepare("Sheet", "2025-02-03", "deployments")
+
+        self.assertEqual(payload["requests"], [])
+        self.assertEqual(
+            payload["warnings"]["missing_username_deployments"],
+            [{"row_number": 2, "date": "2025-02-03", "serial": "SERIAL123"}],
+        )
+
     def test_backlog_filters_rows_and_labels_duplicate_username_occurrences(self) -> None:
         rows = [
             inventory.SheetRow(

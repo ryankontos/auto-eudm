@@ -1120,6 +1120,22 @@ fieldset { margin: 0; padding: 0; border: 0; }
   white-space: nowrap;
 }
 .import-group-actions select { max-width: 180px; min-height: 30px; font-size: 11px; }
+.import-data-warning {
+  margin: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--amber-border);
+  border-left-width: 3px;
+  border-radius: 4px;
+  color: var(--amber-text);
+  background: var(--amber-surface);
+  font-size: 11px;
+  line-height: 1.35;
+}
+.import-data-warning strong,
+.import-data-warning small { display: block; }
+.import-data-warning small { margin-top: 2px; color: var(--amber-text); font-size: 11px; }
+.import-data-warning ul { margin: 4px 0 0; padding-left: 17px; }
+.import-data-warning li + li { margin-top: 2px; }
 .import-preview-row {
   display: grid;
   grid-template-columns: 42px minmax(100px, .8fr) minmax(100px, .7fr) minmax(150px, 1.2fr);
