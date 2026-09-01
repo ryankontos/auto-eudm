@@ -1207,6 +1207,15 @@ class Application:
                     "new_asset_status",
                 )
             }
+            # These columns were added after the first settings format. Keep
+            # old settings useful by applying the normal default when the key
+            # is absent, while preserving an explicit blank as disabled.
+            for key, default in (
+                ("device_allocation", "Device(s) Allocation"),
+                ("new_asset_status", "New Asset Status"),
+            ):
+                if key not in columns:
+                    normalised[key] = default
             if not all(normalised[key] for key in ("username", "deployment_serial", "pending_return")):
                 raise eudm.EUDMError(
                     "Set the username, deployment serial, and pending return columns."

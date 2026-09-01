@@ -284,6 +284,7 @@ class WorkbookUploadTests(unittest.TestCase):
         self.assertEqual([item["serial"] for item in payload["candidates"]], ["SERIAL123"])
         self.assertEqual(payload["candidates"][0]["username_occurrence"], 1)
         self.assertEqual(payload["ignored_count"], 1)
+        self.assertEqual(payload["counts"]["ignored"], 1)
 
         payload = workbook.prepare_backlog(
             "Sheet", 5, True, set(), today=date(2025, 2, 10)
@@ -293,6 +294,8 @@ class WorkbookUploadTests(unittest.TestCase):
         self.assertEqual([item["row_number"] for item in candidates], [2, 5])
         self.assertEqual([item["username_occurrence"] for item in candidates], [1, 2])
         self.assertEqual([item["username_occurrence_total"] for item in candidates], [2, 2])
+        self.assertEqual(len({item["id"] for item in candidates}), 2)
+        self.assertEqual(payload["counts"]["candidates"], 2)
         self.assertTrue(candidates[0]["attending"])
         self.assertTrue(candidates[0]["included"])
         self.assertFalse(candidates[1]["attending"])

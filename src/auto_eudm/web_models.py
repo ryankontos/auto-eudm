@@ -781,6 +781,7 @@ class WorkbookImport:
         current_day = today or date.today()
         start_day = current_day - timedelta(days=days)
         ignored = ignored_keys or set()
+        filtered: Counter[str] = Counter()
         username_occurrences: dict[int, int] = {}
         username_totals: dict[str, int] = {}
         for row_index, row in enumerate(self.sheets[sheet_name]):
@@ -795,25 +796,33 @@ class WorkbookImport:
         for row_index, row in enumerate(self.sheets[sheet_name]):
             username_key = " ".join(str(row.username or "").split()).casefold()
             if row.deployment_date < start_day or row.deployment_date > current_day:
+                filtered["outside_range"] += 1
                 continue
             if row.deployment_date == current_day and not include_today:
+                filtered["today_excluded"] += 1
                 continue
             if not inventory.looks_like_serial(row.deployment_serial):
+                filtered["missing_serial"] += 1
                 continue
             if not inventory.looks_like_username(row.username):
+                filtered["invalid_username"] += 1
                 continue
-            current_status = (row.new_asset_status or "").strip()
+            current_status = " ".join(str(row.new_asset_status or "").split())
             if current_status.casefold().startswith("deployed"):
+                filtered["already_deployed"] += 1
                 continue
             serial = str(row.deployment_serial).strip()
             username = str(row.username).strip()
             key = self.backlog_key(serial, username)
             if key in ignored:
                 ignored_count += 1
+                filtered["ignored"] += 1
                 continue
             occurrence = username_occurrences[row_index]
             candidates.append({
-                "id": f"{self.import_id}-{row.row_number}-{serial}",
+                # The row number makes repeated username/serial combinations
+                # distinct review items instead of silently collapsing them.
+                "id": f"{self.import_id}-{row.row_number}-{occurrence}",
                 "row_number": row.row_number,
                 "date": row.deployment_date.isoformat(),
                 "serial": serial,
@@ -837,5 +846,13 @@ class WorkbookImport:
             "end_date": current_day.isoformat(),
             "candidates": candidates,
             "ignored_count": ignored_count,
-            "counts": {"candidates": len(candidates)},
+            "counts": {
+                "candidates": len(candidates),
+                "already_deployed": filtered["already_deployed"],
+                "ignored": filtered["ignored"],
+                "outside_range": filtered["outside_range"],
+                "today_excluded": filtered["today_excluded"],
+                "missing_serial": filtered["missing_serial"],
+                "invalid_username": filtered["invalid_username"],
+            },
         }

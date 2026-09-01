@@ -100,8 +100,16 @@ def columns_from_mapping(raw: dict[str, Any] | None = None) -> ImportColumns:
         returned_device=clean_text(raw.get("returned_device")) or "",
         pending_return=clean_text(raw.get("pending_return")) or "OLD Device SN",
         enabled=clean_text(raw.get("enabled")) or "",
-        device_allocation=clean_text(raw.get("device_allocation")) or "",
-        new_asset_status=clean_text(raw.get("new_asset_status")) or "",
+        device_allocation=(
+            clean_text(raw.get("device_allocation"))
+            if "device_allocation" in raw
+            else "Device(s) Allocation"
+        ) or "",
+        new_asset_status=(
+            clean_text(raw.get("new_asset_status"))
+            if "new_asset_status" in raw
+            else "New Asset Status"
+        ) or "",
     )
 
 

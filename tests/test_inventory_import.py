@@ -47,6 +47,7 @@ class ImportColumnTests(unittest.TestCase):
         )
         self.assertEqual(columns.returned_device, "")
         self.assertEqual(columns.device_allocation, "")
+        self.assertEqual(columns.new_asset_status, "New Asset Status")
 
     def test_missing_header_error_lists_only_required_columns(self) -> None:
         with self.assertRaises(eudm.EUDMError) as raised:

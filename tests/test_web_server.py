@@ -173,8 +173,24 @@ class LocalWebServerTests(unittest.TestCase):
     def test_import_drafts_are_read_written_and_deleted_through_local_api(self) -> None:
         draft = {
             "id": "draft-1",
-            "workbook": {"import_id": "import-1"},
+            "workbook": {"import_id": "import-1", "filename": "tracking.xlsx"},
             "phase": "review",
+            "settings": {
+                "mode": "backlog",
+                "sheet": "Bookings 2026",
+                "backlog_days": 30,
+                "backlog_include_today": False,
+            },
+            "preview": {
+                "mode": "backlog",
+                "requests": [{
+                    "id": "import-1-42-2",
+                    "serial": "SERIAL123",
+                    "username": "valid.user",
+                    "included": False,
+                    "status": "Deployed - Existing Stock",
+                }],
+            },
         }
         response, raw = self.request("POST", "/api/import-drafts", payload=draft)
         self.assertEqual(response.status, 200)

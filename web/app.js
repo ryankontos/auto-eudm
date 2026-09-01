@@ -38,6 +38,7 @@ const state = {
   modelStatusContext: null,
   queueDropDepth: 0,
   validationTimers: new Map(),
+  backlogValidationIds: new Set(),
   bulkValidationRenderFrame: null,
   bulkValidationNeedsFullRender: false,
   quickImportRenderFrame: null,
@@ -1166,17 +1167,50 @@ function queueValidation() {
 }
 
 function serialResultMatches(result, serial) {
-  const wanted = String(serial || "").toLowerCase();
-  return [result?.value, ...(result?.columns || [])]
-    .map((value) => String(value || "").toLowerCase())
+  const wanted = String(serial || "").trim().toLowerCase();
+  return [result?.value, ...(Array.isArray(result?.columns) ? result.columns : [])]
+    .map((value) => String(value || "").trim().toLowerCase())
     .includes(wanted);
 }
 
 function userResultMatches(result, query) {
-  const wanted = String(query || "").trim().toLowerCase();
-  return [result?.value, ...(result?.columns || [])]
-    .map((value) => String(value || "").trim().toLowerCase())
+  const wanted = normalisedLookupValue(query);
+  return [result?.value, ...(Array.isArray(result?.columns) ? result.columns : [])]
+    .map(normalisedLookupValue)
     .includes(wanted);
+}
+
+function verifiedUserInfo(result, query) {
+  if (!userResultMatches(result, query)) return null;
+  const login = bestLogin(result, query);
+  if (!/^[A-Za-z][A-Za-z0-9._-]*$/.test(login)) return null;
+  const columns = Array.isArray(result?.columns) ? result.columns : [result?.value];
+  return {
+    login,
+    columns: columns.map((value) => String(value || "").trim()).filter(Boolean),
+  };
+}
+
+function normalisedLookupValue(value) {
+  return String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function userInfoMatchesQuery(info, query) {
+  if (!info || !normalisedLookupValue(query)) return false;
+  const values = [
+    info.login,
+    ...(Array.isArray(info.columns) ? info.columns : []),
+  ];
+  return values.some((value) => normalisedLookupValue(value) === normalisedLookupValue(query));
+}
+
+function importCachedVerificationFields(request) {
+  const fields = [];
+  if (request.cached_serial_verification && request.serials?.[0]) fields.push("serial");
+  const username = request.user || request.returning_user || request.username;
+  const userInfo = request.user_info || request.returning_user_info;
+  if (request.cached_user_verification && userInfoMatchesQuery(userInfo, username)) fields.push("user");
+  return fields;
 }
 
 function setBulkSerialState(request, serial, stateName, error = "") {
@@ -1988,7 +2022,8 @@ function locationCities(location) {
 }
 
 function bestLogin(result, query) {
-  const columns = (result?.columns || []).map((value) => String(value || "").trim());
+  const columns = (Array.isArray(result?.columns) ? result.columns : [])
+    .map((value) => String(value || "").trim());
   const valid = (value) => /^[A-Za-z][A-Za-z0-9._-]*$/.test(String(value || "").trim());
   const exact = [result?.login, result?.value, ...columns]
     .map((value) => String(value || "").trim())
@@ -2563,7 +2598,9 @@ function updateConnection(status) {
   if (status.state === "connected") renderAll();
   else renderQueue();
   if (connectionIsReady(status) && !["connected", "simulation"].includes(previousState)) {
+    window.setTimeout(resumePendingImportValidation, 0);
     window.setTimeout(resumePendingBulkValidation, 0);
+    window.setTimeout(resumePendingBacklogValidation, 0);
   }
 }
 
@@ -3274,6 +3311,7 @@ function resetImportDialog(mode = state.importMode || "deploy") {
   state.importPreview = null;
   state.importDraftId = null;
   state.importExpandedGroups.clear();
+  state.backlogValidationIds.clear();
   $("#workbookInput").value = "";
   $("#importFileChooser").hidden = false;
   setImportStage("choose");
@@ -4080,6 +4118,39 @@ function restoreImportDraftMapping(settings = {}) {
   updateImportColumnMapButton();
 }
 
+function restoreImportPreviewState(rawPreview) {
+  const preview = rawPreview && typeof rawPreview === "object"
+    ? rawPreview
+    : null;
+  if (!preview) return null;
+  if (!Array.isArray(preview.requests)) {
+    const candidates = Array.isArray(preview.candidates) ? preview.candidates : [];
+    preview.requests = candidates.map((candidate) => ({
+      ...candidate,
+      import_validation: candidate.included === false ? "idle" : "pending",
+      import_error: "",
+      eudm_device_type: "",
+      user_info: null,
+    }));
+  }
+  preview.requests.forEach((request) => {
+    if (request.included === undefined) request.included = request.default_excluded !== true;
+    if (request.included === false) {
+      request.import_validation = "idle";
+    } else if (request.import_validation === "checking"
+      || request.cached_serial_verification
+      || request.cached_user_verification) {
+      // A cached result is usable immediately, but a spinner from a previous
+      // browser session cannot be left running forever. Re-enter validation
+      // so the cache can be used again and refreshed in the background.
+      request.import_validation = "pending";
+    }
+    request.cached_serial_verification = false;
+    request.cached_user_verification = false;
+  });
+  return preview;
+}
+
 function resumeImportDraft(id) {
   const draft = readImportDrafts().find((item) => item.id === id);
   if (!draft?.workbook?.import_id) return;
@@ -4099,7 +4170,11 @@ function resumeImportDraft(id) {
     saveCurrentImportDraft();
     return;
   }
-  state.importPreview = JSON.parse(JSON.stringify(draft.preview));
+  state.importPreview = restoreImportPreviewState(JSON.parse(JSON.stringify(draft.preview)));
+  if (!state.importPreview) {
+    saveCurrentImportDraft();
+    return;
+  }
   setImportStage("preview");
   $("#backImportButton").hidden = false;
   setImportStep(3);
@@ -4107,8 +4182,8 @@ function resumeImportDraft(id) {
   updateImportPrepareButton(state.importPreview);
   const pending = state.importPreview.requests.some((request) => request.included !== false && !["valid", "failed"].includes(request.import_validation));
   if (pending) {
-    if (state.importPreview.mode === "backlog") validateBacklogPreview(state.importPreview);
-    else validateImportPreview();
+    if (state.importPreview.mode === "backlog") void validateBacklogPreview(state.importPreview);
+    else void validateImportPreview();
   }
 }
 
@@ -4190,12 +4265,13 @@ function updateImportPrepareButton(payload = state.importPreview) {
 }
 
 function renderBacklogPreview(payload) {
-  const included = payload.requests.filter((request) => request.included !== false);
+  const requests = Array.isArray(payload.requests) ? payload.requests : (payload.requests = []);
+  const included = requests.filter((request) => request.included !== false);
   $("#importVerificationWarnings").hidden = true;
   $("#importPreviewTitle").textContent = `${included.length} undeployed device${included.length === 1 ? "" : "s"}`;
   $("#importPreviewSubtitle").textContent = `${payload.sheet} · ${payload.start_date} to ${payload.end_date}${payload.include_today ? " · including today" : ""}`;
   $("#importPreviewCount").textContent = `${included.length} selected`;
-  const rows = payload.requests.map((request, index) => {
+  const rows = requests.map((request, index) => {
     const options = DEVICE_MODEL_STATUS_OPTIONS.user;
     const notAttending = request.attending === false;
     const usernameOccurrence = Number(request.username_occurrence || 0);
@@ -4216,10 +4292,7 @@ function renderBacklogPreview(payload) {
       </select>
       <button class="button secondary compact" type="button" data-model-status-backlog="${escapeHtml(request.id)}" title="Suggest a status from the checked device model">Suggest</button>
     </div>`;
-    const cachedFields = [
-      request.cached_serial_verification ? "serial" : "",
-      request.cached_user_verification ? "user" : "",
-    ].filter(Boolean);
+    const cachedFields = importCachedVerificationFields(request);
     const validation = request.import_validation === "checking"
       ? `<small class="import-checking" ${spinnerPhaseStyle(750)}>Verifying serial and user details in EUDM…</small>`
       : request.import_validation === "failed"
@@ -4241,16 +4314,16 @@ function renderBacklogPreview(payload) {
     </div>`;
   }).join("");
   $("#importPreviewList").innerHTML = rows
-    ? `<section class="import-preview-section"><div class="import-group-heading"><div><strong>Undeployed devices</strong><small>${included.length} of ${payload.requests.length} selected</small></div><div class="import-group-actions"><button class="text-button" type="button" data-backlog-group="all">All</button><button class="text-button" type="button" data-backlog-group="none">None</button></div></div>${rows}</section>`
+    ? `<section class="import-preview-section"><div class="import-group-heading"><div><strong>Undeployed devices</strong><small>${included.length} of ${requests.length} selected</small></div><div class="import-group-actions"><button class="text-button" type="button" data-backlog-group="all">All</button><button class="text-button" type="button" data-backlog-group="none">None</button></div></div>${rows}</section>`
     : '<div class="import-empty">No undeployed devices were found in this range.</div>';
   $("#importPreviewList").querySelectorAll("[data-backlog-status]").forEach((select) => select.addEventListener("change", () => {
-    const request = payload.requests.find((item) => item.id === select.dataset.backlogStatus);
+    const request = requests.find((item) => item.id === select.dataset.backlogStatus);
     if (request) request.status = select.value;
     updateImportPrepareButton(payload);
     saveCurrentImportDraft();
   }));
   $("#importPreviewList").querySelectorAll("[data-model-status-backlog]").forEach((button) => button.addEventListener("click", () => {
-    const request = payload.requests.find((item) => item.id === button.dataset.modelStatusBacklog);
+    const request = requests.find((item) => item.id === button.dataset.modelStatusBacklog);
     if (!request) return;
     openModelStatusDialog({
       kind: "user",
@@ -4264,22 +4337,40 @@ function renderBacklogPreview(payload) {
     });
   }));
   $("#importPreviewList").querySelectorAll("[data-backlog-include]").forEach((checkbox) => checkbox.addEventListener("change", () => {
-    const request = payload.requests.find((item) => item.id === checkbox.dataset.backlogInclude);
+    const request = requests.find((item) => item.id === checkbox.dataset.backlogInclude);
     if (!request) return;
     request.included = checkbox.checked;
     request.default_excluded = false;
+    request.backlog_validation_epoch = Number(request.backlog_validation_epoch || 0) + 1;
+    const shouldValidate = checkbox.checked && request.import_validation !== "valid";
+    if (!checkbox.checked) {
+      state.backlogValidationIds.delete(request.id);
+      request.import_validation = "idle";
+      request.import_error = "";
+      request.import_failed_fields = [];
+      request.cached_serial_verification = false;
+      request.cached_user_verification = false;
+    }
     if (!checkbox.checked) {
       void api("/api/import/backlog/ignore", { method: "POST", body: JSON.stringify({ serial: request.serial, username: request.username }) });
     }
     renderImportPreview();
     updateImportPrepareButton(payload);
     saveCurrentImportDraft();
+    if (shouldValidate) void validateBacklogPreview(payload, [request]);
   }));
   $("#importPreviewList").querySelectorAll("[data-backlog-ignore]").forEach((button) => button.addEventListener("click", () => {
-    const request = payload.requests.find((item) => item.id === button.dataset.backlogIgnore);
+    const request = requests.find((item) => item.id === button.dataset.backlogIgnore);
     if (!request) return;
     request.included = false;
     request.default_excluded = false;
+    request.backlog_validation_epoch = Number(request.backlog_validation_epoch || 0) + 1;
+    state.backlogValidationIds.delete(request.id);
+    request.import_validation = "idle";
+    request.import_error = "";
+    request.import_failed_fields = [];
+    request.cached_serial_verification = false;
+    request.cached_user_verification = false;
     void api("/api/import/backlog/ignore", { method: "POST", body: JSON.stringify({ serial: request.serial, username: request.username }) });
     renderImportPreview();
     updateImportPrepareButton(payload);
@@ -4287,15 +4378,29 @@ function renderBacklogPreview(payload) {
   }));
   $("#importPreviewList").querySelectorAll("[data-backlog-group]").forEach((button) => button.addEventListener("click", () => {
     const include = button.dataset.backlogGroup === "all";
-    payload.requests.forEach((request) => {
+    const toValidate = [];
+    requests.forEach((request) => {
       request.included = include;
       request.default_excluded = false;
+      request.backlog_validation_epoch = Number(request.backlog_validation_epoch || 0) + 1;
+      state.backlogValidationIds.delete(request.id);
+      if (include) {
+        if (request.import_validation !== "valid") toValidate.push(request);
+      } else {
+        request.import_validation = "idle";
+        request.import_error = "";
+        request.import_failed_fields = [];
+        request.cached_serial_verification = false;
+        request.cached_user_verification = false;
+      }
       if (!include) void api("/api/import/backlog/ignore", { method: "POST", body: JSON.stringify({ serial: request.serial, username: request.username }) });
     });
     renderImportPreview();
     updateImportPrepareButton(payload);
     saveCurrentImportDraft();
+    if (toValidate.length) void validateBacklogPreview(payload, toValidate);
   }));
+  saveCurrentImportDraft();
 }
 
 function renderImportPreview() {
@@ -4352,10 +4457,7 @@ function renderImportPreview() {
             <button class="button secondary compact" type="button" data-model-status-import="${escapeHtml(request.id)}" title="Suggest a status from the checked device model">Suggest</button>
             </div>`
         : `<span class="fixed-status">Deployed - Pending Return</span>`;
-      const cachedFields = [
-        request.cached_serial_verification ? "serial" : "",
-        request.cached_user_verification ? "user" : "",
-      ].filter(Boolean);
+      const cachedFields = importCachedVerificationFields(request);
       const validation = request.import_validation === "checking"
       ? `<small class="import-checking" ${spinnerPhaseStyle(750)}>Verifying serial and user details in EUDM…</small>`
         : request.import_validation === "failed"
@@ -4417,6 +4519,7 @@ function renderImportPreview() {
       const request = payload.requests.find((item) => item.id === select.dataset.importStatus);
       if (request) request.status = select.value;
       updateImportPrepareButton(payload);
+      saveCurrentImportDraft();
     });
   });
   $("#importPreviewList").querySelectorAll("[data-model-status-import]").forEach((button) => {
@@ -4435,6 +4538,7 @@ function renderImportPreview() {
           request.status = status;
           renderImportPreview();
           updateImportPrepareButton(payload);
+          saveCurrentImportDraft();
         },
       });
     });
@@ -4447,6 +4551,7 @@ function renderImportPreview() {
       .forEach((request) => { request.status = status; });
     renderImportPreview();
     updateImportPrepareButton(payload);
+    saveCurrentImportDraft();
   }));
   $("#importPreviewList").querySelectorAll("[data-import-apply-suggestions]").forEach((button) => button.addEventListener("click", () => {
     const group = button.dataset.importApplySuggestions;
@@ -4463,24 +4568,55 @@ function renderImportPreview() {
       });
     renderImportPreview();
     updateImportPrepareButton(payload);
+    saveCurrentImportDraft();
     toast(applied ? `Applied ${applied} model suggestion${applied === 1 ? "" : "s"}.` : "No exact model mappings matched the ALM allocation names.", applied ? "success" : "info");
   }));
   $("#importPreviewList").querySelectorAll("[data-import-include]").forEach((checkbox) => {
     checkbox.addEventListener("change", () => {
       const request = payload.requests.find((item) => item.id === checkbox.dataset.importInclude);
-      if (request) request.included = checkbox.checked;
+      if (!request) return;
+      request.included = checkbox.checked;
+      request.import_validation_epoch = Number(request.import_validation_epoch || 0) + 1;
+      if (!checkbox.checked) {
+        request.import_validation = "idle";
+        request.import_error = "";
+        request.import_failed_fields = [];
+        request.cached_serial_verification = false;
+        request.cached_user_verification = false;
+        request.user_info = null;
+        request.returning_user_info = null;
+      }
       renderImportPreview();
       updateImportPrepareButton(payload);
+      saveCurrentImportDraft();
+      if (checkbox.checked && request.import_validation !== "valid") void validateImportPreview([request]);
     });
   });
   $("#importPreviewList").querySelectorAll("[data-import-group]").forEach((button) => {
     button.addEventListener("click", () => {
       const included = button.dataset.include === "true";
+      const toValidate = [];
       payload.requests
         .filter((request) => request.group === button.dataset.importGroup)
-        .forEach((request) => { request.included = included; });
+        .forEach((request) => {
+          request.included = included;
+          request.import_validation_epoch = Number(request.import_validation_epoch || 0) + 1;
+          if (included) {
+            if (request.import_validation !== "valid") toValidate.push(request);
+          } else {
+            request.import_validation = "idle";
+            request.import_error = "";
+            request.import_failed_fields = [];
+            request.cached_serial_verification = false;
+            request.cached_user_verification = false;
+            request.user_info = null;
+            request.returning_user_info = null;
+          }
+        });
       renderImportPreview();
       updateImportPrepareButton(payload);
+      saveCurrentImportDraft();
+      if (toValidate.length) void validateImportPreview(toValidate);
     });
   });
   $("#importPreviewList").querySelectorAll("[data-import-expand]").forEach((button) => {
@@ -4501,7 +4637,11 @@ function renderImportPreview() {
         request.returning_user_info = null;
       } else request.user = user.value.trim();
     }
-    validateImportPreview([request]);
+    request.cached_serial_verification = false;
+    request.cached_user_verification = false;
+    request.user_info = null;
+    request.returning_user_info = null;
+    void validateImportPreview([request]);
   }));
   saveCurrentImportDraft();
 }
@@ -4516,16 +4656,48 @@ function scheduleImportPreviewUpdate(payload = state.importPreview) {
   });
 }
 
+function importValidationIsCurrent(payload, request, epoch) {
+  return state.importPreview === payload
+    && request.included !== false
+    && request.import_validation_epoch === epoch;
+}
+
+function addImportFailedField(request, field) {
+  request.import_failed_fields = [...new Set([...(request.import_failed_fields || []), field])];
+}
+
+function resumePendingImportValidation() {
+  const payload = state.importPreview;
+  if (!payload || payload.mode === "backlog" || !connectionIsReady()) return;
+  const requests = (payload.requests || []).filter((request) => request.included !== false
+    && (!['valid', 'failed'].includes(request.import_validation)
+      || request.cached_serial_verification
+      || request.cached_user_verification));
+  if (requests.length) void validateImportPreview(requests);
+}
+
 async function validateImportPreview(retryRequests = null) {
   const payload = state.importPreview;
-  if (!payload || !["connected", "simulation"].includes(state.connection?.state)) return;
-  const requests = (retryRequests || payload.requests).filter((request) => request.included !== false);
+  if (!payload) return;
+  const requests = (retryRequests || payload.requests || []).filter((request) => request.included !== false);
+  if (!requests.length) {
+    renderImportPreview();
+    updateImportPrepareButton(payload);
+    return;
+  }
+  if (!connectionIsReady()) {
+    requests.forEach((request) => {
+      if (request.import_validation === "checking") request.import_validation = "pending";
+      request.cached_serial_verification = false;
+      request.cached_user_verification = false;
+    });
+    renderImportPreview();
+    updateImportPrepareButton(payload);
+    return;
+  }
   const importValidationEnabled = validationEnabled("validate_workbook_import");
-  const requestsToValidate = importValidationEnabled
-    ? requests
-    : [];
   if (!importValidationEnabled) {
-    requests.filter((request) => !requestsToValidate.includes(request)).forEach((request) => {
+    requests.forEach((request) => {
       request.import_validation = "valid";
       request.import_error = "";
       request.import_failed_fields = [];
@@ -4533,26 +4705,34 @@ async function validateImportPreview(retryRequests = null) {
       request.cached_serial_verification = false;
       request.cached_user_verification = false;
     });
-    if (!requestsToValidate.length) {
-      renderImportPreview();
-      updateImportPrepareButton(payload);
-      return;
-    }
+    renderImportPreview();
+    updateImportPrepareButton(payload);
+    return;
   }
-  requestsToValidate.forEach((request) => {
+  requests.forEach((request) => {
+    request.import_validation_epoch = Number(request.import_validation_epoch || 0) + 1;
     request.import_validation = "checking";
     request.import_error = "";
     request.import_failed_fields = [];
     request.eudm_device_type = "";
     request.cached_serial_verification = false;
     request.cached_user_verification = false;
-    if (request.kind === "location") request.returning_user_loading = true;
+    request.serial_validation = "checking";
+    if (request.kind === "location") {
+      request.returning_user_info = null;
+      request.returning_user_validation = request.returning_user ? "checking" : "empty";
+      request.returning_user_loading = Boolean(request.returning_user);
+    } else {
+      request.user_info = null;
+      request.user_validation = request.user ? "checking" : "empty";
+    }
   });
   renderImportPreview();
   $("#prepareImportButton").disabled = true;
-  await forEachWithConcurrency(requestsToValidate, VALIDATION_CONCURRENCY, async (request) => {
-    const serial = request.serials[0];
-    const username = request.user || request.returning_user;
+  await forEachWithConcurrency(requests, VALIDATION_CONCURRENCY, async (request) => {
+    const epoch = request.import_validation_epoch;
+    const serial = String(request.serials?.[0] || "").trim();
+    const username = String(request.user || request.returning_user || "").trim();
     try {
       const [assets, users] = await Promise.all([
         api("/api/search/assets", {
@@ -4566,13 +4746,15 @@ async function validateImportPreview(retryRequests = null) {
           ? api("/api/search/users", { method: "POST", body: JSON.stringify({ query: username, returning: request.kind === "location", fresh: true }) })
           : Promise.resolve({ results: [] }),
       ]);
+      if (!importValidationIsCurrent(payload, request, epoch)) return;
       const asset = (assets.results || []).find((item) => serialResultMatches(item, serial));
       const user = importValidationEnabled
         ? (users.results || []).find((item) => userResultMatches(item, username))
         : null;
+      const userInfo = importValidationEnabled ? verifiedUserInfo(user, username) : null;
       const missingFields = [];
       if (!asset) missingFields.push("serial");
-      if (importValidationEnabled && !user) missingFields.push("username");
+      if (importValidationEnabled && !userInfo) missingFields.push("username");
       if (missingFields.length) {
         const missingLabels = missingFields.map((field) => field === "serial" ? "Serial number" : "Username");
         const validationError = new Error(`${missingLabels.join(" and ")} ${missingLabels.length === 1 ? "was" : "were"} not found in EUDM.`);
@@ -4582,30 +4764,35 @@ async function validateImportPreview(retryRequests = null) {
       request.eudm_device_type = deviceTypeFromResult(asset, serial);
       if (importValidationEnabled) {
         if (request.kind === "location") {
-          request.returning_user_info = { login: bestLogin(user, username), columns: (user.columns || [user.value]).map(String).filter(Boolean) };
+          request.returning_user = userInfo.login;
+          request.returning_user_info = userInfo;
           request.returning_user_validation = "valid";
         } else {
-          request.user_info = { login: bestLogin(user, username), columns: (user.columns || [user.value]).map(String).filter(Boolean) };
+          request.user = userInfo.login;
+          request.user_info = userInfo;
           request.user_validation = "valid";
         }
       }
+      request.serial_validation = "valid";
       request.import_validation = "valid";
       if (assets.cached) {
         request.cached_serial_verification = true;
         scheduleImportPreviewUpdate(payload);
         verifyCachedValueInBackground("serial", serial, false, (freshPayload) => {
-          if (request.serials[0] !== serial) return;
+          if (!importValidationIsCurrent(payload, request, epoch) || request.serials?.[0] !== serial) return;
           const freshAsset = (freshPayload.results || []).find((item) => serialResultMatches(item, serial));
           request.cached_serial_verification = false;
           if (freshAsset) {
             request.eudm_device_type = deviceTypeFromResult(freshAsset, serial);
           } else {
             request.import_validation = "failed";
+            request.serial_validation = "failed";
+            addImportFailedField(request, "serial");
             request.import_error = "Serial number was not found in EUDM.";
-            request.import_failed_fields = ["serial"];
           }
           scheduleImportPreviewUpdate(payload);
         }, () => {
+          if (!importValidationIsCurrent(payload, request, epoch)) return;
           request.cached_serial_verification = false;
           scheduleImportPreviewUpdate(payload);
         });
@@ -4614,44 +4801,76 @@ async function validateImportPreview(retryRequests = null) {
         request.cached_user_verification = true;
         scheduleImportPreviewUpdate(payload);
         verifyCachedValueInBackground("username", username, request.kind === "location", (freshPayload) => {
-          if ((request.user || request.returning_user) !== username) return;
+          if (!importValidationIsCurrent(payload, request, epoch)) return;
           const freshUser = (freshPayload.results || []).find((item) => userResultMatches(item, username));
+          const freshUserInfo = verifiedUserInfo(freshUser, username);
           request.cached_user_verification = false;
-          if (freshUser) {
-            const info = { login: bestLogin(freshUser, username), columns: (freshUser.columns || [freshUser.value]).map(String).filter(Boolean) };
-            if (request.kind === "location") request.returning_user_info = info;
-            else request.user_info = info;
+          if (freshUserInfo) {
+            if (request.kind === "location") request.returning_user_info = freshUserInfo;
+            else request.user_info = freshUserInfo;
           } else {
             request.import_validation = "failed";
+            if (request.kind === "location") request.returning_user_validation = "failed";
+            else request.user_validation = "failed";
+            addImportFailedField(request, "username");
             request.import_error = "Username was not found in EUDM.";
-            request.import_failed_fields = ["username"];
+            if (request.kind === "location") request.returning_user_info = null;
+            else request.user_info = null;
           }
           scheduleImportPreviewUpdate(payload);
         }, () => {
+          if (!importValidationIsCurrent(payload, request, epoch)) return;
           request.cached_user_verification = false;
           scheduleImportPreviewUpdate(payload);
         });
       }
     } catch (error) {
+      if (!importValidationIsCurrent(payload, request, epoch)) return;
       request.import_validation = "failed";
       request.import_error = error.message || "Could not validate this request.";
       request.import_failed_fields = error.failedFields || ["serial", "username"];
+      request.user_info = null;
+      request.returning_user_info = null;
     } finally {
-      request.returning_user_loading = false;
-      scheduleImportPreviewUpdate(payload);
+      if (importValidationIsCurrent(payload, request, epoch)) {
+        request.returning_user_loading = false;
+        scheduleImportPreviewUpdate(payload);
+      }
     }
   });
   renderImportPreview();
   updateImportPrepareButton(payload);
 }
 
-async function validateBacklogPreview(payload = state.importPreview) {
+function backlogValidationIsCurrent(payload, request, epoch) {
+  return state.importPreview === payload
+    && request.included !== false
+    && request.backlog_validation_epoch === epoch;
+}
+
+function resumePendingBacklogValidation() {
+  const payload = state.importPreview;
+  if (!payload || payload.mode !== "backlog" || !connectionIsReady()) return;
+  const requests = (payload.requests || []).filter((request) => request.included !== false
+    && (!['valid', 'failed'].includes(request.import_validation)
+      || request.cached_serial_verification
+      || request.cached_user_verification)
+    && !state.backlogValidationIds.has(request.id));
+  if (requests.length) void validateBacklogPreview(payload, requests);
+}
+
+async function validateBacklogPreview(payload = state.importPreview, retryRequests = null) {
   if (!payload || payload.mode !== "backlog") return;
-  const requests = payload.requests.filter((request) => request.included !== false);
-  if (!validationEnabled("validate_workbook_import")) {
+  const source = Array.isArray(retryRequests) ? retryRequests : payload.requests || [];
+  const requests = source.filter((request) => request.included !== false);
+  if (!requests.length) {
+    renderImportPreview();
+    updateImportPrepareButton(payload);
+    return;
+  }
+  if (!connectionIsReady()) {
     requests.forEach((request) => {
-      request.import_validation = "valid";
-      request.import_error = "";
+      if (request.import_validation === "checking") request.import_validation = "pending";
       request.cached_serial_verification = false;
       request.cached_user_verification = false;
     });
@@ -4659,39 +4878,89 @@ async function validateBacklogPreview(payload = state.importPreview) {
     updateImportPrepareButton(payload);
     return;
   }
-  requests.forEach((request) => {
+  const requestsToValidate = requests.filter((request) => !state.backlogValidationIds.has(request.id));
+  if (!requestsToValidate.length) return;
+  if (!validationEnabled("validate_workbook_import")) {
+    requestsToValidate.forEach((request) => {
+      request.import_validation = "valid";
+      request.import_error = "";
+      request.import_failed_fields = [];
+      request.serial_validation = "valid";
+      request.user_validation = "valid";
+      request.cached_serial_verification = false;
+      request.cached_user_verification = false;
+    });
+    renderImportPreview();
+    updateImportPrepareButton(payload);
+    return;
+  }
+  requestsToValidate.forEach((request) => {
+    state.backlogValidationIds.add(request.id);
+    request.backlog_validation_epoch = Number(request.backlog_validation_epoch || 0) + 1;
     request.import_validation = "checking";
     request.import_error = "";
+    request.import_failed_fields = [];
+    request.serial_validation = "checking";
+    request.user_validation = "checking";
     request.cached_serial_verification = false;
     request.cached_user_verification = false;
+    request.eudm_device_type = "";
+    request.user_info = null;
   });
   renderImportPreview();
   updateImportPrepareButton(payload);
-  await forEachWithConcurrency(requests, VALIDATION_CONCURRENCY, async (request) => {
+  await forEachWithConcurrency(requestsToValidate, VALIDATION_CONCURRENCY, async (request) => {
+    const epoch = request.backlog_validation_epoch;
+    const serial = String(request.serial || "").trim();
+    const username = String(request.username || "").trim();
     try {
       const [assets, users] = await Promise.all([
-        api("/api/search/assets", { method: "POST", body: JSON.stringify({ query: request.serial, fresh: true }) }),
-        api("/api/search/users", { method: "POST", body: JSON.stringify({ query: request.username, fresh: true }) }),
+        api("/api/search/assets", { method: "POST", body: JSON.stringify({ query: serial, fresh: true }) }),
+        api("/api/search/users", { method: "POST", body: JSON.stringify({ query: username, fresh: true }) }),
       ]);
-      const asset = (assets.results || []).find((item) => serialResultMatches(item, request.serial));
-      const user = (users.results || []).find((item) => userResultMatches(item, request.username));
-      if (!asset || !user) {
+      if (!backlogValidationIsCurrent(payload, request, epoch)) return;
+      const asset = (assets.results || []).find((item) => serialResultMatches(item, serial));
+      const user = (users.results || []).find((item) => userResultMatches(item, username));
+      const userInfo = verifiedUserInfo(user, username);
+      if (!asset || !userInfo) {
         request.import_validation = "failed";
-        request.import_error = !asset && !user ? "Serial and user were not found in EUDM." : !asset ? "Serial number was not found in EUDM." : "User was not found in EUDM.";
+        request.serial_validation = asset ? "valid" : "failed";
+        request.user_validation = userInfo ? "valid" : "failed";
+        request.import_failed_fields = [
+          ...(!asset ? ["serial"] : []),
+          ...(!userInfo ? ["username"] : []),
+        ];
+        request.import_error = !asset && !userInfo
+          ? "Serial and user were not found in EUDM."
+          : !asset
+            ? "Serial number was not found in EUDM."
+            : "User was not found in EUDM.";
+        request.user_info = null;
         return;
       }
-      request.eudm_device_type = deviceTypeFromResult(asset, request.serial);
-      request.user_info = { login: bestLogin(user, request.username), columns: (user.columns || [user.value]).map(String).filter(Boolean) };
+      request.eudm_device_type = deviceTypeFromResult(asset, serial);
+      request.user_info = userInfo;
+      request.serial_validation = "valid";
+      request.user_validation = "valid";
       request.import_validation = "valid";
       if (assets.cached) {
         request.cached_serial_verification = true;
         scheduleImportPreviewUpdate(payload);
-        verifyCachedValueInBackground("serial", request.serial, false, (freshPayload) => {
-          const freshAsset = (freshPayload.results || []).find((item) => serialResultMatches(item, request.serial));
+        verifyCachedValueInBackground("serial", serial, false, (freshPayload) => {
+          if (!backlogValidationIsCurrent(payload, request, epoch)) return;
+          const freshAsset = (freshPayload.results || []).find((item) => serialResultMatches(item, serial));
           request.cached_serial_verification = false;
-          if (freshAsset) request.eudm_device_type = deviceTypeFromResult(freshAsset, request.serial);
+          if (freshAsset) {
+            request.eudm_device_type = deviceTypeFromResult(freshAsset, serial);
+          } else {
+            request.import_validation = "failed";
+            request.serial_validation = "failed";
+            addImportFailedField(request, "serial");
+            request.import_error = "Serial number was not found in EUDM.";
+          }
           scheduleImportPreviewUpdate(payload);
         }, () => {
+          if (!backlogValidationIsCurrent(payload, request, epoch)) return;
           request.cached_serial_verification = false;
           scheduleImportPreviewUpdate(payload);
         });
@@ -4699,20 +4968,37 @@ async function validateBacklogPreview(payload = state.importPreview) {
       if (users.cached) {
         request.cached_user_verification = true;
         scheduleImportPreviewUpdate(payload);
-        verifyCachedValueInBackground("username", request.username, false, (freshPayload) => {
-          const freshUser = (freshPayload.results || []).find((item) => userResultMatches(item, request.username));
+        verifyCachedValueInBackground("username", username, false, (freshPayload) => {
+          if (!backlogValidationIsCurrent(payload, request, epoch)) return;
+          const freshUser = (freshPayload.results || []).find((item) => userResultMatches(item, username));
+          const freshUserInfo = verifiedUserInfo(freshUser, username);
           request.cached_user_verification = false;
-          if (freshUser) request.user_info = { login: bestLogin(freshUser, request.username), columns: (freshUser.columns || [freshUser.value]).map(String).filter(Boolean) };
+          if (freshUserInfo) {
+            request.user_info = freshUserInfo;
+          } else {
+            request.import_validation = "failed";
+            request.user_validation = "failed";
+            addImportFailedField(request, "username");
+            request.import_error = "User was not found in EUDM.";
+            request.user_info = null;
+          }
           scheduleImportPreviewUpdate(payload);
         }, () => {
+          if (!backlogValidationIsCurrent(payload, request, epoch)) return;
           request.cached_user_verification = false;
           scheduleImportPreviewUpdate(payload);
         });
       }
     } catch (error) {
+      if (!backlogValidationIsCurrent(payload, request, epoch)) return;
       request.import_validation = "failed";
+      request.serial_validation = "failed";
+      request.user_validation = "failed";
+      request.import_failed_fields = ["serial", "username"];
       request.import_error = error.message || "Could not verify this row.";
+      request.user_info = null;
     } finally {
+      if (request.backlog_validation_epoch === epoch) state.backlogValidationIds.delete(request.id);
       scheduleImportPreviewUpdate(payload);
     }
   });
@@ -4849,7 +5135,7 @@ async function prepareImport() {
       });
       payload.requests = (payload.candidates || []).map((candidate) => ({
         ...candidate,
-        import_validation: "checking",
+        import_validation: candidate.included === false ? "idle" : "checking",
         import_error: "",
         eudm_device_type: "",
         user_info: null,
@@ -5742,6 +6028,7 @@ function bindEvents() {
     request.serials = value ? [value] : [];
     request.serial_validation = request.serials.length ? "pending" : "empty";
     request.serial_validation_error = "";
+    request.cached_serial_verification = false;
     request.eudm_device_type = "";
     updateModelStatusButton(request);
     if (value) setLookupInputStatus("serial", value);
@@ -5786,6 +6073,7 @@ function bindEvents() {
     request.user_selected = false;
     request.user_validation = request.user ? "pending" : "empty";
     request.user_validation_error = "";
+    request.cached_user_verification = false;
     if (request.user) setLookupInputStatus("user", request.user);
     if (request.user) scheduleValidation(request, "user", () => validateUserAfterPause(request, false));
     refreshSelectedValidation();
@@ -5837,6 +6125,7 @@ function bindEvents() {
     request.returning_user_selected = false;
     request.returning_user_validation = request.returning_user ? "pending" : "empty";
     request.returning_user_validation_error = "";
+    request.cached_user_verification = false;
     request.returning_user_loading = Boolean(request.returning_user);
     if (request.returning_user) setLookupInputStatus("returning", request.returning_user);
     if (request.returning_user) scheduleValidation(request, "returning_user", () => validateUserAfterPause(request, true));
