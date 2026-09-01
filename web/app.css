@@ -681,8 +681,6 @@ fieldset { margin: 0; padding: 0; border: 0; }
 .copy-request-id { min-height: 24px; padding: 2px 7px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--blue); background: var(--surface); font-size: 10px; font-weight: 750; }
 .copy-request-id:hover { border-color: var(--blue); background: var(--blue-soft); }
 .copy-request-id.copied { color: var(--green); border-color: var(--green); background: var(--green-soft); }
-.import-return-info { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; line-height: 1.25; }
-.import-return-info.unknown { color: var(--red); }
 .quick-import-return { display: none; }
 .quick-import-return span, .quick-import-return small { color: var(--muted); overflow-wrap: anywhere; }
 .quick-import-return.unknown { border-left-color: var(--red); background: var(--red-soft); }
@@ -1437,14 +1435,6 @@ fieldset { margin: 0; padding: 0; border: 0; }
 .import-check-failed { color: var(--red); }
 .import-inline-edit { display: grid; grid-template-columns: minmax(90px, 1fr) minmax(90px, 1fr) auto; gap: 5px; margin-top: 7px; }
 .import-inline-edit input { min-width: 0; padding: 5px 6px; font-size: 12px; }
-.import-return-details { display: grid; gap: 3px; margin-top: 7px; padding: 7px 8px; border-left: 3px solid var(--amber-border); background: var(--amber-surface); color: var(--amber-text); font-size: 11px; }
-.import-return-details strong, .import-return-details span, .import-return-details em, .import-return-details small { display: block; overflow-wrap: anywhere; }
-.import-return-details strong { color: var(--ink); font-size: 11px; }
-.import-return-details span { color: var(--ink); font-weight: 700; }
-.import-return-details em { font-style: normal; color: var(--muted); }
-.import-return-details.loading { border-left-color: var(--blue); background: var(--blue-soft); color: var(--muted); }
-.import-return-details.unknown { border-left-color: var(--red); background: var(--red-soft); color: var(--danger-text); }
-
 @media (max-width: 1120px) {
   .workspace { --inspector-width: 350px; grid-template-columns: 200px minmax(0, 1fr) var(--inspector-width); }
   .workspace.inspector-closed { grid-template-columns: 200px minmax(0, 1fr) 0; }

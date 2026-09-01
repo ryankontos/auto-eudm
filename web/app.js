@@ -1118,8 +1118,8 @@ function userInfoMatchesQuery(info, query) {
 function importCachedVerificationFields(request) {
   const fields = [];
   if (request.cached_serial_verification && request.serials?.[0]) fields.push("serial");
-  const username = request.user || request.returning_user || request.username;
-  const userInfo = request.user_info || request.returning_user_info;
+  const username = request.user || request.username;
+  const userInfo = request.user_info;
   if (request.cached_user_verification && userInfoMatchesQuery(userInfo, username)) fields.push("user");
   return fields;
 }
@@ -3023,29 +3023,6 @@ async function resolveQuickImportReturningUsers() {
   renderQuickImportReview();
 }
 
-async function resolveQueueReturningUsers(requests) {
-  const entries = requests.filter((request) => request.kind === "location" && request.returning_user && !request.returning_user_info);
-  if (!entries.length || !["connected", "simulation"].includes(state.connection?.state)) return;
-  entries.forEach((request) => { request.returning_user_loading = true; });
-  renderAll();
-  await forEachWithConcurrency(entries, VALIDATION_CONCURRENCY, async (request) => {
-    try {
-      const payload = await api("/api/search/users", { method: "POST", body: JSON.stringify({ query: request.returning_user, returning: true }) });
-      const result = (payload.results || []).find((item) => bestLogin(item, request.returning_user).toLowerCase() === request.returning_user.toLowerCase());
-      request.returning_user_info = result ? { login: bestLogin(result, request.returning_user), columns: (result.columns || [result.value]).map(String).filter(Boolean) } : null;
-      request.returning_user_validation = result ? "valid" : "failed";
-      request.returning_user_validation_error = result ? "" : "User was not found in EUDM.";
-    } catch (_) {
-      request.returning_user_info = null;
-      request.returning_user_validation = "failed";
-      request.returning_user_validation_error = "Could not verify the returning user in EUDM.";
-    } finally {
-      request.returning_user_loading = false;
-    }
-  });
-  renderAll();
-}
-
 function applyQuickImportKind() {
   const status = $("#pairsBulkKind").value;
   if (!status) return;
@@ -4049,17 +4026,30 @@ function resumeImportDraft(id) {
   }
 }
 
-function importReturnDetails(request, isReturnedDevice) {
-  if (!isReturnedDevice) return "";
-  // Do not display user details until both the serial and username have been
-  // verified successfully. A bad serial must not make a valid-looking user
-  // card appear beside the failed row.
-  if (request.import_validation !== "valid") return "";
-  const info = request.returning_user_info;
-  if (!info?.columns?.length) return "";
-  return '<div class="import-return-details"><strong>Returning user</strong><small>An email will be sent to this user. Verify the details.</small><span>'
-    + escapeHtml(info.login || request.returning_user)
-    + '</span><em>' + escapeHtml(info.columns.join(" · ")) + '</em></div>';
+function importFailedFields(request) {
+  const userImport = request.kind === "user"
+    || (!request.kind && String(request.username || "").trim());
+  const defaults = ["serial", ...(userImport ? ["username"] : [])];
+  const fields = Array.isArray(request.import_failed_fields) && request.import_failed_fields.length
+    ? request.import_failed_fields
+    : defaults;
+  return fields.filter((field) => field === "serial" || (field === "username" && userImport));
+}
+
+function importValidationStatus(request) {
+  const cachedFields = importCachedVerificationFields(request);
+  if (request.import_validation === "checking") {
+    return `<small class="import-checking" ${spinnerPhaseStyle(750)}>Verifying serial in EUDM…</small>`;
+  }
+  if (request.import_validation === "failed") {
+    return `<small class="import-check-failed">${escapeHtml(request.import_error || "Could not verify this row")}</small>`;
+  }
+  if (cachedFields.includes("serial")) {
+    return `<small class="import-checking" ${spinnerPhaseStyle(750)}>${cachedVerificationMessage("serial")}</small>`;
+  }
+  return request.import_validation === "valid"
+    ? '<small class="import-check-ok">✓ Serial verified</small>'
+    : "";
 }
 
 function renderImportVerificationWarnings(payload = state.importPreview) {
@@ -4074,10 +4064,11 @@ function renderImportVerificationWarnings(payload = state.importPreview) {
     return;
   }
   $("#importVerificationWarningList").innerHTML = failed.map((request) => {
-    const affected = (request.import_failed_fields || []).map((field) => field === "serial" ? "serial" : "username");
+    const affected = importFailedFields(request).map((field) => field === "serial" ? "serial" : "username");
     const detail = affected.length ? ` (${affected.join(" and ")})` : "";
-    const user = request.user || request.returning_user || "No username";
-    return `<li><strong>${escapeHtml(request.serials[0] || "No serial")}</strong> · ${escapeHtml(user)}${escapeHtml(detail)}: ${escapeHtml(request.import_error || "Could not verify in EUDM.")}</li>`;
+    const user = request.kind === "user" ? request.user || "No username" : "";
+    const identity = user ? ` · ${escapeHtml(user)}` : "";
+    return `<li><strong>${escapeHtml(request.serials[0] || "No serial")}</strong>${identity}${escapeHtml(detail)}: ${escapeHtml(request.import_error || "Could not verify in EUDM.")}</li>`;
   }).join("");
   warning.hidden = false;
 }
@@ -4154,16 +4145,7 @@ function renderBacklogPreview(payload) {
       </select>
       <button class="button secondary compact" type="button" data-model-status-backlog="${escapeHtml(request.id)}" title="Suggest a status from the checked device model">Suggest</button>
     </div>`;
-    const cachedFields = importCachedVerificationFields(request);
-    const validation = request.import_validation === "checking"
-      ? `<small class="import-checking" ${spinnerPhaseStyle(750)}>Verifying serial and user details in EUDM…</small>`
-      : request.import_validation === "failed"
-        ? `<small class="import-check-failed">${escapeHtml(request.import_error || "Could not verify this row")}</small>`
-        : cachedFields.length
-          ? `<small class="import-checking" ${spinnerPhaseStyle(750)}>${cachedVerificationMessage(...cachedFields)}</small>`
-        : request.import_validation === "valid"
-          ? '<small class="import-check-ok">✓ Serial and user verified</small>'
-          : "";
+    const validation = importValidationStatus(request);
     const includedRow = request.included !== false;
     return `<div class="import-preview-row ${includedRow ? "" : "excluded"}${notAttending ? " not-attending" : ""}">
       <label class="include-control" title="${includedRow ? "Included" : exclusionLabel}">
@@ -4325,31 +4307,25 @@ function renderImportPreview() {
             <button class="button secondary compact" type="button" data-model-status-import="${escapeHtml(request.id)}" title="Suggest a status from the checked device model">Suggest</button>
             </div>`
         : `<span class="fixed-status">Deployed - Pending Return</span>`;
-      const cachedFields = importCachedVerificationFields(request);
-      const validation = request.import_validation === "checking"
-      ? `<small class="import-checking" ${spinnerPhaseStyle(750)}>Verifying serial and user details in EUDM…</small>`
-        : request.import_validation === "failed"
-          ? `<small class="import-check-failed">${escapeHtml(request.import_error || "Not found in EUDM")}</small>`
-          : cachedFields.length
-            ? `<small class="import-checking" ${spinnerPhaseStyle(750)}>${cachedVerificationMessage(...cachedFields)}</small>`
-          : request.import_validation === "valid"
-            ? '<small class="import-check-ok">✓ Serial and user verified</small>'
-            : "";
-      const returnDetails = importReturnDetails(request, isReturnedDevice);
-      const failedFields = request.import_failed_fields || ["serial", "username"];
+      const validation = importValidationStatus(request);
+      const failedFields = importFailedFields(request);
       const editable = request.import_validation === "failed" && failedFields.length ? `<div class="import-inline-edit">
         ${failedFields.includes("serial") ? `<input data-import-serial="${escapeHtml(request.id)}" value="${escapeHtml(request.serials[0])}" aria-label="Serial number" placeholder="Correct serial">` : ""}
-        ${failedFields.includes("username") ? `<input data-import-user="${escapeHtml(request.id)}" value="${escapeHtml(request.user || request.returning_user)}" aria-label="Username" placeholder="Correct username">` : ""}
+        ${failedFields.includes("username") ? `<input data-import-user="${escapeHtml(request.id)}" value="${escapeHtml(request.user)}" aria-label="Username" placeholder="Correct username">` : ""}
         <button class="text-button" data-import-retry="${escapeHtml(request.id)}" type="button">Retry</button>
       </div>` : "";
+      const destination = locationDisplay(state.importLocation) || "Location stock";
+      const personColumn = isReturnedDevice
+        ? `<div><small class="import-field-title">Destination</small><strong>${escapeHtml(destination)}</strong></div>`
+        : `<div><small class="import-field-title">User</small><strong>${escapeHtml(request.user || "No user")}</strong></div>`;
       return `<div class="import-preview-row ${isIncluded ? "" : "excluded"}">
         <label class="include-control" title="${isIncluded ? "Included" : "Do not deploy"}">
           <input type="checkbox" data-import-include="${escapeHtml(request.id)}" ${isIncluded ? "checked" : ""}>
           <span>${index + 1}</span>
         </label>
         <div><small class="import-field-title">${isDeployment ? "Deployment serial" : isReturnedDevice ? "Returned device" : "Pending return"}</small><strong>${escapeHtml(request.serials[0])}</strong>${request.device_allocation ? `<small class="import-device-allocation">${escapeHtml(request.device_allocation)}</small>` : ""}${isDeployment && request.new_asset_status ? `<small class="import-device-status">New asset status: ${escapeHtml(request.new_asset_status)}</small>` : ""}</div>
-        <div><small class="import-field-title">${isReturnedDevice ? "Returning user" : "User"}</small><strong>${escapeHtml(request.user || request.returning_user || "No user")}</strong></div>
-        <div>${statusControl}${isIncluded ? validation : "<small>Do not deploy</small>"}${returnDetails}${editable}</div>
+        ${personColumn}
+        <div>${statusControl}${isIncluded ? validation : "<small>Do not deploy</small>"}${editable}</div>
       </div>`;
     }).join("");
     const bulkStatusOptions = ALM_IMPORT_STATUS_OPTIONS[group.key] || [];
@@ -4684,7 +4660,7 @@ async function validateImportPreview(retryRequests = null) {
       if (!importValidationIsCurrent(payload, request, epoch)) return;
       request.import_validation = "failed";
       request.import_error = error.message || "Could not validate this request.";
-      request.import_failed_fields = error.failedFields || ["serial", "username"];
+      request.import_failed_fields = error.failedFields || ["serial", ...(request.kind === "user" ? ["username"] : [])];
       request.user_info = null;
     } finally {
       if (importValidationIsCurrent(payload, request, epoch)) {
@@ -4883,7 +4859,7 @@ async function prepareImport() {
         return;
       }
       if (selected.some((request) => request.import_validation === "checking" || !request.import_validation)) {
-        toast("Wait for serial and user verification to finish.", "error");
+        toast("Wait for verification to finish.", "error");
         updateImportPrepareButton(state.importPreview);
         return;
       }
@@ -4926,7 +4902,7 @@ async function prepareImport() {
     }
     const selected = state.importPreview.requests.filter((request) => request.included !== false);
     if (selected.some((request) => request.import_validation === "checking" || !request.import_validation)) {
-      toast("Wait for all serial and user verifications to finish.", "error");
+      toast("Wait for verification to finish.", "error");
       updateImportPrepareButton(state.importPreview);
       return;
     }
@@ -4941,7 +4917,7 @@ async function prepareImport() {
       return;
     }
     if (selected.some((request) => request.import_validation !== "valid")) {
-      toast("Verify every included serial and user, or exclude invalid rows.", "error");
+      toast("Verify every included row, or exclude invalid rows.", "error");
       updateImportPrepareButton(state.importPreview);
       return;
     }
@@ -4949,7 +4925,13 @@ async function prepareImport() {
       const cleanRequest = { ...request };
       cleanRequest.serial_validation = "valid";
       if (cleanRequest.kind === "user") cleanRequest.user_validation = "valid";
-      if (cleanRequest.kind === "location" && cleanRequest.returning_user) cleanRequest.returning_user_validation = "valid";
+      if (cleanRequest.kind === "location") {
+        delete cleanRequest.returning;
+        delete cleanRequest.returning_user;
+        delete cleanRequest.returning_user_info;
+        delete cleanRequest.returning_user_validation;
+        delete cleanRequest.returning_user_validation_error;
+      }
       delete cleanRequest.included;
       return cleanRequest;
     });
@@ -4964,7 +4946,6 @@ async function prepareImport() {
     state.importDraftId = null;
     $("#importDialog").close();
     renderAll();
-    resolveQueueReturningUsers(requests);
     toast(`${requests.length} request${requests.length === 1 ? "" : "s"} added.`, "success");
     return;
   }
