@@ -87,6 +87,7 @@ def populate_spec(
         floor=location.floor,
         room=location.room,
         cabinet=location.cabinet,
+        returning_user=spec.returning_user if spec.returning_requested else None,
         bulk=spec.kind == "bulk_location",
         submit=submit,
         on_request_created=on_request_created,

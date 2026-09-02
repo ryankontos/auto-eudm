@@ -72,6 +72,103 @@ def valid_request(client_id: str) -> RequestSpec:
     )
 
 
+class ReturnQuestionSubmissionTests(unittest.TestCase):
+    def test_location_submission_answers_eudm_return_question(self) -> None:
+        class RecordingSimulationClient(eudm.SimulationClient):
+            def __init__(self) -> None:
+                super().__init__()
+                self.answers: list[dict[str, object]] = []
+
+            def request(self, method: str, path: str, payload: object | None = None) -> object:
+                if method == "POST" and path.endswith("/questionnaire/answers"):
+                    self.answers.append(payload if isinstance(payload, dict) else {})
+                return super().request(method, path, payload)
+
+        client = RecordingSimulationClient()
+        with mock.patch.object(eudm.SimulationClient, "SIMULATED_LOOKUP_DELAY_SECONDS", 0):
+            result = eudm.deploy_device_to_location(
+                client,
+                serials=["SERIAL123"],
+                request_for="requester.user",
+                status="Pending Rebuild",
+                city="Sydney, AU",
+                building="1 Elizabeth Street",
+                floor="Level 15",
+                room="Store Room",
+                returning_user="returning.user",
+                submit=False,
+            )
+
+        values = {
+            str(answer.get("questionId")): answer.get("answers")
+            for answer in client.answers
+        }
+        self.assertEqual(values["is-return"], ["YES"])
+        self.assertEqual(values["add-dropoff"], ["true"])
+        self.assertEqual(values["return-confirmed"], ["YES"])
+        self.assertEqual(result.resolved_username, "returning.user")
+
+    def test_bulk_location_submission_skips_return_question(self) -> None:
+        class RecordingSimulationClient(eudm.SimulationClient):
+            def __init__(self) -> None:
+                super().__init__()
+                self.answer_ids: list[str] = []
+
+            def request(self, method: str, path: str, payload: object | None = None) -> object:
+                if method == "POST" and path.endswith("/questionnaire/answers") and isinstance(payload, dict):
+                    self.answer_ids.append(str(payload.get("questionId", "")))
+                return super().request(method, path, payload)
+
+        client = RecordingSimulationClient()
+        with mock.patch.object(eudm.SimulationClient, "SIMULATED_LOOKUP_DELAY_SECONDS", 0):
+            eudm.deploy_device_to_location(
+                client,
+                serials=["SERIAL123", "SERIAL456"],
+                request_for="requester.user",
+                status="Pending Rebuild",
+                city="Sydney, AU",
+                building="1 Elizabeth Street",
+                floor="Level 15",
+                room="Store Room",
+                bulk=True,
+                submit=False,
+            )
+
+        self.assertNotIn("is-return", client.answer_ids)
+
+    def test_location_submission_without_return_answers_no(self) -> None:
+        class RecordingSimulationClient(eudm.SimulationClient):
+            def __init__(self) -> None:
+                super().__init__()
+                self.answers: list[dict[str, object]] = []
+
+            def request(self, method: str, path: str, payload: object | None = None) -> object:
+                if method == "POST" and path.endswith("/questionnaire/answers"):
+                    self.answers.append(payload if isinstance(payload, dict) else {})
+                return super().request(method, path, payload)
+
+        client = RecordingSimulationClient()
+        with mock.patch.object(eudm.SimulationClient, "SIMULATED_LOOKUP_DELAY_SECONDS", 0):
+            eudm.deploy_device_to_location(
+                client,
+                serials=["SERIAL123"],
+                request_for="requester.user",
+                status="Pending Rebuild",
+                city="Sydney, AU",
+                building="1 Elizabeth Street",
+                floor="Level 15",
+                room="Store Room",
+                submit=False,
+            )
+
+        values = {
+            str(answer.get("questionId")): answer.get("answers")
+            for answer in client.answers
+        }
+        self.assertEqual(values["is-return"], ["NO"])
+        self.assertNotIn("add-dropoff", values)
+
+
 class RequestStatusPreferenceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.app = Application.__new__(Application)

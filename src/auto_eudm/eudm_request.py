@@ -323,6 +323,12 @@ class SimulationClient:
                 ],
             ),
             self._item("DataTable", "location", "Please select location"),
+            self._item(
+                "RadioButtons",
+                "is-return",
+                "Is this a return from a user",
+                [("YES", "Yes"), ("NO", "No")],
+            ),
             self._item("YesNo", "add-dropoff", "Add Name of person who dropped off device"),
             self._item(
                 "TextField",
@@ -1188,6 +1194,7 @@ def deploy_device_to_location(
     floor: str,
     room: str,
     cabinet: str | None = None,
+    returning_user: str | None = None,
     bulk: bool = False,
     submit: bool = True,
     on_request_created: Any | None = None,
@@ -1195,6 +1202,9 @@ def deploy_device_to_location(
     """Populate and optionally submit one strict location deployment.
 
     A bulk deployment is one EUDM request containing multiple serial numbers.
+    Individual location deployments may also identify the user returning the
+    device. Bulk requests cannot use EUDM's return-from-user branch because it
+    applies to one device and one returning user.
     """
     cleaned_serials = [serial.strip() for serial in serials]
     if not cleaned_serials or any(not serial for serial in cleaned_serials):
@@ -1210,6 +1220,10 @@ def deploy_device_to_location(
             "Serial numbers must be at least 6 characters and contain only letters, "
             "numbers, periods, underscores, or hyphens."
         )
+    if bulk and returning_user:
+        raise EUDMError(
+            "Bulk location requests cannot include a returning user; use an individual request."
+        )
     for label, value in (
         ("request-for login ID", request_for),
         ("status", status),
@@ -1223,6 +1237,10 @@ def deploy_device_to_location(
     if not is_login_id(request_for):
         raise EUDMError(
             "The request-for user must be a login ID, not a display name or email address."
+        )
+    if returning_user and not is_login_id(returning_user):
+        raise EUDMError(
+            "The returning user must be a login ID, not a display name or email address."
         )
 
     created = request_step(
@@ -1318,13 +1336,53 @@ def deploy_device_to_location(
             location_value,
         )
 
+        if not bulk:
+            returned = field_by_label(
+                all_items,
+                "Is this a return from a user",
+                type_="RadioButtons",
+            )
+            answer(
+                client,
+                request_id,
+                questionnaire_id,
+                returned,
+                "YES" if returning_user else "NO",
+            )
+            if returning_user:
+                add_dropoff = field_by_label(
+                    all_items,
+                    "Add Name of person who dropped off device",
+                    type_="YesNo",
+                )
+                answer(client, request_id, questionnaire_id, add_dropoff, "true")
+                search_question_and_answer_exact(
+                    client,
+                    request_id,
+                    questionnaire_id,
+                    all_items,
+                    "Search Name or User ID that dropped off devices",
+                    "Select person who dropped device/s off",
+                    returning_user,
+                )
+                confirmation = field_by_label(
+                    all_items, "Does this look right?", type_="RadioButtons"
+                )
+                answer(
+                    client,
+                    request_id,
+                    questionnaire_id,
+                    confirmation,
+                    "YES",
+                )
+
         if not submit:
             return DeploymentResult(
                 request_id=request_id,
                 order_id=None,
                 not_submitted_reason="final submission was not requested",
                 resolved_serial=",".join(selected_serials),
-                resolved_username=None,
+                resolved_username=returning_user,
             )
         order = request_step(
             client,
@@ -1343,7 +1401,7 @@ def deploy_device_to_location(
             order_id=order_id,
             submitted=True,
             resolved_serial=",".join(selected_serials),
-            resolved_username=None,
+            resolved_username=returning_user,
         )
     except EUDMError as exc:
         raise DeploymentExecutionError(request_id, str(exc)) from exc
@@ -1627,6 +1685,33 @@ Safety:
             locations, args.building, args.floor, args.room, args.cabinet
         )
         answer(client, request_id, questionnaire_id, location_table, location_value)
+
+        if not args.batch:
+            returned = field_by_label(
+                all_items,
+                "Is this a return from a user",
+                type_="RadioButtons",
+            )
+            answer(client, request_id, questionnaire_id, returned, "YES")
+            add_dropoff = field_by_label(
+                all_items,
+                "Add Name of person who dropped off device",
+                type_="YesNo",
+            )
+            answer(client, request_id, questionnaire_id, add_dropoff, "true")
+            search_question_and_answer(
+                client,
+                request_id,
+                questionnaire_id,
+                all_items,
+                "Search Name or User ID that dropped off devices",
+                "Select person who dropped device/s off",
+                args.dropped_by,
+            )
+            confirmation = field_by_label(
+                all_items, "Does this look right?", type_="RadioButtons"
+            )
+            answer(client, request_id, questionnaire_id, confirmation, "YES")
 
         location_summary = " --> ".join([args.building, args.floor, args.room])
         if args.cabinet:

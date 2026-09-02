@@ -215,6 +215,37 @@
             </select>
             <div id="locationDetail" class="selected-detail"></div>
           </div>
+          <div id="returningUserFields" class="returning-user">
+            <label class="switch-row">
+              <input id="returningToggle" type="checkbox">
+              <span class="switch" aria-hidden="true"></span>
+              <span><strong>Return from a user</strong><small>The device was returned by a user</small></span>
+            </label>
+            <div id="returningSearch" class="form-field nested" hidden>
+              <label for="returningUserInput">Returning user</label>
+              <div id="returningSearchControl" class="search-control lookup-control">
+                <input id="returningUserInput" type="text" autocomplete="off" spellcheck="false" placeholder="Type at least 2 characters">
+                <button id="searchReturningButton" class="button secondary compact lookup-button" type="button" disabled>Search</button>
+              </div>
+              <div id="returningConfirmed" class="lookup-confirmed" hidden>
+                <span class="lookup-confirmed-mark" aria-hidden="true">✓</span>
+                <span><strong id="returningConfirmedValue"></strong><small id="returningConfirmedUsername"></small></span>
+                <button id="resetReturningSelection" class="text-button" type="button">Change</button>
+              </div>
+              <div id="returningLookupStatus" class="lookup-status" role="status" aria-live="polite" hidden></div>
+              <div id="returningResults" class="search-results" hidden></div>
+            </div>
+            <div id="returnConfirmation" class="return-confirmation" hidden>
+              <strong class="return-details-title">Return details</strong>
+              <p class="return-email-notice">An email will be sent to this user. Verify the details before submitting.</p>
+              <dl>
+                <div><dt>Device</dt><dd id="confirmSerial"></dd></div>
+                <div><dt>Returning user</dt><dd id="confirmUser"></dd></div>
+                <div><dt>Destination</dt><dd id="confirmLocation"></dd></div>
+              </dl>
+              <div id="returnUserInfo" class="return-user-info"></div>
+            </div>
+          </div>
         </div>
 
           <div id="validationPanel" class="validation-panel" hidden></div>

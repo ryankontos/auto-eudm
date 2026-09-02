@@ -118,9 +118,15 @@ const elements = {
   cityInput: $("#cityInput"),
   locationInput: $("#locationInput"),
   locationDetail: $("#locationDetail"),
+  returningUserFields: $("#returningUserFields"),
+  returningToggle: $("#returningToggle"),
+  returningSearch: $("#returningSearch"),
+  returningUserInput: $("#returningUserInput"),
+  returnConfirmation: $("#returnConfirmation"),
   validationPanel: $("#validationPanel"),
   serialResults: $("#serialResults"),
   userResults: $("#userResults"),
+  returningResults: $("#returningResults"),
 };
 
 function escapeHtml(value) {
@@ -318,11 +324,27 @@ function queueSnapshot() {
 
 function resetPersistedValidationState(request) {
   if (!request || typeof request !== "object") return request;
+  if (request.kind === "location" && request.returning_user && !request.returning) {
+    // Older queue entries inferred the return branch from the username alone.
+    request.returning = true;
+  }
+  if (request.kind === "location" && request.returning_user_info && request.returning_user_selected === undefined) {
+    request.returning_user_selected = true;
+  }
+  if (request.kind === "location" && request.returning_user && request.returning_user_validation === undefined) {
+    request.returning_user_validation = request.returning_user_info ? "valid" : "pending";
+  }
   if (request.serial_validation === "checking") {
     request.serial_validation = request.serials?.length ? "pending" : "empty";
   }
   if (request.user_validation === "checking") {
     request.user_validation = request.user ? "pending" : "empty";
+  }
+  if (request.returning_user_validation === "checking") {
+    request.returning_user_validation = request.returning_user ? "pending" : "empty";
+  }
+  if (!request.returning_user && request.returning_user_validation === undefined) {
+    request.returning_user_validation = "empty";
   }
   if (request.kind === "bulk_location" && request.bulk_serial_mode === "individual") {
     request.bulk_serial_states = request.bulk_serial_states || {};
@@ -899,6 +921,13 @@ function makeRequest(kind) {
     bulk_serial_errors: {},
     status: "",
     user: "",
+    returning: false,
+    returning_user: "",
+    returning_user_selected: false,
+    returning_user_info: null,
+    returning_user_validation: "empty",
+    returning_user_validation_error: "",
+    returning_user_loading: false,
     location: user ? null : preferredLocation(),
     group: kind === "bulk_location" ? "Bulk add to location stock" : user ? "Deploy to user" : "Add to location stock",
     source: "",
@@ -1384,7 +1413,7 @@ function renderQueue() {
         <td><span class="cell-primary">${escapeHtml(serialDisplay)}</span>${request.kind === "bulk_location" ? `<span class="cell-secondary">${request.serials.length} devices</span>` : ""}${request.device_allocation ? `<span class="cell-secondary">${escapeHtml(request.device_allocation)}</span>` : ""}${requestId}</td>
         <td><span class="cell-primary">${escapeHtml(kindLabel(request.kind))}</span>${secondary ? `<span class="cell-secondary">${escapeHtml(secondary)}</span>` : ""}</td>
         <td title="${escapeHtml(statusLabel(request))}">${escapeHtml(statusLabel(request))}</td>
-        <td title="${escapeHtml(destinationLabel(request))}"><span class="cell-primary">${escapeHtml(destinationLabel(request))}</span></td>
+        <td title="${escapeHtml(destinationLabel(request))}"><span class="cell-primary">${escapeHtml(destinationLabel(request))}</span>${request.returning ? `<span class="cell-secondary">Return from ${escapeHtml(request.returning_user || "user")}</span>` : ""}</td>
         <td class="state-column" title="${escapeHtml(stateTitle)}">${readinessMarkup}</td>
         <td><button class="row-menu" data-remove="${escapeHtml(request.id)}" aria-label="Remove request" title="${submitting ? "This request is being submitted" : "Remove request"}" ${submitting ? "disabled" : ""}><span class="trash-icon" aria-hidden="true"></span></button></td>
       </tr>`;
@@ -1633,6 +1662,7 @@ function renderInspector() {
   hideSearchResults();
   setLookupStatus("serial", "");
   setLookupStatus("user", "");
+  setLookupStatus("returning", "");
   if (!request) return;
 
   const bulk = request.kind === "bulk_location";
@@ -1674,6 +1704,21 @@ function renderInspector() {
     const hasExact = hasCompleteLocation(location);
     populateLocationPicker(elements.locationInput, location, results, locationEmptyText(location.city));
     elements.locationDetail.textContent = hasExact ? "" : "Choose a location.";
+    elements.returningUserFields.hidden = bulk;
+    elements.returningToggle.checked = Boolean(request.returning);
+    elements.returningSearch.hidden = !request.returning;
+    elements.returningUserInput.value = request.returning_user || "";
+    elements.returnConfirmation.hidden = !(
+      request.returning
+      && request.returning_user
+      && request.returning_user_selected
+      && request.returning_user_validation === "valid"
+      && request.returning_user_info
+    );
+    $("#confirmSerial").textContent = request.serials[0] || "Not selected";
+    $("#confirmUser").textContent = request.returning_user || "Not selected";
+    $("#confirmLocation").textContent = destinationLabel(request);
+    renderReturningUserInfo(request);
     ensureLocationsLoaded(location.city);
   }
 
@@ -1720,6 +1765,13 @@ function changeRequestSize(size) {
     request.user = "";
     request.user_validation = "empty";
     request.user_validation_error = "";
+    request.returning = false;
+    request.returning_user = "";
+    request.returning_user_selected = false;
+    request.returning_user_info = null;
+    request.returning_user_validation = "empty";
+    request.returning_user_validation_error = "";
+    request.returning_user_loading = false;
     request.location = request.location || preferredLocation();
     request.bulk_validation = request.serials.length ? "pending" : "empty";
     request.bulk_validation_error = "";
@@ -1814,7 +1866,8 @@ function duplicateSelected() {
 }
 
 function hideSearchResults() {
-  [elements.serialResults, elements.userResults].forEach((node) => {
+  [elements.serialResults, elements.userResults, elements.returningResults].forEach((node) => {
+    if (!node) return;
     node.hidden = true;
     node.replaceChildren();
   });
@@ -2003,8 +2056,9 @@ function setLookupInputStatus(kind, value) {
 function updateLookupControlStates(request = selectedRequest()) {
   const serialButton = $("#searchSerialButton");
   const userButton = $("#searchUserButton");
+  const returningButton = $("#searchReturningButton");
   if (!request) {
-    [serialButton, userButton].forEach((button) => { if (button) button.disabled = true; });
+    [serialButton, userButton, returningButton].forEach((button) => { if (button) button.disabled = true; });
     return;
   }
   serialButton.disabled = request.kind === "bulk_location"
@@ -2013,6 +2067,12 @@ function updateLookupControlStates(request = selectedRequest()) {
   userButton.disabled = request.kind !== "user"
     || elements.userInput.value.trim().length < 2
     || request.user_validation === "checking";
+  if (returningButton) {
+    returningButton.disabled = request.kind !== "location"
+      || !request.returning
+      || elements.returningUserInput.value.trim().length < 2
+      || request.returning_user_validation === "checking";
+  }
 }
 
 function confirmedPersonLabel(login, info) {
@@ -2042,22 +2102,37 @@ function renderLookupConfirmations(request, { bulk, user }) {
     elements.userResults.replaceChildren();
   }
 
+  const returningConfirmed = !user && !bulk && request.returning
+    && Boolean(request.returning_user_selected && request.returning_user);
+  $("#returningSearchControl").hidden = !request.returning || returningConfirmed;
+  $("#returningConfirmed").hidden = !returningConfirmed;
+  const selectedReturningUser = confirmedPersonLabel(request.returning_user || "", request.returning_user_info);
+  $("#returningConfirmedValue").textContent = selectedReturningUser.fullName;
+  $("#returningConfirmedUsername").textContent = selectedReturningUser.login;
+  if (returningConfirmed && elements.returningResults) {
+    elements.returningResults.hidden = true;
+    elements.returningResults.replaceChildren();
+  }
+
 }
 
 function resetLookupSelection(kind) {
   const request = selectedRequest();
   if (!request) return;
-  const field = kind === "serial" ? "serial" : "user";
+  const field = kind === "serial" ? "serial" : kind === "user" ? "user" : "returning_user";
   const value = field === "serial" ? request.serials[0] || "" : request[field] || "";
   request[`${field}_selected`] = false;
   request[`${field}_validation_epoch`] = Number(request[`${field}_validation_epoch`] || 0) + 1;
   request[`${field}_validation`] = value ? "pending" : "empty";
   request[`${field}_validation_error`] = "";
+  if (field === "returning_user") request.returning_user_loading = false;
   renderInspector();
-  const input = field === "serial" ? elements.serialInput : elements.userInput;
+  const input = field === "serial"
+    ? elements.serialInput
+    : field === "user" ? elements.userInput : elements.returningUserInput;
   input.focus();
   input.select();
-  setLookupInputStatus(kind, value);
+  setLookupInputStatus(field === "returning_user" ? "returning" : kind, value);
   updateLookupControlStates(request);
   renderQueue();
 }
@@ -5927,7 +6002,9 @@ function bindEvents() {
     renderQueue();
   });
   $("#searchUserButton").addEventListener("click", () => searchUsers(false));
+  $("#searchReturningButton").addEventListener("click", () => searchUsers(true));
   $("#resetUserSelection").addEventListener("click", () => resetLookupSelection("user"));
+  $("#resetReturningSelection").addEventListener("click", () => resetLookupSelection("returning_user"));
   $("#loadLocationsButton").addEventListener("click", loadLocations);
   elements.serialInput.addEventListener("input", () => {
     hideSearchResults();
@@ -6012,14 +6089,52 @@ function bindEvents() {
     elements.locationDetail.textContent = "";
     renderQueue();
   });
+  elements.returningToggle.addEventListener("change", () => {
+    const request = selectedRequest();
+    if (!request) return;
+    request.returning = elements.returningToggle.checked;
+    if (!request.returning) {
+      request.returning_user = "";
+      request.returning_user_selected = false;
+      request.returning_user_info = null;
+      request.returning_user_validation = "empty";
+      request.returning_user_validation_error = "";
+      request.returning_user_loading = false;
+    }
+    renderInspector();
+    renderQueue();
+  });
+  elements.returningUserInput.addEventListener("input", () => {
+    hideSearchResults();
+    setLookupStatus("returning", "");
+    const request = selectedRequest();
+    if (!request) return;
+    request.returning_user = elements.returningUserInput.value.trim();
+    request.returning_user_info = null;
+    request.returning_user_validation_epoch = Number(request.returning_user_validation_epoch || 0) + 1;
+    request.returning_user_selected = false;
+    request.returning_user_validation = request.returning_user ? "pending" : "empty";
+    request.returning_user_validation_error = "";
+    request.cached_user_verification = false;
+    request.returning_user_loading = Boolean(request.returning_user);
+    if (request.returning_user) setLookupInputStatus("returning", request.returning_user);
+    if (request.returning_user) scheduleValidation(request, "returning_user", () => validateUserAfterPause(request, true));
+    renderReturningUserInfo(request);
+    refreshSelectedValidation();
+    updateLookupControlStates(request);
+    renderQueue();
+  });
   elements.serialInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !$("#searchSerialButton").disabled) { event.preventDefault(); searchAssets(); }
   });
   elements.userInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !$("#searchUserButton").disabled) { event.preventDefault(); searchUsers(false); }
   });
+  elements.returningUserInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !$("#searchReturningButton").disabled) { event.preventDefault(); searchUsers(true); }
+  });
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && [elements.serialResults, elements.userResults].some((node) => !node.hidden)) {
+    if (event.key === "Escape" && [elements.serialResults, elements.userResults, elements.returningResults].some((node) => !node.hidden)) {
       hideSearchResults();
     }
   });

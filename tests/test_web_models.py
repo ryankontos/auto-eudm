@@ -54,6 +54,50 @@ class RequestValidationTests(unittest.TestCase):
     def test_user_deployment_requires_a_receiving_user(self) -> None:
         self.assertIn("Choose the receiving user.", user_request(user="").validate())
 
+    def test_location_return_preserves_the_returning_user(self) -> None:
+        request = location_request(
+            returning=True,
+            returning_user="returning.user",
+            returning_user_info={
+                "login": "returning.user",
+                "columns": ["Returning User", "returning.user"],
+            },
+        )
+
+        restored = RequestSpec.from_json(request.to_json())
+
+        self.assertTrue(restored.returning_requested)
+        self.assertEqual(restored.returning_user, "returning.user")
+        self.assertEqual(restored.returning_user_info, {
+            "login": "returning.user",
+            "columns": ["Returning User", "returning.user"],
+        })
+        self.assertEqual(restored.validate(), [])
+
+    def test_location_return_requires_verified_returning_user_details(self) -> None:
+        request = location_request(
+            returning=True,
+            returning_user="returning.user",
+        )
+
+        self.assertTrue(any("Search and verify the returning user's details" in error for error in request.validate()))
+
+    def test_bulk_location_return_is_rejected(self) -> None:
+        request = location_request(
+            kind="bulk_location",
+            returning=True,
+            returning_user="returning.user",
+            returning_user_info={
+                "login": "returning.user",
+                "columns": ["Returning User", "returning.user"],
+            },
+        )
+
+        self.assertIn(
+            "Bulk add to location stock cannot include a returning user.",
+            request.validate(),
+        )
+
     def test_requesting_user_must_be_a_login_id(self) -> None:
         errors = validate_queue([user_request()], "person@example.com")
         self.assertIn("_queue", errors)
