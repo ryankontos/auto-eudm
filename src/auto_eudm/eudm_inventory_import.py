@@ -328,7 +328,10 @@ def load_sheet(path: Path, columns: ImportColumns | None = None) -> tuple[str, l
     try:
         sheet = select_workbook_sheet(workbook)
         header_row, indexes, date_index = find_column_indexes(sheet, columns or ImportColumns())
-        max_column = max(sheet.max_column or 1, date_index, *indexes.values())
+        # Once the headers are mapped, do not stream unrelated trailing
+        # columns. Large ALM workbooks often have formatting far beyond the
+        # actual table, which otherwise makes every row unnecessarily wide.
+        max_column = max(date_index, *indexes.values())
         rows: list[SheetRow] = []
         current_date: date | None = None
         current_fill: tuple[Any, ...] | None = None

@@ -90,6 +90,7 @@ Examples:
     except KeyboardInterrupt:
         print("\nAutoEUDM stopped.")
     finally:
+        app.flush_pending_state()
         server.server_close()
     return 0
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import json
@@ -43,7 +44,9 @@ DEVICE_MODEL_LOCATION_STATUSES = frozenset({
 MAX_IMPORT_JOBS = 12
 MAX_PENDING_IMPORTS = 2
 MAX_LIVE_SUBMISSION_JOBS = 100
+SEARCH_PROBE_POOL_SIZE = 16
 VERIFICATION_CACHE_MAX_ENTRIES = 10000
+VERIFICATION_CACHE_WRITE_COALESCE_SECONDS = 0.75
 MAX_ALM_IMPORT_DRAFTS = 10
 ALM_IMPORT_DRAFT_MAX_AGE = timedelta(hours=6)
 HISTORY_FILENAME = "request-history.json"
@@ -347,6 +350,8 @@ class ClientManager:
             eudm.SimulationClient(config.verbose) if config.simulate else None
         )
         self.probe: SearchProbe | None = None
+        self.fresh_probes: list[SearchProbe] = []
+        self.fresh_probe_cursor = 0
         self.connected_at: str | None = None
         self.last_checked_at: str | None = None
         self.health_lock = threading.Lock()
@@ -382,6 +387,8 @@ class ClientManager:
             if self.state == "connected":
                 self.client = None
                 self.probe = None
+                self.fresh_probes = []
+                self.fresh_probe_cursor = 0
             self.state = "connecting"
             self.message = "Opening the saved EUDM session…"
         thread = threading.Thread(target=self._connect, daemon=True)
@@ -394,6 +401,8 @@ class ClientManager:
         with self.lock:
             self.client = None
             self.probe = None
+            self.fresh_probes = []
+            self.fresh_probe_cursor = 0
             self.connected_at = None
             self.last_checked_at = None
             self.state = "expired"
@@ -481,6 +490,8 @@ class ClientManager:
         with self.lock:
             self.client = client
             self.probe = None
+            self.fresh_probes = []
+            self.fresh_probe_cursor = 0
             self.state = "connected"
             self.connected_at = datetime.now().isoformat(timespec="seconds")
             self.last_checked_at = self.connected_at
@@ -553,9 +564,37 @@ class ClientManager:
             return self.probe
 
     def fresh_search(self) -> SearchProbe:
-        """An independent draft used by concurrent import preflight checks."""
-        client = self.require().parallel_clients(1)[0]
-        return SearchProbe(client, self.request_for)
+        """Return a reusable probe for concurrent import preflight checks.
+
+        A fresh probe still remains independent from the interactive search
+        probe, but its questionnaire is reused for several lookups. This
+        avoids creating and loading a new EUDM request for every serial and
+        username verification while retaining separate locks for concurrent
+        callers.
+        """
+        with self.lock:
+            if self.client is None:
+                if self.state == "expired":
+                    raise eudm.SSOExpiredError(
+                        "Your EUDM session has expired. Reconnect to continue."
+                    )
+                raise eudm.EUDMError(
+                    "Connect to EUDM before using live search."
+                )
+            client = self.client
+            if len(self.fresh_probes) < SEARCH_PROBE_POOL_SIZE:
+                probe = SearchProbe(
+                    client.parallel_clients(1)[0], self.request_for
+                )
+                self.fresh_probes.append(probe)
+                return probe
+            probe = self.fresh_probes[
+                self.fresh_probe_cursor % len(self.fresh_probes)
+            ]
+            self.fresh_probe_cursor = (
+                self.fresh_probe_cursor + 1
+            ) % len(self.fresh_probes)
+            return probe
 
 
 @dataclass
@@ -1014,6 +1053,11 @@ class Application:
         self.verification_cache_path = ROOT / "results" / "web-verification-cache.json"
         self.verification_cache_lock = threading.Lock()
         self.verification_cache = self._load_verification_cache()
+        self.verification_cache_alias_index: dict[str, dict[str, str]] | None = None
+        self.verification_cache_write_timer: threading.Timer | None = None
+        self.verification_cache_write_lock = threading.Lock()
+        self.verification_cache_dirty = False
+        self.verification_cache_last_write = 0.0
         self.alm_backlog_ignored_path = ROOT / "results" / "web-alm-backlog-ignored.json"
         self.alm_backlog_ignored_lock = threading.Lock()
         self.alm_backlog_ignored = self._load_alm_backlog_ignored()
@@ -1394,12 +1438,51 @@ class Application:
             }
         return {**empty, **cache}
 
-    def _write_verification_cache(self) -> None:
-        payload = json.dumps(self.verification_cache, ensure_ascii=False, indent=2)
-        self.verification_cache_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.verification_cache_path.with_suffix(".tmp")
-        temporary.write_text(payload + "\n", encoding="utf-8")
-        temporary.replace(self.verification_cache_path)
+    def _verification_cache_snapshot_locked(self) -> dict[str, dict[str, dict[str, Any]]]:
+        return {
+            category: {
+                key: dict(value)
+                for key, value in values.items()
+            }
+            for category, values in self.verification_cache.items()
+        }
+
+    def _write_verification_cache(
+        self,
+        snapshot: dict[str, dict[str, dict[str, Any]]] | None = None,
+    ) -> None:
+        source = snapshot if snapshot is not None else self.verification_cache
+        payload = json.dumps(source, ensure_ascii=False, indent=2)
+        write_lock = getattr(self, "verification_cache_write_lock", None)
+        if write_lock is None:
+            write_lock = threading.Lock()
+            self.verification_cache_write_lock = write_lock
+        with write_lock:
+            self.verification_cache_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self.verification_cache_path.with_suffix(".tmp")
+            temporary.write_text(payload + "\n", encoding="utf-8")
+            temporary.replace(self.verification_cache_path)
+
+    def _verification_cache_aliases_locked(self, category: str) -> dict[str, str]:
+        index = getattr(self, "verification_cache_alias_index", None)
+        if index is None:
+            index = {"serials": {}, "usernames": {}}
+            for indexed_category, values in self.verification_cache.items():
+                category_index = index[indexed_category]
+                for stored_key, candidate in values.items():
+                    aliases = [
+                        stored_key,
+                        candidate.get("value"),
+                        *(candidate.get("columns") or []),
+                    ]
+                    # Values are stored oldest-to-newest, so later records
+                    # intentionally win when two records share a display alias.
+                    for alias in aliases:
+                        alias_key = self._verification_cache_key(str(alias or ""))
+                        if alias_key:
+                            category_index[alias_key] = str(stored_key)
+            self.verification_cache_alias_index = index
+        return index.get(category, {})
 
     def verification_cache_lookup(self, kind: str, value: str) -> dict[str, Any] | None:
         category = "serials" if kind == "serial" else "usernames" if kind == "username" else ""
@@ -1410,12 +1493,10 @@ class Application:
             values = self.verification_cache[category]
             cached = values.get(key)
             if cached is None:
-                for candidate in reversed(list(values.values())):
-                    aliases = [candidate.get("value"), *(candidate.get("columns") or [])]
-                    if any(self._verification_cache_key(alias) == key for alias in aliases):
-                        cached = candidate
-                        break
-            return json.loads(json.dumps(cached)) if cached else None
+                stored_key = self._verification_cache_aliases_locked(category).get(key)
+                if stored_key:
+                    cached = values.get(stored_key)
+            return deepcopy(cached) if cached else None
 
     def record_verified_serial(self, result: dict[str, Any]) -> None:
         self._record_verification("serials", result)
@@ -1434,13 +1515,69 @@ class Application:
         }
         if category == "serials":
             stored["device_type"] = str(result.get("device_type", "") or "")
+        snapshot: dict[str, dict[str, dict[str, Any]]] | None = None
         with self.verification_cache_lock:
             values = self.verification_cache[category]
             values.pop(key, None)
             values[key] = stored
             while len(values) > VERIFICATION_CACHE_MAX_ENTRIES:
                 values.pop(next(iter(values)))
-            self._write_verification_cache()
+            self.verification_cache_alias_index = None
+            now = time.monotonic()
+            last_write = getattr(self, "verification_cache_last_write", 0.0)
+            if now - last_write >= VERIFICATION_CACHE_WRITE_COALESCE_SECONDS:
+                snapshot = self._verification_cache_snapshot_locked()
+                self.verification_cache_dirty = False
+                self.verification_cache_last_write = now
+            else:
+                self.verification_cache_dirty = True
+                self._schedule_verification_cache_flush_locked()
+        if snapshot is not None:
+            try:
+                self._write_verification_cache(snapshot)
+            except OSError:
+                with self.verification_cache_lock:
+                    self.verification_cache_dirty = True
+                    self._schedule_verification_cache_flush_locked()
+                raise
+
+    def _schedule_verification_cache_flush_locked(self) -> None:
+        timer = getattr(self, "verification_cache_write_timer", None)
+        if timer is not None and timer.is_alive():
+            return
+        timer = threading.Timer(
+            VERIFICATION_CACHE_WRITE_COALESCE_SECONDS,
+            self._flush_verification_cache,
+        )
+        timer.daemon = True
+        self.verification_cache_write_timer = timer
+        timer.start()
+
+    def _flush_verification_cache(self) -> None:
+        snapshot: dict[str, dict[str, dict[str, Any]]] | None = None
+        with self.verification_cache_lock:
+            self.verification_cache_write_timer = None
+            if not getattr(self, "verification_cache_dirty", False):
+                return
+            snapshot = self._verification_cache_snapshot_locked()
+            self.verification_cache_dirty = False
+            self.verification_cache_last_write = time.monotonic()
+        try:
+            self._write_verification_cache(snapshot)
+        except OSError:
+            # The next verification will retry the deferred write. Cache
+            # failures must not make an otherwise successful lookup fail.
+            with self.verification_cache_lock:
+                self.verification_cache_dirty = True
+            run_reporting.event("Could not persist the verification cache")
+
+    def flush_pending_state(self) -> None:
+        """Persist deferred cache updates before the local server exits."""
+        with self.verification_cache_lock:
+            timer = getattr(self, "verification_cache_write_timer", None)
+            if timer is not None:
+                timer.cancel()
+        self._flush_verification_cache()
 
     def _load_alm_backlog_ignored(self) -> dict[str, dict[str, str]]:
         try:

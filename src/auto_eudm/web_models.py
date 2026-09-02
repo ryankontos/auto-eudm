@@ -441,7 +441,10 @@ class WorkbookImport:
                     header_row, indexes, date_index = inventory.find_column_indexes(sheet, selected_columns)
                 except eudm.EUDMError:
                     continue
-                max_column = max(sheet.max_column or 1, date_index, *indexes.values())
+                # The header scan may inspect the full sheet, but row parsing
+                # only needs the mapped columns. Avoid carrying formatted
+                # trailing columns through a large workbook import.
+                max_column = max(date_index, *indexes.values())
                 current_date = None
                 current_fill = None
                 date_group = 0
@@ -517,13 +520,14 @@ class WorkbookImport:
     def summary(self) -> dict[str, Any]:
         sheet_summaries = []
         for name, rows in self.sheets.items():
+            rows_by_date: dict[date, list[inventory.SheetRow]] = {}
+            for row in rows:
+                rows_by_date.setdefault(row.deployment_date, []).append(row)
             dates = []
-            for selected in sorted(
-                {row.deployment_date for row in rows}, reverse=True
-            ):
-                selected_rows = [row for row in rows if row.deployment_date == selected]
+            for selected in sorted(rows_by_date, reverse=True):
+                selected_rows = rows_by_date[selected]
                 deployment_count, returned_device_count, pending_return_count = inventory.eligible_counts(
-                    rows, selected_date=selected
+                    selected_rows
                 )
                 missing_username_deployment_count = sum(
                     row.enabled
@@ -535,7 +539,7 @@ class WorkbookImport:
                 for group_number in sorted({row.date_group for row in selected_rows}):
                     group_rows = [row for row in selected_rows if row.date_group == group_number]
                     group_deployments, group_returned, group_pending = inventory.eligible_counts(
-                        rows, selected_date=selected, date_group=group_number
+                        group_rows
                     )
                     group_missing_username_deployments = sum(
                         row.enabled
@@ -549,9 +553,7 @@ class WorkbookImport:
                             "row_count": len(group_rows),
                             "eligible_row_count": len(
                                 inventory.eligible_rows(
-                                    rows,
-                                    selected_date=selected,
-                                    date_group=group_number,
+                                    group_rows,
                                 )
                             ),
                             "deployment_count": group_deployments,
@@ -571,7 +573,7 @@ class WorkbookImport:
                         "pending_return_count": pending_return_count,
                         "row_count": len(selected_rows),
                         "eligible_row_count": len(
-                            inventory.eligible_rows(rows, selected_date=selected)
+                            inventory.eligible_rows(selected_rows)
                         ),
                         "groups": groups,
                         "warnings": [
@@ -636,10 +638,14 @@ class WorkbookImport:
         actions: list[inventory.Action] = []
         ignored: Counter[str] = Counter()
         missing_username_deployments: list[dict[str, Any]] = []
+        rows_by_date: dict[date, list[inventory.SheetRow]] = {}
+        for row in self.sheets[sheet_name]:
+            rows_by_date.setdefault(row.deployment_date, []).append(row)
         for chosen_date in chosen_dates:
             selected_group = selections.get(chosen_date.isoformat(), group_selection)
+            selected_rows = rows_by_date.get(chosen_date, [])
             date_actions, date_ignored = inventory.build_actions(
-                self.sheets[sheet_name],
+                selected_rows,
                 chosen_date,
                 ",".join(sorted(selected_modes)),
                 group_selection=selected_group,
@@ -649,9 +655,7 @@ class WorkbookImport:
             if "deployments" in selected_modes:
                 raw_group = str(selected_group or "all").strip().casefold()
                 selected_group_number = None if raw_group in {"", "all"} else int(raw_group)
-                for row in self.sheets[sheet_name]:
-                    if row.deployment_date != chosen_date:
-                        continue
+                for row in selected_rows:
                     if selected_group_number is not None and row.date_group != selected_group_number:
                         continue
                     if not row.enabled or str(row.username or "").strip():

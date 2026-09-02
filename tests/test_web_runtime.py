@@ -16,12 +16,14 @@ from auto_eudm import run_reporting
 from auto_eudm.web_models import RequestSpec, WorkbookImport
 from auto_eudm.web_runtime import (
     Application,
+    ClientManager,
     ImportJob,
     JobEntry,
     JobStore,
     MAX_IMPORT_JOBS,
     MAX_LIVE_SUBMISSION_JOBS,
     MAX_PENDING_IMPORTS,
+    SEARCH_PROBE_POOL_SIZE,
     SubmissionJob,
 )
 
@@ -111,6 +113,30 @@ class RequestStatusPreferenceTests(unittest.TestCase):
             self.app._normalise_preferences(
                 {"request_statuses": ["Deployed - New Stock"]}
             )
+
+
+class SearchProbePoolTests(unittest.TestCase):
+    def test_fresh_search_reuses_a_bounded_pool(self) -> None:
+        manager = ClientManager.__new__(ClientManager)
+        manager.lock = threading.Lock()
+        manager.state = "connected"
+        manager.client = mock.Mock()
+        manager.client.parallel_clients.side_effect = lambda _count: [mock.Mock()]
+        manager.request_for = "valid.user"
+        manager.fresh_probes = []
+        manager.fresh_probe_cursor = 0
+
+        probes = [
+            manager.fresh_search()
+            for _ in range(SEARCH_PROBE_POOL_SIZE + 2)
+        ]
+
+        self.assertEqual(
+            manager.client.parallel_clients.call_count,
+            SEARCH_PROBE_POOL_SIZE,
+        )
+        self.assertIs(probes[0], probes[SEARCH_PROBE_POOL_SIZE])
+        self.assertIs(probes[1], probes[SEARCH_PROBE_POOL_SIZE + 1])
 
 
 class ImportJobRetentionTests(unittest.TestCase):
@@ -400,6 +426,34 @@ class SubmissionHistoryTests(unittest.TestCase):
                     "columns": ["ABC123", "Laptop"],
                     "device_type": "Laptop",
                 },
+            )
+
+    def test_verification_cache_batches_updates_and_resolves_aliases(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            cache_path = Path(folder) / "web-verification-cache.json"
+            app = Application.__new__(Application)
+            app.verification_cache_path = cache_path
+            app.verification_cache_lock = threading.Lock()
+            app.verification_cache_write_lock = threading.Lock()
+            app.verification_cache = {"serials": {}, "usernames": {}}
+            app.record_verified_serial({
+                "value": "ABC123",
+                "columns": ["ABC123", "MacBook Air"],
+                "device_type": "Laptop",
+            })
+            app.record_verified_serial({
+                "value": "DEF456",
+                "columns": ["DEF456", "ThinkPad"],
+                "device_type": "Laptop",
+            })
+
+            app.flush_pending_state()
+            persisted = json.loads(cache_path.read_text(encoding="utf-8"))
+
+            self.assertEqual(set(persisted["serials"]), {"abc123", "def456"})
+            self.assertEqual(
+                app.verification_cache_lookup("serial", "MacBook Air")["value"],
+                "ABC123",
             )
 
     def test_unsubmitted_request_queue_is_persisted_and_loaded(self) -> None:
