@@ -4397,7 +4397,9 @@ function renderImportPreview() {
       const missingReturnWarning = isDeployment
         && !request.has_returned_device_serial
         && !request.has_pending_return_serial
-        ? '<small class="import-return-warning">User has no return or pending return</small>'
+        ? request.new_joiner
+          ? '<small class="import-new-joiner">New joiner</small>'
+          : '<small class="import-return-warning">User has no return or pending return</small>'
         : "";
       const personColumn = isReturnedDevice
         ? `<div><small class="import-field-title">Destination</small><strong>${escapeHtml(destination)}</strong></div>`

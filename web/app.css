@@ -1158,6 +1158,7 @@ fieldset { margin: 0; padding: 0; border: 0; }
 .import-preview-row .import-field-title { margin-bottom: 3px; color: var(--ink); font-size: 9px; font-weight: 750; letter-spacing: .04em; text-transform: uppercase; }
 .import-preview-row .import-device-allocation { margin-top: 3px; color: var(--muted); font-weight: 500; }
 .import-return-warning { margin-top: 4px; color: var(--amber-text) !important; font-weight: 700; }
+.import-new-joiner { margin-top: 4px; color: var(--green) !important; font-weight: 700; }
 .import-preview-row select { width: 100%; min-height: 32px; font-size: 11px; }
 .import-status-control { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px; align-items: center; }
 .import-status-control .button { min-width: 62px; padding-right: 8px; padding-left: 8px; font-size: 11px; }

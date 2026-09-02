@@ -240,6 +240,24 @@ class WorkbookUploadTests(unittest.TestCase):
             payload["requests"][0]["device_allocation"], "MacBookPro18,3"
         )
 
+    def test_workbook_prepare_persists_new_joiner_marker(self) -> None:
+        row = inventory.SheetRow(
+            row_number=2,
+            deployment_date=date(2025, 2, 3),
+            username="valid.user",
+            deployment_serial="SERIAL123",
+            returned_device_serial=None,
+            pending_return_serial=None,
+            marked_red=False,
+            enabled=True,
+            new_joiner=True,
+        )
+        workbook = WorkbookImport("import-new-joiner", "tracking.xlsx", {"Sheet": [row]})
+
+        payload = workbook.prepare("Sheet", "2025-02-03", "deployments")
+
+        self.assertTrue(payload["requests"][0]["new_joiner"])
+
     def test_workbook_prepare_marks_missing_return_serials_on_deployments(self) -> None:
         row = inventory.SheetRow(
             row_number=2,
@@ -476,8 +494,15 @@ class WorkbookUploadTests(unittest.TestCase):
         source = OpenPyXLWorkbook()
         source.active.title = "Bookings 2026"
         sheet = source.active
-        sheet.append(["Date", "Username", "SN", "OLD Device SN", "Attend"])
-        sheet.append([date(2025, 2, 3), "valid.user", "SERIAL123", "PENDING123", True])
+        sheet.append(["Date", "Username", "SN", "OLD Device SN", "Attend", "Notes"])
+        sheet.append([
+            date(2025, 2, 3),
+            "valid.user",
+            "SERIAL123",
+            "PENDING123",
+            True,
+            "New\n   Starter",
+        ])
         buffer = BytesIO()
         source.save(buffer)
         payload = buffer.getvalue()
@@ -488,6 +513,8 @@ class WorkbookUploadTests(unittest.TestCase):
         self.assertEqual(inspection["default_sheet"], "Bookings 2026")
         self.assertIn("Bookings 2026", workbook.sheets)
         self.assertTrue(workbook.summary()["sheets"])
+        prepared = workbook.prepare("Bookings 2026", "2025-02-03", "deployments")
+        self.assertTrue(prepared["requests"][0]["new_joiner"])
 
 
 if __name__ == "__main__":

@@ -487,10 +487,10 @@ class WorkbookImport:
                     header_row, indexes, date_index = inventory.find_column_indexes(sheet, selected_columns)
                 except eudm.EUDMError:
                     continue
-                # The header scan may inspect the full sheet, but row parsing
-                # only needs the mapped columns. Avoid carrying formatted
-                # trailing columns through a large workbook import.
-                max_column = max(date_index, *indexes.values())
+                # The new-joiner marker can appear in any column, so keep the
+                # full reported worksheet width while reading rows. Only the
+                # resulting boolean is retained in each SheetRow.
+                max_column = max(int(sheet.max_column or 1), date_index, *indexes.values())
                 current_date = None
                 current_fill = None
                 date_group = 0
@@ -545,6 +545,7 @@ class WorkbookImport:
                             returned_device_column_present=bool(indexes["returned_device"]),
                             device_allocation=inventory.clean_text(values[indexes["device_allocation"] - 1].value) if indexes["device_allocation"] else None,
                             new_asset_status=inventory.clean_text(values[indexes["new_asset_status"] - 1].value) if indexes["new_asset_status"] else None,
+                            new_joiner=inventory.row_contains_new_joiner(values),
                         )
                     )
                 if rows:
@@ -776,6 +777,7 @@ class WorkbookImport:
             request["new_asset_status"] = action.new_asset_status or ""
             request["has_returned_device_serial"] = action.has_returned_device_serial
             request["has_pending_return_serial"] = action.has_pending_return_serial
+            request["new_joiner"] = action.new_joiner
             requests.append(request)
         requests.sort(
             key=lambda request: 0
@@ -890,6 +892,7 @@ class WorkbookImport:
                 "username_occurrence_total": username_totals[username_key],
                 "current_status": current_status or "No status",
                 "device_allocation": row.device_allocation or "",
+                "new_joiner": row.new_joiner,
                 "attending": row.enabled,
                 "included": row.enabled,
                 "default_excluded": not row.enabled,

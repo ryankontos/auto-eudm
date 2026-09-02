@@ -17,6 +17,7 @@ from pathlib import Path
 import re
 import sys
 from typing import Any, Iterable
+import unicodedata
 
 from .bootstrap import browser_runtime_required, ensure_runtime
 from . import eudm_request as eudm
@@ -72,6 +73,7 @@ class SheetRow:
     returned_device_column_present: bool = True
     device_allocation: str | None = None
     new_asset_status: str | None = None
+    new_joiner: bool = False
 
 
 @dataclass(frozen=True)
@@ -86,10 +88,32 @@ class Action:
     new_asset_status: str | None = None
     has_returned_device_serial: bool = False
     has_pending_return_serial: bool = False
+    new_joiner: bool = False
 
 
 def normalized_header(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "").strip()).casefold()
+
+
+def normalized_marker_text(value: Any) -> str:
+    """Normalize cell text for markers that may contain odd spacing/formatting."""
+    text = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    # Removing separators as well as whitespace handles values such as
+    # ``NEW\nJOINER``, ``new - joiner`` and non-breaking-space variants.
+    return "".join(character for character in text if character.isalnum())
+
+
+def contains_new_joiner_marker(value: Any) -> bool:
+    normalized = normalized_marker_text(value)
+    return "newjoiner" in normalized or "newstarter" in normalized
+
+
+def row_contains_new_joiner(values: Iterable[Any]) -> bool:
+    """Return whether any cell in a spreadsheet row identifies a new joiner."""
+    return any(
+        contains_new_joiner_marker(getattr(cell, "value", cell))
+        for cell in values
+    )
 
 
 def columns_from_mapping(raw: dict[str, Any] | None = None) -> ImportColumns:
@@ -328,10 +352,10 @@ def load_sheet(path: Path, columns: ImportColumns | None = None) -> tuple[str, l
     try:
         sheet = select_workbook_sheet(workbook)
         header_row, indexes, date_index = find_column_indexes(sheet, columns or ImportColumns())
-        # Once the headers are mapped, do not stream unrelated trailing
-        # columns. Large ALM workbooks often have formatting far beyond the
-        # actual table, which otherwise makes every row unnecessarily wide.
-        max_column = max(date_index, *indexes.values())
+        # The new-joiner marker can appear in any column, so keep the full
+        # reported worksheet width while reading rows. The values are reduced
+        # to a boolean below rather than retained in each SheetRow.
+        max_column = max(int(sheet.max_column or 1), date_index, *indexes.values())
         rows: list[SheetRow] = []
         current_date: date | None = None
         current_fill: tuple[Any, ...] | None = None
@@ -379,6 +403,7 @@ def load_sheet(path: Path, columns: ImportColumns | None = None) -> tuple[str, l
                     returned_device_column_present=bool(indexes["returned_device"]),
                     device_allocation=clean_text(values[indexes["device_allocation"] - 1].value) if indexes["device_allocation"] else None,
                     new_asset_status=clean_text(values[indexes["new_asset_status"] - 1].value) if indexes["new_asset_status"] else None,
+                    new_joiner=row_contains_new_joiner(values),
                 )
             )
         if not rows:
@@ -550,6 +575,7 @@ def build_actions(
                     new_asset_status=row.new_asset_status,
                     has_returned_device_serial=looks_like_serial(row.returned_device_serial),
                     has_pending_return_serial=looks_like_serial(row.pending_return_serial),
+                    new_joiner=row.new_joiner,
                 ))
             else:
                 ignored["Deployment serial is blank or invalid"] += 1

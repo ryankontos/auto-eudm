@@ -57,6 +57,11 @@ class ImportColumnTests(unittest.TestCase):
         self.assertNotIn("Device(s) Allocation", message)
         self.assertNotIn("Returned Device SN", message)
 
+    def test_new_joiner_marker_handles_spacing_case_and_separators(self) -> None:
+        self.assertTrue(inventory.contains_new_joiner_marker("  NEW   \n JOINER "))
+        self.assertTrue(inventory.contains_new_joiner_marker("new - starter"))
+        self.assertFalse(inventory.contains_new_joiner_marker("existing starter"))
+
 
 class ImportActionTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -143,6 +148,16 @@ class ImportActionTests(unittest.TestCase):
             ),
             (1, 0, 0),
         )
+
+    def test_new_joiner_marker_can_be_found_in_any_row_cell(self) -> None:
+        row = (
+            FakeCell("2025-02-03", 1),
+            FakeCell("valid.user", 2),
+            FakeCell("SERIAL123", 3),
+            FakeCell("new   joiner", 4),
+        )
+
+        self.assertTrue(inventory.row_contains_new_joiner(row))
 
     def test_duplicate_error_identifies_serial_and_source_rows(self) -> None:
         duplicate = replace(
