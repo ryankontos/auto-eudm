@@ -1504,6 +1504,10 @@ function renderInspector() {
   $("#statusFields").hidden = false;
   elements.userFields.hidden = !user;
   elements.locationFields.hidden = user;
+  // The return-from-user control belongs to single location deployments only.
+  // Set it on every render so it cannot remain hidden after switching the
+  // request between deployment destinations.
+  elements.returningUserFields.hidden = request.kind !== "location";
   elements.userInput.value = request.user || "";
   renderLookupConfirmations(request, { bulk, user });
 
@@ -1514,7 +1518,6 @@ function renderInspector() {
     const hasExact = hasCompleteLocation(location);
     populateLocationPicker(elements.locationInput, location, results, locationEmptyText(location.city));
     elements.locationDetail.textContent = hasExact ? "" : "Choose a location.";
-    elements.returningUserFields.hidden = bulk;
     elements.returningToggle.checked = Boolean(request.returning);
     elements.returningSearch.hidden = !request.returning;
     elements.returningUserInput.value = request.returning_user || "";
