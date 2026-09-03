@@ -39,10 +39,6 @@
           <span class="tool-icon import-icon" aria-hidden="true">↓</span>
           <span><strong>Import ALM Workbook</strong><small>Import a local spreadsheet</small></span>
         </button>
-        <button id="loadSharepointAlmButton" class="tool-button" type="button" disabled>
-          <span class="tool-icon import-icon" aria-hidden="true">↻</span>
-          <span><strong>Load SharePoint ALM workbook</strong><small id="loadSharepointAlmDetail">Set a file path in Settings</small></span>
-        </button>
         <button id="almBacklogButton" class="tool-button" type="button">
           <span class="tool-icon import-icon" aria-hidden="true">↗</span>
           <span><strong>ALM deployment backlog</strong><small>Find undeployed devices</small></span>
@@ -119,6 +115,7 @@
           <h2>Request details</h2>
           <p>Select a request to edit it.</p>
         </div>
+        <div id="inspectorEditorHost">
         <div id="inspectorContent" hidden>
           <div class="inspector-header">
             <h2 id="inspectorHeading">Request details</h2>
@@ -139,7 +136,7 @@
           </select>
         </div>
 
-        <div class="form-field">
+        <div id="serialFields" class="form-field">
           <label for="serialInput"><span id="serialLabel">Serial number</span><em>Required</em></label>
           <div id="serialSearchControl" class="search-control lookup-control">
             <input id="serialInput" type="text" autocomplete="off" spellcheck="false" placeholder="Type at least 2 characters">
@@ -166,7 +163,14 @@
             </div>
             <div id="bulkSerialTextMode" hidden>
               <textarea id="serialsInput" rows="5" spellcheck="false" placeholder="Enter serials separated by commas, spaces, or new lines" aria-label="Bulk serial numbers"></textarea>
-              <small class="bulk-serial-help">Use the Verify button after editing the list.</small>
+              <div class="bulk-serial-text-meta">
+                <small id="bulkSerialUniqueCount" class="bulk-serial-help">0 unique serials</small>
+                <small id="bulkSerialDuplicateWarning" class="bulk-serial-duplicate-warning" hidden></small>
+              </div>
+            </div>
+            <div id="bulkSerialPrefixWarning" class="bulk-serial-prefix-warning" role="status" hidden>
+              <span>Do you want to remove the leading S from <strong id="bulkSerialPrefixCount">0</strong> MacBook serials?</span>
+              <button id="removeBulkSerialPrefixesButton" class="button secondary compact" type="button">Remove</button>
             </div>
           </div>
           <div id="serialLookupStatus" class="lookup-status" role="status" aria-live="polite" hidden></div>
@@ -257,9 +261,16 @@
           </div>
         </fieldset>
         </div>
+        </div>
       </aside>
     </div>
   </main>
+
+  <dialog id="requestCreateDialog" class="modal request-create-dialog" aria-labelledby="inspectorHeading">
+    <section class="modal-card request-create-card">
+      <div id="requestCreateHost"></div>
+    </section>
+  </dialog>
 
   <dialog id="connectionDialog" class="connection-dialog">
     <section class="connection-sheet-card" aria-labelledby="connectionSheetTitle">
@@ -510,16 +521,6 @@
       </section>
       <section data-settings-panel="spreadsheet" hidden>
         <label class="settings-checkbox"><input id="saveAlmImportDraftsInput" type="checkbox"><span>Save ALM imports for resume for up to 6 hours</span></label>
-        <div class="settings-path-block">
-          <label>SharePoint ALM workbook path
-            <input id="almWorkbookPathInput" type="text" autocomplete="off" spellcheck="false" placeholder="/Users/you/OneDrive/.../ALM.xlsx">
-          </label>
-          <div class="settings-inline-action settings-path-actions">
-            <small>Choose the local OneDrive shortcut file used by the SharePoint loader.</small>
-            <button id="chooseAlmWorkbookPathButton" class="button secondary compact" type="button">Choose file</button>
-          </div>
-          <label class="settings-checkbox"><input id="almWorkbookSyncBeforeLoadInput" type="checkbox"><span>Wait for OneDrive to make the file available before loading</span></label>
-        </div>
         <div class="settings-column-grid">
           <label>Username column<input id="spreadsheetUsernameColumnInput" type="text" placeholder="Username"></label>
           <label>Deployment serial column<input id="spreadsheetDeploymentColumnInput" type="text" placeholder="SN"></label>
@@ -549,6 +550,8 @@
       <div class="modal-header"><h2>Keyboard shortcuts</h2><button class="icon-button" value="cancel" aria-label="Close">×</button></div>
       <p class="shortcuts-note"><span class="shortcut-mac">Option</span> on Mac, <span class="shortcut-windows">Ctrl</span> on Windows and Linux.</p>
       <div class="shortcut-list">
+        <div><span>Undo app change</span><kbd>⌘ / Ctrl</kbd><kbd>Z</kbd></div>
+        <div><span>Redo app change</span><kbd>⌘ / Ctrl</kbd><kbd>Shift</kbd><kbd>Z</kbd></div>
         <div><span>New single-device request</span><kbd>⌥ / Ctrl</kbd><kbd>N</kbd></div>
         <div><span>Quick import</span><kbd>⌥ / Ctrl</kbd><kbd>I</kbd></div>
         <div><span>Import ALM Workbook</span><kbd>⌥ / Ctrl</kbd><kbd>O</kbd></div>

@@ -397,9 +397,6 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
         if path == "/api/preferences":
             self._json(self.app.save_preferences(payload))
             return
-        if path == "/api/import/choose-path":
-            self._json({"path": self.app.choose_alm_workbook_path()})
-            return
         if path == "/api/import-drafts":
             self._json({"drafts": self.app.save_import_draft(payload)})
             return
@@ -458,12 +455,6 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
                 str(payload.get("filename", "")),
                 str(payload.get("data", "")),
             )
-            self._json(job.to_json(), 202)
-            return
-        if path == "/api/import/local":
-            if not self.app.config.spreadsheet_import_enabled:
-                raise eudm.EUDMError("Spreadsheet import is disabled by this AutoEUDM environment.")
-            job = self.app.start_local_import()
             self._json(job.to_json(), 202)
             return
         if path == "/api/import/map":

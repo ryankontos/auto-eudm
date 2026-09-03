@@ -7,12 +7,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-import hashlib
-from io import BytesIO
 import json
 from pathlib import Path
-import subprocess
-import sys
 import threading
 import time
 from typing import Any
@@ -20,7 +16,6 @@ import urllib.error
 import urllib.request
 import uuid
 import webbrowser
-import zipfile
 
 from . import eudm_inventory_import as inventory
 from . import eudm_request as eudm
@@ -29,7 +24,6 @@ from .eudm_config import AppConfig
 from .web_models import (
     CITIES,
     LOCATION_STATUSES,
-    MAX_WORKBOOK_BYTES,
     USER_STATUSES,
     Location,
     RequestSpec,
@@ -47,9 +41,6 @@ VERIFICATION_CACHE_MAX_ENTRIES = 10000
 VERIFICATION_CACHE_WRITE_COALESCE_SECONDS = 0.75
 MAX_ALM_IMPORT_DRAFTS = 10
 ALM_IMPORT_DRAFT_MAX_AGE = timedelta(hours=6)
-ALM_LOCAL_SYNC_TIMEOUT_SECONDS = 60
-ALM_LOCAL_SYNC_RETRY_SECONDS = 3
-MAX_ALM_WORKBOOK_CACHE_FILES = 12
 HISTORY_FILENAME = "request-history.json"
 LEGACY_HISTORY_FILENAMES = ("web-request-history.json",)
 MAX_QUEUED_REQUESTS = 1000
@@ -1044,17 +1035,11 @@ class Application:
         self.pending_imports: dict[str, tuple[str, bytes]] = {}
         self.import_jobs: dict[str, ImportJob] = {}
         self.import_lock = threading.Lock()
-        self.pending_import_paths: dict[
-            str,
-            tuple[Path, tuple[int, int], bool, dict[str, Any]],
-        ] = {}
         self.import_drafts_path = ROOT / "results" / "web-alm-import-drafts.json"
         self.import_drafts_lock = threading.Lock()
         self.import_drafts = self._load_import_drafts()
         self.import_payload_path = ROOT / "results" / "web-alm-imports"
         self.import_payload_lock = threading.Lock()
-        self.workbook_cache_path = ROOT / "results" / "web-alm-workbook-cache"
-        self.workbook_cache_lock = threading.Lock()
         self.request_queue_path = ROOT / "results" / "web-request-queue.json"
         self.request_queue_lock = threading.Lock()
         self.request_queue = self._load_request_queue()
@@ -1115,8 +1100,6 @@ class Application:
             "validate_quick_import": True,
             "validate_workbook_import": True,
             "save_alm_import_drafts": True,
-            "alm_workbook_path": "",
-            "alm_workbook_sync_before_load": False,
             "request_statuses": [
                 value for _, value in USER_STATUSES + LOCATION_STATUSES
             ],
@@ -1165,15 +1148,6 @@ class Application:
                 raise eudm.EUDMError("A settings toggle had an invalid value.")
             if key in raw:
                 values[key] = raw[key]
-
-        if "alm_workbook_path" in raw:
-            if not isinstance(raw["alm_workbook_path"], str):
-                raise eudm.EUDMError("The SharePoint ALM workbook path must be text.")
-            values["alm_workbook_path"] = raw["alm_workbook_path"].strip()
-        if "alm_workbook_sync_before_load" in raw:
-            if not isinstance(raw["alm_workbook_sync_before_load"], bool):
-                raise eudm.EUDMError("The OneDrive sync setting had an invalid value.")
-            values["alm_workbook_sync_before_load"] = raw["alm_workbook_sync_before_load"]
 
         if "request_statuses" in raw:
             request_statuses = raw["request_statuses"]
@@ -1276,254 +1250,6 @@ class Application:
             values = json.loads(json.dumps(saved))
             values["_saved"] = True
             return values
-
-    @staticmethod
-    def _normalise_local_workbook_path(raw: Any) -> Path:
-        value = str(raw or "").strip()
-        if not value:
-            raise eudm.EUDMError(
-                "Set the SharePoint ALM workbook path in Settings first."
-            )
-        path = Path(value).expanduser()
-        try:
-            path = path.resolve()
-        except (OSError, RuntimeError) as exc:
-            raise eudm.EUDMError("The SharePoint ALM workbook path was invalid.") from exc
-        if path.suffix.casefold() not in {".xlsx", ".xlsm"}:
-            raise eudm.EUDMError("Choose an .xlsx or .xlsm ALM workbook.")
-        return path
-
-    @staticmethod
-    def _local_workbook_signature(path: Path) -> tuple[int, int] | None:
-        try:
-            stat = path.stat()
-        except OSError:
-            return None
-        return int(stat.st_size), int(stat.st_mtime_ns)
-
-    @staticmethod
-    def _wake_onedrive() -> None:
-        """Ask the macOS OneDrive app to run without requiring admin access."""
-        if sys.platform != "darwin":
-            return
-        try:
-            # OneDrive has no supported public download CLI on macOS. Opening
-            # the installed app wakes its File Provider sync service; reading
-            # the file below then asks macOS to hydrate a cloud placeholder.
-            subprocess.run(
-                ["open", "-g", "-a", "OneDrive"],
-                capture_output=True,
-                check=False,
-                timeout=5,
-            )
-        except (OSError, subprocess.SubprocessError):
-            pass
-
-    def _read_local_workbook_payload(
-        self,
-        path: Path,
-        *,
-        sync_before_load: bool,
-    ) -> tuple[bytes, tuple[int, int]]:
-        """Read a local/File Provider workbook, optionally waiting for sync."""
-        deadline = (
-            time.monotonic() + ALM_LOCAL_SYNC_TIMEOUT_SECONDS
-            if sync_before_load
-            else time.monotonic()
-        )
-        if sync_before_load:
-            self._wake_onedrive()
-        last_error = "The file was not available."
-        while True:
-            try:
-                before = path.stat()
-                if not path.is_file():
-                    raise OSError("The configured path is not a file.")
-                if before.st_size > MAX_WORKBOOK_BYTES:
-                    raise eudm.EUDMError(
-                        "The ALM Workbook is larger than the 100 MB local limit."
-                    )
-                payload = path.read_bytes()
-                if not payload:
-                    raise OSError("The workbook is empty.")
-                if not zipfile.is_zipfile(BytesIO(payload)):
-                    raise OSError(
-                        "The file is not a complete Excel workbook yet. "
-                        "Open it once in Excel or enable the OneDrive freshness check."
-                    )
-                signature = self._local_workbook_signature(path)
-                if signature is None:
-                    raise OSError("The file disappeared while it was being read.")
-                if sync_before_load and signature != (
-                    int(before.st_size),
-                    int(before.st_mtime_ns),
-                ):
-                    raise OSError("OneDrive was still updating the workbook.")
-                return payload, signature
-            except eudm.EUDMError:
-                raise
-            except OSError as exc:
-                last_error = str(exc) or last_error
-                if not sync_before_load:
-                    raise eudm.EUDMError(
-                        f"Could not read the configured ALM Workbook: {last_error}"
-                    ) from exc
-                if time.monotonic() >= deadline:
-                    raise eudm.EUDMError(
-                        "OneDrive did not make the configured ALM Workbook available "
-                        "within 60 seconds. Check that the file is online and try again."
-                    ) from exc
-                time.sleep(ALM_LOCAL_SYNC_RETRY_SECONDS)
-
-    @staticmethod
-    def _workbook_columns_cache_payload(
-        columns: inventory.ImportColumns,
-    ) -> dict[str, str]:
-        return {
-            key: str(getattr(columns, key))
-            for key in (
-                "username",
-                "deployment_serial",
-                "returned_device",
-                "pending_return",
-                "enabled",
-                "device_allocation",
-                "new_asset_status",
-                "first_name",
-                "last_name",
-            )
-        }
-
-    def _local_workbook_cache_key(
-        self,
-        path: Path,
-        signature: tuple[int, int],
-        columns: inventory.ImportColumns,
-    ) -> str:
-        source = json.dumps(
-            {
-                "path": str(path),
-                "signature": list(signature),
-                "columns": self._workbook_columns_cache_payload(columns),
-            },
-            sort_keys=True,
-        ).encode("utf-8")
-        return hashlib.sha256(source).hexdigest()
-
-    def _load_local_workbook_cache(
-        self,
-        path: Path,
-        signature: tuple[int, int],
-        columns: inventory.ImportColumns,
-    ) -> WorkbookImport | None:
-        cache_root = getattr(self, "workbook_cache_path", None)
-        if not cache_root:
-            return None
-        cache_path = Path(cache_root) / (
-            f"{self._local_workbook_cache_key(path, signature, columns)}.json"
-        )
-        try:
-            raw = json.loads(cache_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, TypeError):
-            return None
-        if not isinstance(raw, dict):
-            return None
-        if raw.get("path") != str(path) or raw.get("signature") != list(signature):
-            return None
-        if raw.get("columns") != self._workbook_columns_cache_payload(columns):
-            return None
-        return WorkbookImport.from_cache_json(
-            uuid.uuid4().hex,
-            path.name,
-            raw.get("workbook"),
-        )
-
-    def _write_local_workbook_cache(
-        self,
-        path: Path,
-        signature: tuple[int, int],
-        columns: inventory.ImportColumns,
-        workbook: WorkbookImport,
-    ) -> None:
-        cache_root = getattr(self, "workbook_cache_path", None)
-        if not cache_root:
-            return
-        cache_root = Path(cache_root)
-        cache_path = cache_root / (
-            f"{self._local_workbook_cache_key(path, signature, columns)}.json"
-        )
-        payload = {
-            "path": str(path),
-            "signature": list(signature),
-            "columns": self._workbook_columns_cache_payload(columns),
-            "workbook": workbook.cache_json(),
-        }
-        try:
-            cache_lock = getattr(self, "workbook_cache_lock", None)
-            if cache_lock is None:
-                cache_lock = threading.Lock()
-                self.workbook_cache_lock = cache_lock
-            with cache_lock:
-                cache_root.mkdir(parents=True, exist_ok=True)
-                temporary = cache_path.with_suffix(".tmp")
-                temporary.write_text(
-                    json.dumps(payload, ensure_ascii=False),
-                    encoding="utf-8",
-                )
-                temporary.replace(cache_path)
-                cache_files = sorted(
-                    cache_root.glob("*.json"),
-                    key=lambda candidate: candidate.stat().st_mtime_ns,
-                )
-                for old_cache in cache_files[:-MAX_ALM_WORKBOOK_CACHE_FILES]:
-                    try:
-                        old_cache.unlink()
-                    except OSError:
-                        pass
-        except (OSError, TypeError, ValueError):
-            # A parsed cache is an optimization only; never make an import
-            # fail because its optional cache could not be written.
-            run_reporting.event("Could not persist the ALM workbook cache")
-
-    def choose_alm_workbook_path(self) -> str:
-        """Open the native macOS file chooser and return a validated path."""
-        if sys.platform != "darwin":
-            raise eudm.EUDMError(
-                "Use the path field in Settings to select an ALM Workbook on this system."
-            )
-        try:
-            result = subprocess.run(
-                [
-                    "osascript",
-                    "-e",
-                    'POSIX path of (choose file with prompt "Choose SharePoint ALM workbook")',
-                ],
-                capture_output=True,
-                check=False,
-                text=True,
-                timeout=120,
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise eudm.EUDMError("The macOS file chooser could not be opened.") from exc
-        if result.returncode != 0 or not result.stdout.strip():
-            return ""
-        return str(self._normalise_local_workbook_path(result.stdout.strip()))
-
-    def start_local_import(self) -> ImportJob:
-        with self.preferences_lock:
-            raw_path = self.preferences.get("alm_workbook_path", "")
-            sync_before_load = bool(
-                self.preferences.get("alm_workbook_sync_before_load", False)
-            )
-        path = self._normalise_local_workbook_path(raw_path)
-        job = ImportJob(job_id=uuid.uuid4().hex, filename=path.name)
-        self._register_import_job(job)
-        threading.Thread(
-            target=self._inspect_local_import,
-            args=(job, path, sync_before_load),
-            daemon=True,
-        ).start()
-        return job
 
     def _load_import_drafts(self) -> list[dict[str, Any]]:
         """Load resumable ALM import state from the project filesystem."""
@@ -1998,7 +1724,6 @@ class Application:
     ) -> ImportJob:
         with self.import_lock:
             pending = self.pending_imports.pop(import_id, None)
-            source = getattr(self, "pending_import_paths", {}).pop(import_id, None)
         if not pending:
             restored = self._load_import_payload(import_id)
             if not restored:
@@ -2011,12 +1736,6 @@ class Application:
         threading.Thread(
             target=self._read_import,
             args=(job, payload, inventory.columns_from_mapping(columns)),
-            kwargs={
-                "source_path": source[0] if source else None,
-                "source_signature": source[1] if source else None,
-                "source_sync_before_load": source[2] if source else False,
-                "source_inspection": source[3] if source else None,
-            },
             daemon=True,
         ).start()
         return job
@@ -2034,92 +1753,15 @@ class Application:
                 while len(self.pending_imports) > MAX_PENDING_IMPORTS:
                     expired_id = next(iter(self.pending_imports))
                     self.pending_imports.pop(expired_id, None)
-                    getattr(self, "pending_import_paths", {}).pop(expired_id, None)
             job.finish(inspected)
         except eudm.EUDMError as exc:
             job.fail(str(exc))
-
-    def _inspect_local_import(
-        self,
-        job: ImportJob,
-        path: Path,
-        sync_before_load: bool,
-    ) -> None:
-        job.update(state="reading", message="Loading the SharePoint ALM workbook…")
-        try:
-            with self.preferences_lock:
-                saved_columns = inventory.columns_from_mapping(
-                    self.preferences.get("import_columns")
-                )
-            if not sync_before_load:
-                signature = self._local_workbook_signature(path)
-                if signature and path.is_file():
-                    cached = self._load_local_workbook_cache(
-                        path,
-                        signature,
-                        saved_columns,
-                    )
-                    if cached:
-                        self.add_import(cached)
-                        job.finish(self._workbook_job_payload(cached))
-                        return
-            payload, signature = self._read_local_workbook_payload(
-                path,
-                sync_before_load=sync_before_load,
-            )
-            # The optional freshness check still benefits from the parsed
-            # cache once OneDrive has confirmed a stable local file. Reading
-            # the file is enough to hydrate a File Provider placeholder; a
-            # cached signature then avoids re-parsing thousands of rows.
-            cached = self._load_local_workbook_cache(path, signature, saved_columns)
-            if cached:
-                self.add_import(cached)
-                job.finish(self._workbook_job_payload(cached))
-                return
-            inspected = WorkbookImport.inspect_payload(path.name, payload)
-            import_id = uuid.uuid4().hex
-            inspected["import_id"] = import_id
-            inspected["local_source"] = True
-            self._persist_import_payload(import_id, path.name, payload)
-            with self.import_lock:
-                self.pending_imports[import_id] = (path.name, payload)
-                pending_paths = getattr(self, "pending_import_paths", None)
-                if pending_paths is None:
-                    pending_paths = {}
-                    self.pending_import_paths = pending_paths
-                pending_paths[import_id] = (
-                    path,
-                    signature,
-                    sync_before_load,
-                    inspected,
-                )
-                while len(self.pending_imports) > MAX_PENDING_IMPORTS:
-                    expired_id = next(iter(self.pending_imports))
-                    self.pending_imports.pop(expired_id, None)
-                    pending_paths.pop(expired_id, None)
-            job.finish(inspected)
-        except eudm.EUDMError as exc:
-            job.fail(str(exc))
-        except Exception:
-            run_reporting.exception(
-                "Could not inspect the configured SharePoint ALM workbook"
-            )
-            job.fail(
-                "The SharePoint ALM workbook could not be read. "
-                "Open the file once in Excel to make sure OneDrive has downloaded it, "
-                "then try again."
-            )
 
     def _read_import(
         self,
         job: ImportJob,
         payload: bytes,
         columns: inventory.ImportColumns,
-        *,
-        source_path: Path | None = None,
-        source_signature: tuple[int, int] | None = None,
-        source_sync_before_load: bool = False,
-        source_inspection: dict[str, Any] | None = None,
     ) -> None:
         job.update(state="reading", message="Opening the workbook…")
 
@@ -2133,32 +1775,10 @@ class Application:
             )
 
         try:
-            if source_path and source_signature and not source_sync_before_load:
-                cached = self._load_local_workbook_cache(
-                    source_path,
-                    source_signature,
-                    columns,
-                )
-                if cached:
-                    self.add_import(cached)
-                    job.finish(self._workbook_job_payload(cached))
-                    return
             workbook = WorkbookImport.from_payload(
                 job.filename, payload, columns=columns, on_progress=progress
             )
             self._persist_import_payload(workbook.import_id, job.filename, payload, columns)
-            if source_path and source_signature:
-                if source_inspection:
-                    workbook._inspection_cache = {
-                        **source_inspection,
-                        "import_id": workbook.import_id,
-                    }
-                self._write_local_workbook_cache(
-                    source_path,
-                    source_signature,
-                    columns,
-                    workbook,
-                )
             self.add_import(workbook)
             job.finish(self._workbook_job_payload(workbook))
         except eudm.EUDMError as exc:

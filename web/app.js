@@ -39,6 +39,10 @@ const state = {
   newRequest: null,
   importUndoStack: [],
   importRedoStack: [],
+  appUndoStack: [],
+  appRedoStack: [],
+  appHistoryApplying: false,
+  appInputHistoryTimers: new Map(),
   queueDropDepth: 0,
   validationTimers: new Map(),
   backlogValidationIds: new Set(),
@@ -314,6 +318,78 @@ function queueSnapshot() {
   } catch (_) {
     return null;
   }
+}
+
+function appStateSnapshot() {
+  return {
+    queue: structuredClone(state.queue),
+    selectedId: state.selectedId,
+    newRequest: state.newRequest ? structuredClone(state.newRequest) : null,
+    pasteEntries: structuredClone(state.pasteEntries),
+    pasteLocation: state.pasteLocation ? structuredClone(state.pasteLocation) : null,
+  };
+}
+
+function appStateSnapshotKey(snapshot) {
+  try {
+    return JSON.stringify(snapshot);
+  } catch (_) {
+    return "";
+  }
+}
+
+function recordAppEdit() {
+  if (state.appHistoryApplying) return;
+  state.appInputHistoryTimers.forEach((timer) => window.clearTimeout(timer));
+  state.appInputHistoryTimers.clear();
+  const snapshot = appStateSnapshot();
+  const key = appStateSnapshotKey(snapshot);
+  if (key && key === appStateSnapshotKey(state.appUndoStack.at(-1))) return;
+  state.appUndoStack.push(snapshot);
+  if (state.appUndoStack.length > 100) state.appUndoStack.shift();
+  state.appRedoStack = [];
+}
+
+function recordAppInputEdit(key) {
+  const existing = state.appInputHistoryTimers.get(key);
+  if (!existing) recordAppEdit();
+  if (existing) window.clearTimeout(existing);
+  state.appInputHistoryTimers.set(key, window.setTimeout(() => {
+    state.appInputHistoryTimers.delete(key);
+  }, 650));
+}
+
+function restoreAppState(snapshot) {
+  if (!snapshot) return;
+  state.appHistoryApplying = true;
+  state.queue = structuredClone(snapshot.queue || []).map(resetPersistedValidationState);
+  state.selectedId = snapshot.selectedId || null;
+  state.newRequest = snapshot.newRequest
+    ? resetPersistedValidationState(structuredClone(snapshot.newRequest))
+    : null;
+  state.pasteEntries = structuredClone(snapshot.pasteEntries || []);
+  state.pasteLocation = snapshot.pasteLocation ? structuredClone(snapshot.pasteLocation) : null;
+  if (state.selectedId && !state.queue.some((request) => request.id === state.selectedId)) {
+    state.selectedId = null;
+  }
+  renderAll();
+  if ($("#pasteDialog").open) {
+    renderQuickImportReview();
+    renderPasteLocationFields();
+  }
+  state.appHistoryApplying = false;
+}
+
+function undoAppEdit() {
+  if (!state.appUndoStack.length || submissionBusy()) return;
+  state.appRedoStack.push(appStateSnapshot());
+  restoreAppState(state.appUndoStack.pop());
+}
+
+function redoAppEdit() {
+  if (!state.appRedoStack.length || submissionBusy()) return;
+  state.appUndoStack.push(appStateSnapshot());
+  restoreAppState(state.appRedoStack.pop());
 }
 
 function resetPersistedValidationState(request) {
@@ -1097,7 +1173,7 @@ function renderQueue() {
     return `
       <tr data-id="${escapeHtml(request.id)}" class="${selected ? "selected" : ""} ${errors.length ? "invalid" : ""} ${submitting ? "submitting" : ""} ${request.result_state === "failed" ? "failed" : ""}" tabindex="0">
         <td class="index-column">${index + 1}</td>
-        <td><span class="cell-primary">${escapeHtml(serialDisplay)}</span>${request.kind === "bulk_location" ? `<span class="cell-secondary">${request.serials.length} devices</span>` : ""}${request.device_allocation ? `<span class="cell-secondary">${escapeHtml(request.device_allocation)}</span>` : ""}${requestId}</td>
+        <td><span class="cell-primary ${request.kind === "bulk_location" ? "bulk-serial-summary" : ""}">${escapeHtml(serialDisplay)}</span>${request.device_allocation ? `<span class="cell-secondary">${escapeHtml(request.device_allocation)}</span>` : ""}${requestId}</td>
         <td><span class="cell-primary">${escapeHtml(kindLabel(request.kind))}</span>${secondary ? `<span class="cell-secondary">${escapeHtml(secondary)}</span>` : ""}</td>
         <td title="${escapeHtml(statusLabel(request))}">${escapeHtml(statusLabel(request))}</td>
         <td title="${escapeHtml(destinationLabel(request))}"><span class="cell-primary">${escapeHtml(destinationLabel(request))}</span>${request.returning ? `<span class="cell-secondary">Return from ${escapeHtml(request.returning_user || "user")}</span>` : ""}</td>
@@ -1216,6 +1292,7 @@ function renderBulkSerialEditor(request) {
   if (!bulk) {
     elements.serialsInput.hidden = true;
     $("#validateBulkSerialButton").hidden = true;
+    $("#bulkSerialPrefixWarning").hidden = true;
     return;
   }
   const mode = bulkSerialMode(request);
@@ -1230,7 +1307,45 @@ function renderBulkSerialEditor(request) {
   $("#bulkSerialTextMode").hidden = individual;
   elements.serialsInput.hidden = individual;
   $("#validateBulkSerialButton").hidden = individual;
+  const keys = request.serials.map((serial) => String(serial).toLowerCase());
+  const uniqueCount = new Set(keys).size;
+  const duplicateCount = keys.length - uniqueCount;
+  $("#bulkSerialUniqueCount").textContent = `${uniqueCount} unique serial${uniqueCount === 1 ? "" : "s"}`;
+  $("#bulkSerialDuplicateWarning").hidden = duplicateCount === 0;
+  $("#bulkSerialDuplicateWarning").textContent = duplicateCount
+    ? `${duplicateCount} duplicate ${duplicateCount === 1 ? "entry" : "entries"}`
+    : "";
+  const prefixCount = removableBulkSerialPrefixCount(request.serials);
+  $("#bulkSerialPrefixWarning").hidden = prefixCount === 0;
+  $("#bulkSerialPrefixCount").textContent = String(prefixCount);
   renderBulkSerialList(request);
+}
+
+function removableBulkSerialPrefixCount(serials) {
+  if (serials.length <= 5) return 0;
+  const matching = serials.filter((serial) => /^S[A-Za-z0-9]{10}$/i.test(String(serial).trim()));
+  return matching.length >= Math.ceil(serials.length * .8) ? matching.length : 0;
+}
+
+function removeBulkSerialPrefixes() {
+  const request = selectedRequest();
+  if (!request || request.kind !== "bulk_location" || !removableBulkSerialPrefixCount(request.serials)) return;
+  recordAppEdit();
+  request.serials = request.serials.map((serial) => {
+    const value = String(serial).trim();
+    return /^S[A-Za-z0-9]{10}$/i.test(value) ? value.slice(1) : value;
+  });
+  request.bulk_validation_epoch = Number(request.bulk_validation_epoch || 0) + 1;
+  request.bulk_validation = request.serials.length ? "pending" : "empty";
+  request.bulk_validation_error = "";
+  request.bulk_validation_missing = [];
+  request.bulk_serial_states = {};
+  request.bulk_serial_errors = {};
+  renderAll();
+  if (bulkSerialMode(request) === "individual") {
+    void validateBulkSerials({ requests: [request], render: true });
+  }
+  toast("Removed the leading S from MacBook serials.", "success");
 }
 
 function focusRequestSerialInput(request = selectedRequest()) {
@@ -1250,6 +1365,8 @@ function setBulkSerialEntryError(message = "") {
 function setBulkSerialMode(mode) {
   const request = selectedRequest();
   if (!request || request.kind !== "bulk_location" || !["individual", "text"].includes(mode)) return;
+  if (request.bulk_serial_mode === mode) return;
+  recordAppEdit();
   request.bulk_serial_mode = mode;
   if (mode === "individual") {
     request.bulk_serial_states = request.bulk_serial_states || {};
@@ -1295,6 +1412,7 @@ function addBulkSerial() {
     input.focus();
     return;
   }
+  recordAppEdit();
   request.serials.push(serial);
   request.bulk_serial_states = request.bulk_serial_states || {};
   request.bulk_serial_errors = request.bulk_serial_errors || {};
@@ -1316,6 +1434,7 @@ function addBulkSerial() {
 function removeBulkSerial(index) {
   const request = selectedRequest();
   if (!request || request.kind !== "bulk_location") return;
+  recordAppEdit();
   const [serial] = request.serials.splice(index, 1);
   if (serial) {
     if (request.bulk_serial_states) delete request.bulk_serial_states[serial];
@@ -1329,10 +1448,16 @@ function renderInspector() {
   const request = selectedRequest();
   const open = Boolean(request);
   const newRequest = open && state.newRequest === request;
-  elements.workspace.classList.toggle("inspector-closed", !open);
-  elements.inspector.classList.toggle("is-closed", !open);
-  elements.inspector.setAttribute("aria-hidden", String(!open));
-  elements.inspectorEmpty.hidden = open;
+  const sidebarOpen = open && !newRequest;
+  const createDialog = $("#requestCreateDialog");
+  const contentHost = newRequest ? $("#requestCreateHost") : $("#inspectorEditorHost");
+  if (elements.inspectorContent.parentElement !== contentHost) contentHost.append(elements.inspectorContent);
+  if (newRequest && !createDialog.open) createDialog.showModal();
+  if (!newRequest && createDialog.open) createDialog.close();
+  elements.workspace.classList.toggle("inspector-closed", !sidebarOpen);
+  elements.inspector.classList.toggle("is-closed", !sidebarOpen);
+  elements.inspector.setAttribute("aria-hidden", String(!sidebarOpen));
+  elements.inspectorEmpty.hidden = sidebarOpen;
   elements.inspectorContent.hidden = !open;
   $("#inspectorHeading").textContent = newRequest ? "New request" : "Request details";
   $("#duplicateButton").hidden = newRequest;
@@ -1372,7 +1497,6 @@ function renderInspector() {
     ? requestStatusOptions("location", request.status)
     : singleRequestStatusOptions(request.status);
   fillSelect(elements.statusInput, statusOptions, request.status, "Choose a status");
-  updateModelStatusButton(request);
   // Keep the complete single-device editor visible while a serial is being
   // looked up. Validation still prevents an incomplete request from being
   // saved or submitted, but the user/location fields should not be staged
@@ -1436,12 +1560,12 @@ function renderAll() {
   renderQueue();
   renderInspector();
   renderLatestImportDraft();
-  updateSharepointWorkbookButton();
 }
 
 function changeRequestSize(size) {
   const request = selectedRequest();
   if (!request) return;
+  recordAppEdit();
   if (size === "bulk") {
     const locationStatus = state.config.location_statuses.some((option) => option.value === request.status)
       ? request.status
@@ -1469,7 +1593,6 @@ function changeRequestSize(size) {
     request.serials = request.serials.slice(0, 1);
     request.serial_validation = request.serials.length ? "pending" : "empty";
     request.serial_validation_error = "";
-    updateModelStatusButton(request);
     applyInferredKind(request, request.status, false);
   }
   renderAll();
@@ -1480,6 +1603,8 @@ function changeRequestSize(size) {
 }
 
 function discardNewRequest() {
+  if (!state.newRequest) return;
+  recordAppEdit();
   state.newRequest = null;
   renderAll();
 }
@@ -1489,6 +1614,7 @@ function startNewRequest() {
     focusRequestSerialInput(state.newRequest);
     return;
   }
+  recordAppEdit();
   const kind = "user";
   state.selectedId = null;
   state.newRequest = makeRequest(kind);
@@ -1504,6 +1630,7 @@ function saveNewRequest() {
     refreshSelectedValidation();
     return;
   }
+  recordAppEdit();
   state.queue.push(request);
   state.selectedId = request.id;
   state.newRequest = null;
@@ -1532,6 +1659,7 @@ function removeRequest(id) {
     toast("Wait for this request submission to finish before removing it.", "error");
     return;
   }
+  recordAppEdit();
   state.queue.splice(index, 1);
   if (state.selectedId === id) {
     state.selectedId = state.queue[index]?.id || state.queue[index - 1]?.id || null;
@@ -1543,6 +1671,7 @@ function duplicateSelected() {
   const request = selectedRequest();
   if (!request) return;
   if (requestIsInCurrentJob(request)) return;
+  recordAppEdit();
   const copy = structuredClone(request);
   copy.id = uid();
   copy.source = request.source ? `${request.source} · copy` : "Copy";
@@ -1838,6 +1967,7 @@ function renderLookupConfirmations(request, { bulk, user }) {
 function resetLookupSelection(kind) {
   const request = selectedRequest();
   if (!request) return;
+  recordAppEdit();
   const field = kind === "serial" ? "serial" : kind === "user" ? "user" : "returning_user";
   const value = field === "serial" ? request.serials[0] || "" : request[field] || "";
   request[`${field}_selected`] = false;
@@ -1913,6 +2043,7 @@ async function loadSerialSuggestions(request, query, { requireSelection = true }
       }
     } else if (selectedRequest() === request) renderSearchResults(elements.serialResults, results, (result) => {
       if (!validationStillCurrent(request, "serial", epoch, value)) return;
+      recordAppEdit();
       hideSearchResults();
       request.serial_validation_epoch = Number(request.serial_validation_epoch || 0) + 1;
       request.serials = [bestSerial(result, value)];
@@ -2020,6 +2151,7 @@ async function validateUserAfterPause(request, returning = false) {
       }
     } else if (selectedRequest() === request) renderSearchResults(container, results, (result) => {
       if (!validationStillCurrent(request, field, epoch, value)) return;
+      recordAppEdit();
       hideSearchResults();
       request[`${field}_validation_epoch`] = Number(request[`${field}_validation_epoch`] || 0) + 1;
       const login = bestLogin(result, value);
@@ -2160,6 +2292,7 @@ async function searchUsers(returning = false) {
       return;
     }
     renderSearchResults(container, results, (result) => {
+      recordAppEdit();
       hideSearchResults();
       const field = returning ? "returning_user" : "user";
       request[`${field}_validation_epoch`] = Number(request[`${field}_validation_epoch`] || 0) + 1;
@@ -2359,8 +2492,6 @@ function openSettings() {
   $("#spreadsheetNewAssetStatusColumnInput").value = columns.new_asset_status || "New Asset Status";
   $("#spreadsheetFirstNameColumnInput").value = columns.first_name || "First Name";
   $("#spreadsheetLastNameColumnInput").value = columns.last_name || "Last Name";
-  $("#almWorkbookPathInput").value = state.preferences.alm_workbook_path || "";
-  $("#almWorkbookSyncBeforeLoadInput").checked = state.preferences.alm_workbook_sync_before_load === true;
   $("#validateQuickImportInput").checked = validationEnabled("validate_quick_import");
   $("#validateWorkbookImportInput").checked = validationEnabled("validate_workbook_import");
   $("#saveAlmImportDraftsInput").checked = state.preferences.save_alm_import_drafts !== false;
@@ -2371,71 +2502,6 @@ function openSettings() {
 function openAlmWorkbookImport() {
   resetImportDialog("deploy");
   $("#importDialog").showModal();
-}
-
-function updateSharepointWorkbookButton() {
-  const button = $("#loadSharepointAlmButton");
-  if (!button) return;
-  const configured = Boolean(String(state.preferences?.alm_workbook_path || "").trim());
-  button.disabled = !configured;
-  button.title = configured
-    ? "Load the saved SharePoint ALM workbook"
-    : "Set a SharePoint ALM workbook path in Settings";
-  $("#loadSharepointAlmDetail").textContent = configured
-    ? (state.preferences.alm_workbook_sync_before_load
-      ? "Use saved file · wait for OneDrive"
-      : "Use saved OneDrive file")
-    : "Set a file path in Settings";
-}
-
-async function chooseSharepointWorkbookPath() {
-  const button = $("#chooseAlmWorkbookPathButton");
-  button.disabled = true;
-  const originalLabel = button.textContent;
-  button.textContent = "Choose…";
-  try {
-    const result = await api("/api/import/choose-path", {
-      method: "POST",
-      body: "{}",
-    });
-    if (result.path) $("#almWorkbookPathInput").value = result.path;
-  } catch (error) {
-    toast(error.message, "error");
-  } finally {
-    button.disabled = false;
-    button.textContent = originalLabel;
-  }
-}
-
-async function loadSharepointWorkbook() {
-  if (!String(state.preferences?.alm_workbook_path || "").trim()) {
-    openSettings();
-    return;
-  }
-  openAlmWorkbookImport();
-  const token = state.importUploadToken;
-  setImportBusy(true, {
-    percent: 0,
-    title: "Loading SharePoint ALM workbook…",
-    detail: state.preferences.alm_workbook_sync_before_load
-      ? "Waiting for OneDrive to make the file available"
-      : "Opening the saved local file",
-  });
-  try {
-    const job = await api("/api/import/local", {
-      method: "POST",
-      body: "{}",
-    });
-    const workbook = await waitForWorkbookImport(job.job_id, token);
-    if (workbook && token === state.importUploadToken) await showImportedWorkbook(workbook);
-  } catch (error) {
-    if (token === state.importUploadToken) {
-      $("#importError").textContent = error.message;
-      $("#importError").hidden = false;
-    }
-  } finally {
-    if (token === state.importUploadToken) setImportBusy(false);
-  }
 }
 
 function openAlmBacklogImport() {
@@ -2674,6 +2740,7 @@ function renderQuickImportReview() {
   }).join("");
   $$("[data-pairs-status]").forEach((select) => select.addEventListener("change", () => {
     const entry = state.pasteEntries[Number(select.dataset.pairsStatus)];
+    recordAppEdit();
     const kind = kindForStatus(select.value);
     const kindChanged = entry.kind !== kind;
     entry.kind = kind;
@@ -2685,12 +2752,14 @@ function renderQuickImportReview() {
     resolveQuickImportReturningUsers();
   }));
   $$("[data-pairs-remove]").forEach((button) => button.addEventListener("click", () => {
+    recordAppEdit();
     state.pasteEntries.splice(Number(button.dataset.pairsRemove), 1);
     renderQuickImportReview();
   }));
   $$("[data-pairs-username]").forEach((input) => input.addEventListener("change", () => {
     const entry = state.pasteEntries[Number(input.dataset.pairsUsername)];
     if (!entry) return;
+    recordAppEdit();
     entry.username = input.value.trim();
     resetQuickImportUserValidation(entry);
     renderQuickImportReview();
@@ -2905,6 +2974,7 @@ function addQuickImportEntry() {
     $("#pairsError").hidden = false;
     return;
   }
+  recordAppEdit();
   state.pasteEntries.push(makeQuickImportEntry(serial, username));
   $("#pairsAddSerial").value = "";
   $("#pairsAddUsername").value = "";
@@ -2916,6 +2986,7 @@ function addQuickImportEntry() {
 
 function addQuickImportList() {
   const { entries, errors } = parseQuickImportLines();
+  if (entries.length) recordAppEdit();
   const existing = new Set(state.pasteEntries.map((entry) => entry.serial.toLowerCase()));
   entries.forEach((entry) => {
     if (existing.has(entry.serial.toLowerCase())) errors.push(`${entry.serial} is already in this import.`);
@@ -2982,6 +3053,7 @@ function addPairs() {
     }
     return request;
   });
+  recordAppEdit();
   state.queue.push(...requests);
   state.selectedId = requests[0].id;
   $("#pasteDialog").close();
@@ -4874,6 +4946,7 @@ async function prepareImport() {
         user_validation: "valid",
         user_info: request.user_info || null,
       }));
+      recordAppEdit();
       state.queue.push(...requests);
       state.selectedId = requests[0]?.id || state.selectedId;
       await deleteImportDraft(state.importDraftId);
@@ -4923,6 +4996,7 @@ async function prepareImport() {
       $("#importError").hidden = false;
       return;
     }
+    recordAppEdit();
     state.queue.push(...requests);
     state.selectedId = requests[0]?.id || state.selectedId;
     await deleteImportDraft(state.importDraftId);
@@ -5339,6 +5413,7 @@ function reAddHistoryEntry(entry, run) {
   delete request.step_count;
   delete request.progress_percent;
   delete request.elapsed_seconds;
+  recordAppEdit();
   state.queue.push(request);
   state.selectedId = request.id;
   renderAll();
@@ -5574,6 +5649,7 @@ function bindEvents() {
   $("#pairsAddUsername").addEventListener("input", () => { $("#pairsError").hidden = true; });
   $("#pairsFindLocationsButton").addEventListener("click", findPasteLocations);
   $("#pairsCityInput").addEventListener("change", () => {
+    recordAppEdit();
     state.pasteLocation = {
       city: $("#pairsCityInput").value,
       building: "",
@@ -5589,6 +5665,7 @@ function bindEvents() {
     const value = $("#pairsLocationInput").value;
     if (value === "current") return;
     if (!value) {
+      recordAppEdit();
       state.pasteLocation = {
         city: $("#pairsCityInput").value,
         building: "",
@@ -5601,6 +5678,7 @@ function bindEvents() {
     }
     const result = state.pasteLocationResults[Number(value)];
     if (!result) return;
+    recordAppEdit();
     const [building = "", floor = "", room = "", cabinet = ""] = result.columns;
     state.pasteLocation = {
       city: $("#pairsCityInput").value,
@@ -5659,8 +5737,6 @@ function bindEvents() {
       validate_quick_import: $("#validateQuickImportInput").checked,
       validate_workbook_import: $("#validateWorkbookImportInput").checked,
       save_alm_import_drafts: $("#saveAlmImportDraftsInput").checked,
-      alm_workbook_path: $("#almWorkbookPathInput").value.trim(),
-      alm_workbook_sync_before_load: $("#almWorkbookSyncBeforeLoadInput").checked,
       request_statuses: requestStatuses,
       import_columns: columns,
     };
@@ -5679,7 +5755,6 @@ function bindEvents() {
       localStorage.setItem(IMPORT_COLUMNS_STORAGE_KEY, JSON.stringify(columns));
       localStorage.setItem(CONCURRENCY_STORAGE_KEY, elements.concurrency.value);
       $("#settingsDialog").close();
-      updateSharepointWorkbookButton();
       toast("Settings saved.", "success");
     } catch (error) {
       toast(error.message, "error");
@@ -5697,8 +5772,6 @@ function bindEvents() {
     }
   });
   $("#importSheetButton").addEventListener("click", openAlmWorkbookImport);
-  $("#loadSharepointAlmButton").addEventListener("click", loadSharepointWorkbook);
-  $("#chooseAlmWorkbookPathButton").addEventListener("click", chooseSharepointWorkbookPath);
   $("#almBacklogButton").addEventListener("click", openAlmBacklogImport);
   $("#importDialog").addEventListener("close", () => {
     saveCurrentImportDraft({ immediate: true });
@@ -5869,6 +5942,7 @@ function bindEvents() {
     const button = event.target.closest("[data-bulk-serial-remove]");
     if (button) removeBulkSerial(Number(button.dataset.bulkSerialRemove));
   });
+  $("#removeBulkSerialPrefixesButton").addEventListener("click", removeBulkSerialPrefixes);
   $("#prepareImportButton").addEventListener("click", prepareImport);
   $("#backImportButton").addEventListener("click", backToImportSelection);
   $("#undoImportButton").addEventListener("click", undoImportEdit);
@@ -5882,6 +5956,7 @@ function bindEvents() {
   });
   elements.clearQueueButton.addEventListener("click", () => {
     if (!state.queue.length || confirm(`Remove all ${state.queue.length} prepared requests?`)) {
+      recordAppEdit();
       state.queue = [];
       state.selectedId = null;
       renderAll();
@@ -5899,6 +5974,10 @@ function bindEvents() {
     }
     state.selectedId = null;
     renderAll();
+  });
+  $("#requestCreateDialog").addEventListener("cancel", (event) => {
+    event.preventDefault();
+    discardNewRequest();
   });
   $("#removeButton").addEventListener("click", () => removeRequest(state.selectedId));
   $("#searchSerialButton").addEventListener("click", searchAssets);
@@ -5920,6 +5999,7 @@ function bindEvents() {
     setLookupStatus("serial", "");
     const request = selectedRequest();
     if (!request) return;
+    recordAppInputEdit(`${request.id}:serial`);
     const value = elements.serialInput.value.trim();
     request.serial_validation_epoch = Number(request.serial_validation_epoch || 0) + 1;
     request.serial_selected = false;
@@ -5936,6 +6016,7 @@ function bindEvents() {
   elements.serialsInput.addEventListener("input", () => {
     const request = selectedRequest();
     if (!request) return;
+    recordAppInputEdit(`${request.id}:serials`);
     request.serials = parseSerials(elements.serialsInput.value);
     request.bulk_validation_epoch = Number(request.bulk_validation_epoch || 0) + 1;
     request.bulk_validation = request.serials.length
@@ -5946,6 +6027,7 @@ function bindEvents() {
     request.bulk_serial_states = {};
     request.bulk_serial_errors = {};
     elements.serialHint.textContent = request.serials.length + " serial" + (request.serials.length === 1 ? "" : "s");
+    renderBulkSerialEditor(request);
     refreshBulkValidationButton(request);
     refreshSelectedValidation();
     renderQueue();
@@ -5953,6 +6035,7 @@ function bindEvents() {
   elements.statusInput.addEventListener("change", () => {
     const request = selectedRequest();
     if (!request) return;
+    recordAppEdit();
     applyInferredKind(request, elements.statusInput.value);
     renderAll();
   });
@@ -5961,6 +6044,7 @@ function bindEvents() {
     setLookupStatus("user", "");
     const request = selectedRequest();
     if (!request) return;
+    recordAppInputEdit(`${request.id}:user`);
     request.user = elements.userInput.value.trim();
     request.user_validation_epoch = Number(request.user_validation_epoch || 0) + 1;
     request.user_selected = false;
@@ -5976,6 +6060,7 @@ function bindEvents() {
   elements.cityInput.addEventListener("change", () => {
     const request = selectedRequest();
     if (!request) return;
+    recordAppEdit();
     request.location = { city: elements.cityInput.value, building: "", floor: "", room: "", cabinet: "" };
     elements.locationInput.innerHTML = '<option value="">Loading locations…</option>';
     elements.locationDetail.textContent = "";
@@ -5988,6 +6073,7 @@ function bindEvents() {
     const results = JSON.parse(elements.locationInput.dataset.results || "[]");
     const result = results[Number(elements.locationInput.value)];
     if (!result) return;
+    recordAppEdit();
     const [building = "", floor = "", room = "", cabinet = ""] = result.columns;
     request.location = { city: elements.cityInput.value, building, floor, room, cabinet };
     elements.locationDetail.textContent = "";
@@ -5996,6 +6082,7 @@ function bindEvents() {
   elements.returningToggle.addEventListener("change", () => {
     const request = selectedRequest();
     if (!request) return;
+    recordAppEdit();
     request.returning = elements.returningToggle.checked;
     if (!request.returning) {
       request.returning_user = "";
@@ -6013,6 +6100,7 @@ function bindEvents() {
     setLookupStatus("returning", "");
     const request = selectedRequest();
     if (!request) return;
+    recordAppInputEdit(`${request.id}:returning-user`);
     request.returning_user = elements.returningUserInput.value.trim();
     request.returning_user_info = null;
     request.returning_user_validation_epoch = Number(request.returning_user_validation_epoch || 0) + 1;
@@ -6041,6 +6129,21 @@ function bindEvents() {
     if (event.key === "Escape" && [elements.serialResults, elements.userResults, elements.returningResults].some((node) => !node.hidden)) {
       hideSearchResults();
     }
+  });
+  document.addEventListener("keydown", (event) => {
+    const key = String(event.key || "").toLowerCase();
+    const mac = /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent);
+    const modifier = mac ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
+    const editable = event.target instanceof Element
+      && Boolean(event.target.closest("input, textarea, select, [contenteditable='true']"));
+    const openDialog = $("dialog[open]");
+    if (!modifier || event.altKey || editable || $("#importDialog").open
+      || (openDialog && !["requestCreateDialog", "pasteDialog"].includes(openDialog.id))) return;
+    const redo = key === "y" || (key === "z" && event.shiftKey);
+    if (key !== "z" && key !== "y") return;
+    event.preventDefault();
+    if (redo) redoAppEdit();
+    else undoAppEdit();
   });
   document.addEventListener("pointerdown", (event) => {
     if (!event.target.closest(".search-control, .search-results")) hideSearchResults();
@@ -6133,7 +6236,6 @@ async function init() {
     if (state.preferences.save_alm_import_drafts !== false) await loadImportDrafts();
     const spreadsheetEnabled = Boolean(state.config.spreadsheet_import_enabled);
     $("#importSheetButton").hidden = !spreadsheetEnabled;
-    $("#loadSharepointAlmButton").hidden = !spreadsheetEnabled;
     const spreadsheetSettings = $('[data-settings-tab="spreadsheet"]');
     if (spreadsheetSettings) spreadsheetSettings.hidden = !spreadsheetEnabled;
     configureConcurrency(state.config.concurrency);

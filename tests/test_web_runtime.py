@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
-from io import BytesIO
 import json
 from pathlib import Path
 import tempfile
@@ -10,7 +9,6 @@ import threading
 from types import SimpleNamespace
 import unittest
 from unittest import mock
-import zipfile
 
 from auto_eudm import eudm_request as eudm
 from auto_eudm import eudm_inventory_import as inventory
@@ -213,48 +211,6 @@ class RequestStatusPreferenceTests(unittest.TestCase):
                 {"request_statuses": ["Deployed - New Stock"]}
             )
 
-    def test_local_workbook_preferences_are_optional_and_persistable(self) -> None:
-        preferences = self.app._normalise_preferences(
-            {
-                "alm_workbook_path": "  ~/OneDrive/ALM.xlsx  ",
-                "alm_workbook_sync_before_load": True,
-            }
-        )
-
-        self.assertEqual(preferences["alm_workbook_path"], "~/OneDrive/ALM.xlsx")
-        self.assertTrue(preferences["alm_workbook_sync_before_load"])
-
-    def test_local_workbook_path_must_be_an_excel_workbook(self) -> None:
-        with self.assertRaisesRegex(eudm.EUDMError, "xlsx or .xlsm"):
-            self.app._normalise_local_workbook_path("~/OneDrive/ALM.csv")
-
-    def test_local_workbook_read_rejects_an_unhydrated_onedrive_file(self) -> None:
-        with tempfile.TemporaryDirectory() as folder:
-            path = Path(folder) / "ALM.xlsx"
-            path.write_bytes(b"not a downloaded workbook")
-
-            with self.assertRaisesRegex(eudm.EUDMError, "not a complete Excel workbook"):
-                self.app._read_local_workbook_payload(
-                    path,
-                    sync_before_load=False,
-                )
-
-    def test_local_workbook_read_accepts_a_complete_office_package(self) -> None:
-        package = BytesIO()
-        with zipfile.ZipFile(package, "w") as workbook:
-            workbook.writestr("[Content_Types].xml", "<Types />")
-        with tempfile.TemporaryDirectory() as folder:
-            path = Path(folder) / "ALM.xlsx"
-            path.write_bytes(package.getvalue())
-
-            payload, signature = self.app._read_local_workbook_payload(
-                path,
-                sync_before_load=False,
-            )
-
-        self.assertEqual(payload, package.getvalue())
-        self.assertEqual(signature[0], len(payload))
-
 
 class SearchProbePoolTests(unittest.TestCase):
     def test_fresh_search_reuses_a_bounded_pool(self) -> None:
@@ -311,61 +267,6 @@ class ImportJobRetentionTests(unittest.TestCase):
 
 
 class ImportPayloadLifecycleTests(unittest.TestCase):
-    def test_local_workbook_cache_round_trips_parsed_rows(self) -> None:
-        with tempfile.TemporaryDirectory() as folder:
-            app = bare_application()
-            app.workbook_cache_path = Path(folder) / "cache"
-            app.workbook_cache_lock = threading.Lock()
-            workbook_path = Path(folder) / "ALM.xlsx"
-            workbook_path.write_bytes(b"workbook")
-            columns = inventory.ImportColumns()
-            workbook = WorkbookImport(
-                "parsed-id",
-                "ALM.xlsx",
-                {
-                    "Sheet": [
-                        inventory.SheetRow(
-                            row_number=2,
-                            deployment_date=datetime(2026, 9, 3).date(),
-                            username="valid.user",
-                            deployment_serial="SERIAL123",
-                            returned_device_serial=None,
-                            pending_return_serial=None,
-                            marked_red=False,
-                            enabled=True,
-                            new_joiner=True,
-                        )
-                    ]
-                },
-            )
-            workbook._inspection_cache = {
-                "import_id": "parsed-id",
-                "default_sheet": "Sheet",
-                "sheets": [{"name": "Sheet", "headings": ["Date"]}],
-                "needs_mapping": True,
-            }
-
-            app._write_local_workbook_cache(
-                workbook_path,
-                (9, 12),
-                columns,
-                workbook,
-            )
-            restored = app._load_local_workbook_cache(
-                workbook_path,
-                (9, 12),
-                columns,
-            )
-
-            self.assertIsNotNone(restored)
-            assert restored is not None
-            self.assertTrue(restored.sheets["Sheet"][0].new_joiner)
-            self.assertEqual(restored.sheets["Sheet"][0].username, "valid.user")
-            self.assertEqual(
-                restored._inspection_cache["default_sheet"],
-                "Sheet",
-            )
-
     def test_persisted_workbook_can_be_restored_after_runtime_restart(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             import_id = "0123456789abcdef0123456789abcdef"

@@ -47,10 +47,6 @@ class FakeApp:
     def preferences_json() -> dict[str, object]:
         return {"theme": "system"}
 
-    @staticmethod
-    def choose_alm_workbook_path() -> str:
-        return "/Users/ryan/OneDrive/ALM.xlsx"
-
     def save_preferences(self, payload: dict[str, object]) -> dict[str, object]:
         self.saved_preferences.append(payload)
         return payload
@@ -214,19 +210,6 @@ class LocalWebServerTests(unittest.TestCase):
         response, raw = self.request("DELETE", "/api/import-drafts/draft-1")
         self.assertEqual(response.status, 200)
         self.assertEqual(json.loads(raw), {"drafts": []})
-
-    def test_native_workbook_path_picker_returns_selected_path(self) -> None:
-        response, raw = self.request(
-            "POST",
-            "/api/import/choose-path",
-            payload={},
-        )
-
-        self.assertEqual(response.status, 200)
-        self.assertEqual(
-            json.loads(raw),
-            {"path": "/Users/ryan/OneDrive/ALM.xlsx"},
-        )
 
     def test_backlog_ignore_can_be_reversed_for_review_undo(self) -> None:
         response, _ = self.request(
