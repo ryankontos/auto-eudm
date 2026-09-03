@@ -351,6 +351,13 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
                 self.app.clear_alm_backlog_ignored()
                 self._json({"cleared": True})
                 return
+            if path == "/api/import/backlog/ignore":
+                query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                serial = query.get("serial", [""])[0]
+                username = query.get("username", [""])[0]
+                self.app.unignore_alm_backlog(serial, username)
+                self._json({"ignored": False})
+                return
             prefix = "/api/import-drafts/"
             if not path.startswith(prefix):
                 self._error("Unknown local API endpoint.", 404)
@@ -389,6 +396,9 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/preferences":
             self._json(self.app.save_preferences(payload))
+            return
+        if path == "/api/import/choose-path":
+            self._json({"path": self.app.choose_alm_workbook_path()})
             return
         if path == "/api/import-drafts":
             self._json({"drafts": self.app.save_import_draft(payload)})
@@ -448,6 +458,12 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
                 str(payload.get("filename", "")),
                 str(payload.get("data", "")),
             )
+            self._json(job.to_json(), 202)
+            return
+        if path == "/api/import/local":
+            if not self.app.config.spreadsheet_import_enabled:
+                raise eudm.EUDMError("Spreadsheet import is disabled by this AutoEUDM environment.")
+            job = self.app.start_local_import()
             self._json(job.to_json(), 202)
             return
         if path == "/api/import/map":

@@ -37,6 +37,7 @@ class FakeApp:
         self.import_drafts: list[dict[str, object]] = []
         self.request_queue: list[dict[str, object]] = []
         self.cached: dict[tuple[str, str], dict[str, object]] = {}
+        self.ignored_backlog: set[tuple[str, str]] = set()
 
     @staticmethod
     def config_json() -> dict[str, object]:
@@ -45,6 +46,10 @@ class FakeApp:
     @staticmethod
     def preferences_json() -> dict[str, object]:
         return {"theme": "system"}
+
+    @staticmethod
+    def choose_alm_workbook_path() -> str:
+        return "/Users/ryan/OneDrive/ALM.xlsx"
 
     def save_preferences(self, payload: dict[str, object]) -> dict[str, object]:
         self.saved_preferences.append(payload)
@@ -77,6 +82,12 @@ class FakeApp:
 
     def record_verified_username(self, result: dict[str, object]) -> None:
         self.cached[("username", str(result["value"]).casefold())] = result
+
+    def ignore_alm_backlog(self, serial: str, username: str) -> None:
+        self.ignored_backlog.add((serial, username))
+
+    def unignore_alm_backlog(self, serial: str, username: str) -> None:
+        self.ignored_backlog.discard((serial, username))
 
 
 class LocalWebServerTests(unittest.TestCase):
@@ -203,6 +214,36 @@ class LocalWebServerTests(unittest.TestCase):
         response, raw = self.request("DELETE", "/api/import-drafts/draft-1")
         self.assertEqual(response.status, 200)
         self.assertEqual(json.loads(raw), {"drafts": []})
+
+    def test_native_workbook_path_picker_returns_selected_path(self) -> None:
+        response, raw = self.request(
+            "POST",
+            "/api/import/choose-path",
+            payload={},
+        )
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(
+            json.loads(raw),
+            {"path": "/Users/ryan/OneDrive/ALM.xlsx"},
+        )
+
+    def test_backlog_ignore_can_be_reversed_for_review_undo(self) -> None:
+        response, _ = self.request(
+            "POST",
+            "/api/import/backlog/ignore",
+            payload={"serial": "SERIAL123", "username": "valid.user"},
+        )
+        self.assertEqual(response.status, 200)
+        self.assertIn(("SERIAL123", "valid.user"), self.app.ignored_backlog)
+
+        response, raw = self.request(
+            "DELETE",
+            "/api/import/backlog/ignore?serial=SERIAL123&username=valid.user",
+        )
+        self.assertEqual(response.status, 200)
+        self.assertEqual(json.loads(raw), {"ignored": False})
+        self.assertNotIn(("SERIAL123", "valid.user"), self.app.ignored_backlog)
 
     def test_unsubmitted_queue_is_read_and_written_through_local_api(self) -> None:
         requests = [{"id": "queue-1", "kind": "user", "serials": ["SERIAL123"]}]

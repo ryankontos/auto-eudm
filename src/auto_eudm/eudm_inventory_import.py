@@ -45,6 +45,16 @@ PENDING_RETURN = "Pending Return"
 FILE_PREFIX = "Inventory Tracking - Sydney"
 CLI_GROUPS = ("Deployments", "Pending returns")
 
+DEPLOYMENT_SERIAL_STATUS_CODES: dict[str, str] = {
+    "U": EXISTING_STOCK,
+    "N": NEW_STOCK,
+}
+RETURNED_SERIAL_STATUS_CODES: dict[str, str] = {
+    "PR": "Pending Rebuild",
+    "PD": "Pending Decom",
+    "US": "Used Stock",
+}
+
 
 @dataclass(frozen=True)
 class ImportColumns:
@@ -57,6 +67,8 @@ class ImportColumns:
     enabled: str = ""
     device_allocation: str = "Device(s) Allocation"
     new_asset_status: str = "New Asset Status"
+    first_name: str = "First Name"
+    last_name: str = "Last Name"
 
 
 @dataclass(frozen=True)
@@ -74,6 +86,10 @@ class SheetRow:
     device_allocation: str | None = None
     new_asset_status: str | None = None
     new_joiner: bool = False
+    first_name: str | None = None
+    last_name: str | None = None
+    deployment_status_hint: str | None = None
+    returned_device_status_hint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -89,6 +105,9 @@ class Action:
     has_returned_device_serial: bool = False
     has_pending_return_serial: bool = False
     new_joiner: bool = False
+    first_name: str | None = None
+    last_name: str | None = None
+    status_preselected: bool = False
 
 
 def normalized_header(value: Any) -> str:
@@ -136,6 +155,16 @@ def columns_from_mapping(raw: dict[str, Any] | None = None) -> ImportColumns:
             if "new_asset_status" in raw
             else "New Asset Status"
         ) or "",
+        first_name=(
+            clean_text(raw.get("first_name"))
+            if "first_name" in raw
+            else "First Name"
+        ) or "",
+        last_name=(
+            clean_text(raw.get("last_name"))
+            if "last_name" in raw
+            else "Last Name"
+        ) or "",
     )
 
 
@@ -149,6 +178,8 @@ def find_column_indexes(sheet: Any, columns: ImportColumns) -> tuple[int, dict[s
         "enabled": columns.enabled,
         "device_allocation": columns.device_allocation,
         "new_asset_status": columns.new_asset_status,
+        "first_name": columns.first_name,
+        "last_name": columns.last_name,
     }
     targets = {key: normalized_header(value) for key, value in desired.items()}
     date_titles = {"date", "deployment date", "booking date"}
@@ -199,6 +230,36 @@ def clean_text(value: Any) -> str | None:
     if isinstance(value, float) and value.is_integer():
         text = str(int(value))
     return text
+
+
+def serial_and_status_hint(
+    value: Any,
+    *,
+    returned_device: bool = False,
+) -> tuple[str | None, str | None]:
+    """Split an optional trailing ALM status code from a serial value.
+
+    The workbook uses a short suffix after a space as an operator hint. Only
+    known codes are removed; an unknown suffix remains part of the value so a
+    malformed serial cannot silently become a different serial.
+    """
+    text = clean_text(value)
+    if not text:
+        return None, None
+    mappings = (
+        RETURNED_SERIAL_STATUS_CODES
+        if returned_device
+        else DEPLOYMENT_SERIAL_STATUS_CODES
+    )
+    match = re.search(r"\s+([A-Za-z]{1,2})\s*$", text)
+    if not match:
+        return text, None
+    code = match.group(1).upper()
+    status = mappings.get(code)
+    if not status:
+        return text, None
+    serial = text[: match.start()].rstrip()
+    return (serial or text), status
 
 
 def enabled_column_allows(value: Any) -> bool:
@@ -382,18 +443,34 @@ def load_sheet(path: Path, columns: ImportColumns | None = None) -> tuple[str, l
                 if index != date_index - 1
             ):
                 # Excel often stores a date once for a vertically merged or
-                # continued block. Carry the date and Col A fill forward for
-                # populated rows beneath it.
+                # continued block. Carry the date forward for populated rows
+                # beneath it, while still treating a fill change in Col A as
+                # the next section.
+                fill_key = background_fill_key(date_cell)
+                if getattr(date_cell, "has_style", False) and fill_key != current_fill:
+                    date_group += 1
+                    current_fill = fill_key
                 deployment_date = current_date
             else:
                 continue
+            deployment_serial, deployment_status_hint = serial_and_status_hint(
+                values[indexes["deployment_serial"] - 1].value
+                if indexes["deployment_serial"]
+                else None
+            )
+            returned_device_serial, returned_device_status_hint = serial_and_status_hint(
+                values[indexes["returned_device"] - 1].value
+                if indexes["returned_device"]
+                else None,
+                returned_device=True,
+            )
             rows.append(
                 SheetRow(
                     row_number=row_number,
                     deployment_date=deployment_date,
                     username=username_for(values, indexes["username"]),
-                    deployment_serial=clean_text(values[indexes["deployment_serial"] - 1].value) if indexes["deployment_serial"] else None,
-                    returned_device_serial=clean_text(values[indexes["returned_device"] - 1].value) if indexes["returned_device"] else None,
+                    deployment_serial=deployment_serial,
+                    returned_device_serial=returned_device_serial,
                     pending_return_serial=clean_text(values[indexes["pending_return"] - 1].value) if indexes["pending_return"] else None,
                     marked_red=any(cell_is_red(cell) for cell in values),
                     enabled=enabled_column_allows(
@@ -404,6 +481,10 @@ def load_sheet(path: Path, columns: ImportColumns | None = None) -> tuple[str, l
                     device_allocation=clean_text(values[indexes["device_allocation"] - 1].value) if indexes["device_allocation"] else None,
                     new_asset_status=clean_text(values[indexes["new_asset_status"] - 1].value) if indexes["new_asset_status"] else None,
                     new_joiner=row_contains_new_joiner(values),
+                    first_name=clean_text(values[indexes["first_name"] - 1].value) if indexes["first_name"] else None,
+                    last_name=clean_text(values[indexes["last_name"] - 1].value) if indexes["last_name"] else None,
+                    deployment_status_hint=deployment_status_hint,
+                    returned_device_status_hint=returned_device_status_hint,
                 )
             )
         if not rows:
@@ -570,23 +651,45 @@ def build_actions(
                     row.row_number,
                     row.username,
                     row.deployment_serial,
-                    NEW_STOCK,
+                    row.deployment_status_hint or NEW_STOCK,
                     device_allocation=row.device_allocation,
                     new_asset_status=row.new_asset_status,
                     has_returned_device_serial=looks_like_serial(row.returned_device_serial),
                     has_pending_return_serial=looks_like_serial(row.pending_return_serial),
                     new_joiner=row.new_joiner,
+                    first_name=row.first_name,
+                    last_name=row.last_name,
+                    status_preselected=bool(row.deployment_status_hint),
                 ))
             else:
                 ignored["Deployment serial is blank or invalid"] += 1
         if "returned_devices" in selected_modes:
             if looks_like_serial(row.returned_device_serial):
-                actions.append(Action("Returned devices", row.row_number, row.username, row.returned_device_serial, "Used Stock", "location"))
+                actions.append(Action(
+                    "Returned devices",
+                    row.row_number,
+                    row.username,
+                    row.returned_device_serial,
+                    row.returned_device_status_hint or "Used Stock",
+                    "location",
+                    first_name=row.first_name,
+                    last_name=row.last_name,
+                    status_preselected=bool(row.returned_device_status_hint),
+                ))
             else:
                 ignored["Returned-device serial is blank or invalid"] += 1
         if "pending_returns" in selected_modes:
             if looks_like_serial(row.pending_return_serial):
-                actions.append(Action("Pending returns", row.row_number, row.username, row.pending_return_serial, PENDING_RETURN))
+                actions.append(Action(
+                    "Pending returns",
+                    row.row_number,
+                    row.username,
+                    row.pending_return_serial,
+                    PENDING_RETURN,
+                    first_name=row.first_name,
+                    last_name=row.last_name,
+                    status_preselected=True,
+                ))
             else:
                 ignored["Pending-return serial is blank or invalid"] += 1
 

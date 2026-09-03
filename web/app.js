@@ -33,9 +33,12 @@ const state = {
   importLocationResults: [],
   locationCache: new Map(),
   locationLoading: new Map(),
+  locationRetryCities: new Set(),
+  locationRetryTimer: null,
   recordedLocationJobs: new Set(),
   newRequest: null,
-  modelStatusContext: null,
+  importUndoStack: [],
+  importRedoStack: [],
   queueDropDepth: 0,
   validationTimers: new Map(),
   backlogValidationIds: new Set(),
@@ -66,16 +69,7 @@ const ALM_IMPORT_STATUS_OPTIONS = {
   "Returned devices": [
     { value: "Pending Decom", label: "Pending Decom" },
     { value: "Pending Rebuild", label: "Pending Rebuild" },
-  ],
-};
-const DEVICE_MODEL_STATUS_OPTIONS = {
-  user: [
-    { value: "Deployed - New Stock", label: "Deployed - New Stock" },
-    { value: "Deployed - Existing Stock", label: "Deployed - Existing Stock" },
-  ],
-  location: [
-    { value: "Pending Decom", label: "Pending Decom" },
-    { value: "Pending Rebuild", label: "Pending Rebuild" },
+    { value: "Used Stock", label: "Used Stock" },
   ],
 };
 const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
@@ -458,72 +452,6 @@ function validationEnabled(key, fallback = true) {
   return fallback;
 }
 
-function normaliseModelName(value) {
-  return String(value || "").trim().replace(/\s+/g, " ");
-}
-
-function modelNameKey(value) {
-  return normaliseModelName(value).toLowerCase();
-}
-
-function deviceModelMappings() {
-  return Array.isArray(state.preferences?.device_model_mappings)
-    ? state.preferences.device_model_mappings.filter((mapping) => mapping && typeof mapping === "object")
-    : [];
-}
-
-function modelMappingForName(name) {
-  const key = modelNameKey(name);
-  return deviceModelMappings().find((mapping) => modelNameKey(mapping.model_name) === key) || null;
-}
-
-function exactModelMappingForHint(value) {
-  const hint = normaliseModelName(value);
-  return hint ? modelMappingForName(hint) : null;
-}
-
-function modelStatusOptions(kind) {
-  return DEVICE_MODEL_STATUS_OPTIONS[kind] || [];
-}
-
-function modelStatusLabel(status) {
-  return modelStatusOptions("user").concat(modelStatusOptions("location"))
-    .find((option) => option.value === status)?.label || status;
-}
-
-function renderDeviceModelMappings(mappings = deviceModelMappings()) {
-  const container = $("#deviceModelMappings");
-  if (!container) return;
-  if (!mappings.length) {
-    container.innerHTML = '<p class="device-model-mappings-empty">No model mappings yet. Add the model numbers you use during imports.</p>';
-    return;
-  }
-  container.innerHTML = mappings.map((mapping, index) => `
-    <div class="device-model-mapping" data-model-mapping-row="${index}">
-      <label>Model number
-        <input data-model-mapping-name type="text" value="${escapeHtml(normaliseModelName(mapping.model_name))}" placeholder="For example, MacBook Air A2337">
-      </label>
-      <label>User deployments
-        <select data-model-mapping-user>
-          ${modelStatusSelectOptions("user", mapping.user_status)}
-        </select>
-      </label>
-      <label>Location deployments
-        <select data-model-mapping-location>
-          ${modelStatusSelectOptions("location", mapping.location_status)}
-        </select>
-      </label>
-      <button class="icon-button" data-model-mapping-remove="${index}" type="button" aria-label="Remove model mapping" title="Remove model mapping">×</button>
-    </div>
-  `).join("");
-}
-
-function modelStatusSelectOptions(kind, selected = "") {
-  return modelStatusOptions(kind).map((option) =>
-    `<option value="${escapeHtml(option.value)}" ${option.value === selected ? "selected" : ""}>${escapeHtml(option.label)}</option>`,
-  ).join("") + `<option value="" ${selected ? "" : "selected"}>No suggestion</option>`;
-}
-
 function requestStatusSettingOrder() {
   const all = allRequestStatusOptions();
   const configured = state.preferences?.request_statuses;
@@ -587,241 +515,6 @@ function moveRequestStatus(button) {
   if (!sibling) return;
   if (direction === "up") list.insertBefore(row, sibling);
   else list.insertBefore(sibling, row);
-}
-
-function readDeviceModelMappings() {
-  return $$("[data-model-mapping-row]").map((row) => ({
-    model_name: normaliseModelName(row.querySelector("[data-model-mapping-name]")?.value),
-    user_status: row.querySelector("[data-model-mapping-user]")?.value || "",
-    location_status: row.querySelector("[data-model-mapping-location]")?.value || "",
-  }));
-}
-
-function validateDeviceModelMappings(mappings) {
-  const seen = new Set();
-  for (const mapping of mappings) {
-    if (!mapping.model_name) return "Enter a model number for every device model mapping, or remove the empty row.";
-    const key = modelNameKey(mapping.model_name);
-    if (seen.has(key)) return `The device model '${mapping.model_name}' is listed more than once.`;
-    seen.add(key);
-    if (!mapping.user_status && !mapping.location_status) {
-      return `Choose at least one suggested deployment status for ${mapping.model_name}.`;
-    }
-    if (mapping.user_status && !modelStatusOptions("user").some((option) => option.value === mapping.user_status)) {
-      return `Choose a user deployment status for ${mapping.model_name}.`;
-    }
-    if (mapping.location_status && !modelStatusOptions("location").some((option) => option.value === mapping.location_status)) {
-      return `Choose a location deployment status for ${mapping.model_name}.`;
-    }
-  }
-  return "";
-}
-
-function modelStatusDestination() {
-  return $("#modelStatusDestinationFields")?.hidden
-    ? state.modelStatusContext?.kind || ""
-    : $("input[name='modelStatusDestination']:checked")?.value || "";
-}
-
-function setModelStatusError(message = "") {
-  const error = $("#modelStatusError");
-  error.hidden = !message;
-  error.textContent = message;
-}
-
-function updateModelStatusDialog() {
-  const context = state.modelStatusContext;
-  if (!context) return;
-  const destination = modelStatusDestination();
-  const selects = $$(`[data-model-status-model]`);
-  context.selections = selects.map((select) => select.value);
-  const suggestion = $("#modelStatusSuggestion");
-  const applyButton = $("#applyModelStatusButton");
-  setModelStatusError("");
-  suggestion.innerHTML = "";
-  applyButton.disabled = true;
-
-  if (!destination) {
-    suggestion.textContent = "Choose whether this is a user or location deployment.";
-    return;
-  }
-  if (!deviceModelMappings().length) {
-    suggestion.textContent = context.targets.some((target) => target.almDeviceType)
-      ? "Create a mapping from the ALM model above to continue."
-      : "Add a model mapping in Settings → Device models first.";
-    return;
-  }
-  if (context.selections.length !== context.targets.length || context.selections.some((selection) => !selection)) {
-    suggestion.textContent = context.targets.length > 1
-      ? "Select the checked model number for every serial."
-      : "Select the checked model number for this serial.";
-    return;
-  }
-  const mappings = context.selections.map((selection) => modelMappingForName(selection));
-  if (mappings.some((mapping) => !mapping)) {
-    setModelStatusError("One of the selected model mappings is no longer available. Close this dialog and try again.");
-    return;
-  }
-  const statuses = mappings.map((mapping) => mapping[destination === "user" ? "user_status" : "location_status"]);
-  if (statuses.some((status) => !status)) {
-    suggestion.textContent = "No status suggestion is configured for this deployment type.";
-    return;
-  }
-  const uniqueStatuses = [...new Set(statuses)];
-  if (uniqueStatuses.length > 1) {
-    setModelStatusError("These model mappings suggest different statuses. A request with multiple serials has one shared status, so choose models that agree or split the request.");
-    return;
-  }
-  const status = uniqueStatuses[0];
-  suggestion.innerHTML = `Suggested status: <strong>${escapeHtml(modelStatusLabel(status))}</strong>`;
-  applyButton.disabled = false;
-}
-
-async function saveModelMappingFromStatusDialog(index) {
-  const context = state.modelStatusContext;
-  const target = context?.targets[index];
-  if (!context || !target?.almDeviceType) return;
-  const userStatus = $(`[data-model-status-new-user="${index}"]`)?.value || "";
-  const locationStatus = $(`[data-model-status-new-location="${index}"]`)?.value || "";
-  if (!userStatus && !locationStatus) {
-    setModelStatusError("Choose at least one suggested deployment status, or close this editor.");
-    return;
-  }
-  const mappings = [...deviceModelMappings(), {
-    model_name: normaliseModelName(target.almDeviceType),
-    user_status: userStatus,
-    location_status: locationStatus,
-  }];
-  const mappingError = validateDeviceModelMappings(mappings);
-  if (mappingError) {
-    setModelStatusError(mappingError);
-    return;
-  }
-  const button = $(`[data-model-status-add-mapping="${index}"]`);
-  if (button) button.disabled = true;
-  try {
-    state.preferences = await api("/api/preferences", {
-      method: "POST",
-      body: JSON.stringify({ device_model_mappings: mappings }),
-    });
-    renderModelStatusDialog();
-    toast(`Added ${normaliseModelName(target.almDeviceType)} to device model mappings.`, "success");
-  } catch (error) {
-    if (button) button.disabled = false;
-    setModelStatusError(error.message);
-  }
-}
-
-function renderModelStatusDialog() {
-  const context = state.modelStatusContext;
-  if (!context) return;
-  const destinationFields = $("#modelStatusDestinationFields");
-  destinationFields.hidden = Boolean(context.kind);
-  if (context.kind) {
-    $$('input[name="modelStatusDestination"]').forEach((input) => {
-      input.checked = input.value === context.kind;
-    });
-  } else {
-    $$('input[name="modelStatusDestination"]').forEach((input) => { input.checked = false; });
-  }
-  $("#modelStatusIntro").textContent = context.kind
-    ? `Select the model number you checked for ${context.targets.length === 1 ? "this serial" : "each serial"}. ALM and EUDM names are guides; an exact ALM mapping is preselected for you to confirm.`
-    : "Select the model number you checked, then choose the deployment destination. ALM and EUDM names are guides; an exact ALM mapping is preselected for you to confirm.";
-  const mappings = deviceModelMappings();
-  const container = $("#modelStatusModelChoices");
-  const noMappings = mappings.length
-    ? ""
-    : '<p class="device-model-mappings-empty">No model mappings are configured yet. You can create one from an ALM model below.</p>';
-  const targetRows = context.targets.map((target, index) => {
-    const exactMapping = exactModelMappingForHint(target.almDeviceType);
-    const selectedName = normaliseModelName(exactMapping?.model_name);
-    const options = [
-      `<option value="" ${selectedName ? "" : "selected"}>Choose a checked model</option>`,
-      ...mappings.map((mapping) => {
-        const name = normaliseModelName(mapping.model_name);
-        return `<option value="${escapeHtml(name)}" ${name === selectedName ? "selected" : ""}>${escapeHtml(name)}</option>`;
-      }),
-    ].join("");
-    const exactMatch = Boolean(exactMapping);
-    const addMapping = target.almDeviceType && !exactMatch
-      ? `<div class="model-status-add-mapping">
-          <small>No exact mapping for this ALM model. Add it here with optional status suggestions.</small>
-          <div class="model-status-add-fields">
-            <label><span>User deployments</span>
-              <select data-model-status-new-user="${index}" aria-label="New user deployment suggestion for ${escapeHtml(target.almDeviceType)}">
-                ${modelStatusSelectOptions("user")}
-              </select>
-            </label>
-            <label><span>Location deployments</span>
-              <select data-model-status-new-location="${index}" aria-label="New location deployment suggestion for ${escapeHtml(target.almDeviceType)}">
-                ${modelStatusSelectOptions("location")}
-              </select>
-            </label>
-            <button class="button secondary compact" type="button" data-model-status-add-mapping="${index}">Add mapping</button>
-          </div>
-        </div>`
-      : "";
-    return `
-      <div class="model-status-model-row">
-        <span><strong>${escapeHtml(target.serial || "Serial number")}</strong>${target.currentStatus ? `<small>Current: ${escapeHtml(target.currentStatus)}</small>` : ""}${target.almDeviceType ? `<small class="model-status-alm-hint">ALM allocation: ${escapeHtml(target.almDeviceType)}</small>` : ""}${target.deviceType ? `<small class="model-status-eudm-hint">EUDM indication: ${escapeHtml(target.deviceType)}</small>` : ""}</span>
-        <select data-model-status-model="${index}" aria-label="Model number for ${escapeHtml(target.serial || "serial number")}" ${mappings.length ? "" : "disabled"}>
-          ${options}
-        </select>
-        ${addMapping}
-      </div>`;
-  }).join("");
-  container.innerHTML = noMappings + targetRows;
-  updateModelStatusDialog();
-}
-
-function openModelStatusDialog({ targets, kind = null, apply }) {
-  const normalisedTargets = (targets || []).map((target) => ({
-    serial: String(target.serial || "").trim(),
-    currentStatus: target.currentStatus || "",
-    deviceType: normaliseModelName(target.deviceType),
-    almDeviceType: normaliseModelName(target.almDeviceType),
-  })).filter((target) => target.serial);
-  if (!normalisedTargets.length) return;
-  state.modelStatusContext = {
-    targets: normalisedTargets,
-    kind,
-    apply,
-    selections: [],
-  };
-  renderModelStatusDialog();
-  $("#modelStatusDialog").showModal();
-}
-
-function openModelStatusForRequest() {
-  const request = selectedRequest();
-  if (!request || !request.serials.length) return;
-  const kind = request.kind === "user" ? "user" : "location";
-  openModelStatusDialog({
-    kind,
-    targets: request.serials.map((serial) => ({
-      serial,
-      currentStatus: request.status,
-      deviceType: request.kind === "bulk_location"
-        ? request.eudm_device_types?.[serial]
-        : request.eudm_device_type,
-      almDeviceType: request.device_allocation,
-    })),
-    apply: (status) => {
-      applyInferredKind(request, status, request.kind === "bulk_location");
-      renderAll();
-    },
-  });
-}
-
-function updateModelStatusButton(request = selectedRequest()) {
-  const button = $("#modelStatusButton");
-  if (!button) return;
-  button.hidden = !request?.serials?.length;
-  if (request) {
-    button.title = request.kind === "bulk_location"
-      ? "Choose a checked model number for each serial and suggest one shared status"
-      : "Choose the checked model number and suggest a status";
-  }
 }
 
 function rememberImportLocation(location) {
@@ -909,8 +602,6 @@ function makeRequest(kind) {
     serials: [],
     serial_validation: "empty",
     serial_validation_error: "",
-    eudm_device_type: "",
-    eudm_device_types: {},
     user_validation: "empty",
     user_validation_error: "",
     bulk_validation: "empty",
@@ -1214,14 +905,12 @@ async function validateBulkSerials({ force = false, requests = null, render = tr
   bulkRequests.forEach((request) => {
     request.bulk_validation = "checking";
     request.bulk_validation_error = "";
-    request.eudm_device_types = request.eudm_device_types || {};
     request.bulk_serial_states = request.bulk_serial_states || {};
     request.bulk_serial_errors = request.bulk_serial_errors || {};
     if (!serialsByRequest) {
       request.bulk_validation_missing = [];
       request.bulk_serial_states = {};
       request.bulk_serial_errors = {};
-      request.eudm_device_types = {};
     }
     (targets.get(request.id) || []).forEach((serial) => setBulkSerialState(request, serial, "checking"));
     if (request === selectedRequest()) refreshBulkValidationButton(request);
@@ -1236,7 +925,6 @@ async function validateBulkSerials({ force = false, requests = null, render = tr
       if (!requestHasSerial(request, serial)) return;
       const asset = (payload.results || []).find((item) => serialResultMatches(item, serial));
       if (asset) {
-        request.eudm_device_types[serial] = deviceTypeFromResult(asset, serial);
         setBulkSerialState(request, serial, "valid");
       } else {
         setBulkSerialState(request, serial, "failed", "Serial number was not found in EUDM.");
@@ -1248,7 +936,6 @@ async function validateBulkSerials({ force = false, requests = null, render = tr
           if (!requestHasSerial(request, serial)) return;
           const freshAsset = (freshPayload.results || []).find((item) => serialResultMatches(item, serial));
           if (freshAsset) {
-            request.eudm_device_types[serial] = deviceTypeFromResult(freshAsset, serial);
             setBulkSerialState(request, serial, "valid");
           } else {
             setBulkSerialState(request, serial, "failed", "Serial number was not found in EUDM.");
@@ -1633,7 +1320,6 @@ function removeBulkSerial(index) {
   if (serial) {
     if (request.bulk_serial_states) delete request.bulk_serial_states[serial];
     if (request.bulk_serial_errors) delete request.bulk_serial_errors[serial];
-    if (request.eudm_device_types) delete request.eudm_device_types[serial];
   }
   updateBulkValidationSummary(request);
   renderAll();
@@ -1750,6 +1436,7 @@ function renderAll() {
   renderQueue();
   renderInspector();
   renderLatestImportDraft();
+  updateSharepointWorkbookButton();
 }
 
 function changeRequestSize(size) {
@@ -1923,12 +1610,56 @@ function fetchLocationResults(city, { force = false } = {}) {
   }).then((payload) => {
     const results = payload.results || [];
     state.locationCache.set(city, results);
+    state.locationRetryCities.delete(city);
     return results;
+  }).catch((error) => {
+    scheduleLocationRetry(city);
+    throw error;
   }).finally(() => {
     state.locationLoading.delete(city);
   });
   state.locationLoading.set(city, request);
   return request;
+}
+
+function refreshLocationConsumers(city) {
+  const selected = selectedRequest();
+  if (selected && selected.kind !== "user" && selected.location?.city === city) {
+    renderInspector();
+    renderQueue();
+  }
+  if (state.pasteLocation?.city === city) {
+    state.pasteLocationResults = locationResults(city).map((result) => ({ ...result, city }));
+    renderPasteLocationFields();
+  }
+  if (state.importLocation?.city === city) {
+    state.importLocationResults = locationResults(city).map((result) => ({ ...result, city }));
+    renderImportLocationFields();
+  }
+}
+
+function scheduleLocationRetry(city) {
+  if (!city) return;
+  state.locationRetryCities.add(city);
+  if (state.locationRetryTimer || !connectionIsReady()) return;
+  state.locationRetryTimer = window.setTimeout(() => {
+    state.locationRetryTimer = null;
+    void retryPendingLocationLoads();
+  }, 5000);
+}
+
+async function retryPendingLocationLoads() {
+  if (!state.locationRetryCities.size || !connectionIsReady()) return;
+  const cities = [...state.locationRetryCities];
+  await Promise.all(cities.map(async (city) => {
+    try {
+      await fetchLocationResults(city, { force: true });
+      refreshLocationConsumers(city);
+    } catch (_) {
+      // fetchLocationResults keeps the city queued for the next retry.
+    }
+  }));
+  if (state.locationRetryCities.size) scheduleLocationRetry([...state.locationRetryCities][0]);
 }
 
 function populateLocationPicker(input, location, results, emptyText) {
@@ -1983,18 +1714,6 @@ function bestSerial(result, query) {
     || columns.find((value) => /^[A-Za-z0-9._-]{6,}$/.test(value))
     || String(result.value || "")
     || query;
-}
-
-function deviceTypeFromResult(result, serial) {
-  const wanted = new Set([
-    String(serial || "").trim().toLowerCase(),
-    String(result?.value || "").trim().toLowerCase(),
-  ].filter(Boolean));
-  const provided = normaliseModelName(result?.device_type || result?.deviceType);
-  if (provided && !wanted.has(provided.toLowerCase())) return provided;
-  const columns = (result?.columns || []).map((value) => normaliseModelName(value)).filter(Boolean);
-  const indicated = columns[1] || "";
-  return indicated && !wanted.has(indicated.toLowerCase()) ? indicated : "";
 }
 
 function scheduleValidation(request, field, work) {
@@ -2160,7 +1879,6 @@ async function loadSerialSuggestions(request, query, { requireSelection = true }
     // is still safe to select immediately instead of making the user search
     // again or click a result.
     const autoSelectedExact = Boolean(exactAsset);
-    request.eudm_device_type = exactAsset ? deviceTypeFromResult(exactAsset, value) : "";
     if (cachedExact || autoSelectedExact) {
       request.serials = [bestSerial(exactAsset, value)];
       request.serial_selected = true;
@@ -2176,7 +1894,6 @@ async function loadSerialSuggestions(request, query, { requireSelection = true }
           if (!validationStillCurrent(request, "serial", epoch, value)) return;
           const freshAsset = (freshPayload.results || []).find((item) => serialResultMatches(item, value));
           if (freshAsset) {
-            request.eudm_device_type = deviceTypeFromResult(freshAsset, value);
             request.serial_validation = "valid";
             request.serial_validation_error = "";
           } else {
@@ -2199,7 +1916,6 @@ async function loadSerialSuggestions(request, query, { requireSelection = true }
       hideSearchResults();
       request.serial_validation_epoch = Number(request.serial_validation_epoch || 0) + 1;
       request.serials = [bestSerial(result, value)];
-      request.eudm_device_type = deviceTypeFromResult(result, request.serials[0]);
       request.serial_selected = true;
       request.serial_validation = "valid";
       request.serial_validation_error = "";
@@ -2548,7 +2264,10 @@ function updateConnection(status) {
   if (status.state === "connected" && !state.liveOptionsLoaded) {
     refreshFormOptions();
   }
-  if (status.state === "connected") renderAll();
+  if (status.state === "connected") {
+    renderAll();
+    window.setTimeout(() => { void retryPendingLocationLoads(); }, 0);
+  }
   else renderQueue();
   if (connectionIsReady(status) && !["connected", "simulation"].includes(previousState)) {
     window.setTimeout(resumePendingImportValidation, 0);
@@ -2638,10 +2357,13 @@ function openSettings() {
   $("#spreadsheetEnabledColumnInput").value = columns.enabled || "";
   $("#spreadsheetDeviceAllocationColumnInput").value = columns.device_allocation || "Device(s) Allocation";
   $("#spreadsheetNewAssetStatusColumnInput").value = columns.new_asset_status || "New Asset Status";
+  $("#spreadsheetFirstNameColumnInput").value = columns.first_name || "First Name";
+  $("#spreadsheetLastNameColumnInput").value = columns.last_name || "Last Name";
+  $("#almWorkbookPathInput").value = state.preferences.alm_workbook_path || "";
+  $("#almWorkbookSyncBeforeLoadInput").checked = state.preferences.alm_workbook_sync_before_load === true;
   $("#validateQuickImportInput").checked = validationEnabled("validate_quick_import");
   $("#validateWorkbookImportInput").checked = validationEnabled("validate_workbook_import");
   $("#saveAlmImportDraftsInput").checked = state.preferences.save_alm_import_drafts !== false;
-  renderDeviceModelMappings();
   renderRequestStatusSettings();
   $("#settingsDialog").showModal();
 }
@@ -2649,6 +2371,71 @@ function openSettings() {
 function openAlmWorkbookImport() {
   resetImportDialog("deploy");
   $("#importDialog").showModal();
+}
+
+function updateSharepointWorkbookButton() {
+  const button = $("#loadSharepointAlmButton");
+  if (!button) return;
+  const configured = Boolean(String(state.preferences?.alm_workbook_path || "").trim());
+  button.disabled = !configured;
+  button.title = configured
+    ? "Load the saved SharePoint ALM workbook"
+    : "Set a SharePoint ALM workbook path in Settings";
+  $("#loadSharepointAlmDetail").textContent = configured
+    ? (state.preferences.alm_workbook_sync_before_load
+      ? "Use saved file · wait for OneDrive"
+      : "Use saved OneDrive file")
+    : "Set a file path in Settings";
+}
+
+async function chooseSharepointWorkbookPath() {
+  const button = $("#chooseAlmWorkbookPathButton");
+  button.disabled = true;
+  const originalLabel = button.textContent;
+  button.textContent = "Choose…";
+  try {
+    const result = await api("/api/import/choose-path", {
+      method: "POST",
+      body: "{}",
+    });
+    if (result.path) $("#almWorkbookPathInput").value = result.path;
+  } catch (error) {
+    toast(error.message, "error");
+  } finally {
+    button.disabled = false;
+    button.textContent = originalLabel;
+  }
+}
+
+async function loadSharepointWorkbook() {
+  if (!String(state.preferences?.alm_workbook_path || "").trim()) {
+    openSettings();
+    return;
+  }
+  openAlmWorkbookImport();
+  const token = state.importUploadToken;
+  setImportBusy(true, {
+    percent: 0,
+    title: "Loading SharePoint ALM workbook…",
+    detail: state.preferences.alm_workbook_sync_before_load
+      ? "Waiting for OneDrive to make the file available"
+      : "Opening the saved local file",
+  });
+  try {
+    const job = await api("/api/import/local", {
+      method: "POST",
+      body: "{}",
+    });
+    const workbook = await waitForWorkbookImport(job.job_id, token);
+    if (workbook && token === state.importUploadToken) await showImportedWorkbook(workbook);
+  } catch (error) {
+    if (token === state.importUploadToken) {
+      $("#importError").textContent = error.message;
+      $("#importError").hidden = false;
+    }
+  } finally {
+    if (token === state.importUploadToken) setImportBusy(false);
+  }
 }
 
 function openAlmBacklogImport() {
@@ -2662,6 +2449,8 @@ function openBacklogForCurrentWorkbook() {
   state.importMode = "backlog";
   state.importPreview = null;
   state.importDraftId = newImportDraftId();
+  state.importUndoStack = [];
+  state.importRedoStack = [];
   $("#importDialog").showModal();
   showImportedWorkbook(workbook);
 }
@@ -2684,6 +2473,21 @@ function importDroppedWorkbook(file) {
     return;
   }
   openAlmWorkbookImport();
+  uploadWorkbook(file);
+}
+
+function setImportDialogDropActive(active) {
+  const target = $("#importFileChooser");
+  if (target) target.classList.toggle("is-dragging", active);
+}
+
+function importDroppedIntoDialog(file) {
+  if (!workbookFile(file)) {
+    toast("Drop an .xlsx or .xlsm ALM Workbook.", "error");
+    return;
+  }
+  if (!$("#importDialog").open) openAlmWorkbookImport();
+  else resetImportDialog("deploy");
   uploadWorkbook(file);
 }
 
@@ -2757,7 +2561,6 @@ function makeQuickImportEntry(serial, username) {
     username,
     returningUserInfo: null,
     returningUserChecked: false,
-    eudmDeviceType: "",
     serialValidationState: "",
     serialValidationError: "",
     userValidationState: username ? "" : "valid",
@@ -2841,12 +2644,9 @@ function renderQuickImportReview() {
     const statusOptions = singleRequestStatusOptions();
     const selectedStatus = entry.kind === "location" ? entry.locationStatus : entry.userStatus;
     const deploymentStatus = `<label class="quick-import-status">Status
-          <div class="status-select-row">
-            <select data-pairs-status="${index}" aria-label="Deployment status for ${escapeHtml(entry.serial)}">
-              ${statusOptions.map((option) => `<option value="${escapeHtml(option.value)}" ${option.value === selectedStatus ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
-            </select>
-            <button class="button secondary compact" type="button" data-model-status-pairs="${index}" title="Suggest a status from the checked device model">Suggest</button>
-          </div>
+          <select data-pairs-status="${index}" aria-label="Deployment status for ${escapeHtml(entry.serial)}">
+            ${statusOptions.map((option) => `<option value="${escapeHtml(option.value)}" ${option.value === selectedStatus ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
+          </select>
         </label>`;
     const cachedFields = [
       entry.serialCacheVerification ? "serial" : "",
@@ -2883,29 +2683,6 @@ function renderQuickImportReview() {
     else syncQuickImportValidation(entry);
     renderQuickImportReview();
     resolveQuickImportReturningUsers();
-  }));
-  $$("[data-model-status-pairs]").forEach((button) => button.addEventListener("click", () => {
-    const entry = state.pasteEntries[Number(button.dataset.modelStatusPairs)];
-    if (!entry) return;
-    openModelStatusDialog({
-      kind: entry.kind,
-      targets: [{
-        serial: entry.serial,
-        currentStatus: entry.kind === "location" ? entry.locationStatus : entry.userStatus,
-        deviceType: entry.eudmDeviceType,
-      }],
-      apply: (status) => {
-        const kind = kindForStatus(status);
-        const kindChanged = entry.kind !== kind;
-        entry.kind = kind;
-        if (kind === "location") entry.locationStatus = status;
-        else entry.userStatus = status;
-        if (kindChanged && entry.username) resetQuickImportUserValidation(entry);
-        else syncQuickImportValidation(entry);
-        renderQuickImportReview();
-        resolveQuickImportReturningUsers();
-      },
-    });
   }));
   $$("[data-pairs-remove]").forEach((button) => button.addEventListener("click", () => {
     state.pasteEntries.splice(Number(button.dataset.pairsRemove), 1);
@@ -3017,11 +2794,9 @@ async function resolveQuickImportReturningUsers() {
         if (assetsResult.error || !asset) {
           entry.serialValidationState = "failed";
           entry.serialValidationError = assetsResult.error?.message || "Serial number was not found in EUDM.";
-          entry.eudmDeviceType = "";
         } else {
           entry.serialValidationState = "valid";
           entry.serialValidationError = "";
-          entry.eudmDeviceType = deviceTypeFromResult(asset, entry.serial);
           if (assetsResult.value?.cached) {
             entry.serialCacheVerification = true;
             verifyCachedValueInBackground("serial", entry.serial, false, (freshPayload) => {
@@ -3029,7 +2804,6 @@ async function resolveQuickImportReturningUsers() {
               const freshAsset = (freshPayload.results || []).find((item) => serialResultMatches(item, entry.serial));
               entry.serialCacheVerification = false;
               if (freshAsset) {
-                entry.eudmDeviceType = deviceTypeFromResult(freshAsset, entry.serial);
               } else {
                 entry.serialValidationState = "failed";
                 entry.serialValidationError = "Serial number was not found in EUDM.";
@@ -3224,6 +2998,8 @@ function resetImportDialog(mode = state.importMode || "deploy") {
   state.workbookInspection = null;
   state.importPreview = null;
   state.importDraftId = null;
+  state.importUndoStack = [];
+  state.importRedoStack = [];
   state.importExpandedGroups.clear();
   state.backlogValidationIds.clear();
   $("#workbookInput").value = "";
@@ -3238,6 +3014,7 @@ function resetImportDialog(mode = state.importMode || "deploy") {
   $("#prepareImportButton").disabled = true;
   $("#prepareImportButton").textContent = "Review import";
   $("#importError").hidden = true;
+  updateImportHistoryControls();
   renderImportModeOptions();
   setImportBusy(false);
   state.importLocation = preferredImportLocation();
@@ -3618,11 +3395,7 @@ function workbookMappingMatches(workbook, saved) {
   return [
     saved.username,
     saved.deployment_serial,
-    saved.returned_device,
     saved.pending_return,
-    saved.enabled,
-    saved.device_allocation,
-    saved.new_asset_status,
   ].filter(Boolean).every((heading) => headings.has(String(heading).trim().toLowerCase()));
 }
 
@@ -3666,6 +3439,9 @@ async function showImportedWorkbook(workbook) {
     return;
   }
   state.workbook = workbook;
+  if (workbook.inspection && Array.isArray(workbook.inspection.sheets)) {
+    state.workbookInspection = workbook.inspection;
+  }
   $("#importFileChooser").hidden = false;
   setImportStage("options");
   $("#backImportButton").hidden = true;
@@ -3694,6 +3470,8 @@ function renderImportColumnMap() {
   select($("#importMapEnabled"), saved.enabled || "");
   select($("#importMapDeviceAllocation"), saved.device_allocation || "Device(s) Allocation");
   select($("#importMapNewAssetStatus"), saved.new_asset_status || "New Asset Status");
+  select($("#importMapFirstName"), saved.first_name || "First Name");
+  select($("#importMapLastName"), saved.last_name || "Last Name");
   updateImportColumnMapButton();
 }
 
@@ -3706,6 +3484,8 @@ function selectedImportColumns() {
     enabled: $("#importMapEnabled").value,
     device_allocation: $("#importMapDeviceAllocation").value,
     new_asset_status: $("#importMapNewAssetStatus").value,
+    first_name: $("#importMapFirstName").value,
+    last_name: $("#importMapLastName").value,
   };
 }
 
@@ -4024,6 +3804,8 @@ function restoreImportDraftMapping(settings = {}) {
     enabled: "#importMapEnabled",
     device_allocation: "#importMapDeviceAllocation",
     new_asset_status: "#importMapNewAssetStatus",
+    first_name: "#importMapFirstName",
+    last_name: "#importMapLastName",
   };
   Object.entries(selectors).forEach(([key, selector]) => {
     const element = $(selector);
@@ -4044,12 +3826,12 @@ function restoreImportPreviewState(rawPreview) {
       ...candidate,
       import_validation: candidate.included === false ? "idle" : "pending",
       import_error: "",
-      eudm_device_type: "",
       user_info: null,
     }));
   }
   preview.requests.forEach((request) => {
     if (request.included === undefined) request.included = request.default_excluded !== true;
+    if (request.backlog_ignored === undefined) request.backlog_ignored = false;
     if (request.included === false) {
       request.import_validation = "idle";
     } else if (request.import_validation === "checking"
@@ -4072,7 +3854,9 @@ function resumeImportDraft(id) {
   resetImportDialog(draft.settings?.mode === "backlog" ? "backlog" : "deploy");
   state.importDraftId = draft.id;
   state.workbook = JSON.parse(JSON.stringify(draft.workbook));
-  state.workbookInspection = state.workbook.needs_mapping ? state.workbook : null;
+  state.workbookInspection = state.workbook.needs_mapping
+    ? state.workbook
+    : (state.workbook.inspection || null);
   state.importLocation = draft.settings?.location ? JSON.parse(JSON.stringify(draft.settings.location)) : preferredImportLocation();
   if (draft.phase === "mapping" || draft.workbook.needs_mapping) {
     openImportColumnMapping();
@@ -4193,6 +3977,151 @@ function updateImportPrepareButton(payload = state.importPreview) {
             : "Select rows to add";
 }
 
+function importPersonMarkup(request) {
+  const fullName = [request.first_name, request.last_name]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)
+    .join(" ");
+  const username = String(request.username || request.user || "").trim();
+  return `<div><small class="import-field-title">User</small>${fullName ? `<strong class="import-person-name">${escapeHtml(fullName)}</strong>` : ""}${username ? `<small class="import-person-username">${escapeHtml(username)}</small>` : `<small class="import-person-username">No username</small>`}</div>`;
+}
+
+const IMPORT_HISTORY_FIELDS = [
+  "status",
+  "included",
+  "default_excluded",
+  "serial",
+  "serials",
+  "username",
+  "user",
+  "returning_user",
+  "returning_user_info",
+  "user_info",
+  "import_validation",
+  "import_error",
+  "import_failed_fields",
+  "import_validation_epoch",
+  "backlog_validation_epoch",
+  "serial_validation",
+  "serial_validation_error",
+  "user_validation",
+  "user_validation_error",
+  "cached_serial_verification",
+  "cached_user_verification",
+  "backlog_ignored",
+];
+
+function cloneImportHistoryValue(value) {
+  return value === undefined ? undefined : structuredClone(value);
+}
+
+function importReviewSnapshot(payload = state.importPreview) {
+  if (!payload) return null;
+  return {
+    requests: (payload.requests || []).map((request) => ({
+      id: request.id,
+      values: Object.fromEntries(
+        IMPORT_HISTORY_FIELDS
+          .filter((field) => Object.prototype.hasOwnProperty.call(request, field))
+          .map((field) => [field, cloneImportHistoryValue(request[field])]),
+      ),
+    })),
+  };
+}
+
+function updateImportHistoryControls() {
+  const undo = $("#undoImportButton");
+  const redo = $("#redoImportButton");
+  const clear = $("#clearImportStatusesButton");
+  if (undo) undo.disabled = !state.importUndoStack.length;
+  if (redo) redo.disabled = !state.importRedoStack.length;
+  if (clear) clear.disabled = !state.importPreview
+    || !state.importPreview.requests?.some((request) => request.status && ALM_IMPORT_STATUS_OPTIONS[request.group]);
+}
+
+function recordImportEdit() {
+  const snapshot = importReviewSnapshot();
+  if (!snapshot) return;
+  state.importUndoStack.push(snapshot);
+  if (state.importUndoStack.length > 100) state.importUndoStack.shift();
+  state.importRedoStack = [];
+  updateImportHistoryControls();
+}
+
+function restoreImportReviewSnapshot(snapshot) {
+  const payload = state.importPreview;
+  if (!payload || !snapshot) return;
+  const valuesById = new Map((snapshot.requests || []).map((item) => [item.id, item.values || {}]));
+  (payload.requests || []).forEach((request) => {
+    const values = valuesById.get(request.id);
+    if (!values) return;
+    const wasBacklogIgnored = request.backlog_ignored === true;
+    IMPORT_HISTORY_FIELDS.forEach((field) => {
+      if (Object.prototype.hasOwnProperty.call(values, field)) request[field] = cloneImportHistoryValue(values[field]);
+      else delete request[field];
+    });
+    if (payload.mode === "backlog" && wasBacklogIgnored !== (request.backlog_ignored === true)) {
+      persistBacklogIgnore(request, request.backlog_ignored === true);
+    }
+    request.import_validation_epoch = Number(request.import_validation_epoch || 0) + 1;
+    request.backlog_validation_epoch = Number(request.backlog_validation_epoch || 0) + 1;
+    if (request.import_validation === "checking") request.import_validation = "pending";
+    if (request.included === false) request.import_validation = "idle";
+  });
+  state.backlogValidationIds.clear();
+  renderImportPreview();
+  updateImportPrepareButton(payload);
+  updateImportHistoryControls();
+  saveCurrentImportDraft();
+  const pending = (payload.requests || []).filter((request) => request.included !== false
+    && !["valid", "failed"].includes(request.import_validation));
+  if (pending.length) {
+    if (payload.mode === "backlog") void validateBacklogPreview(payload, pending);
+    else void validateImportPreview(pending);
+  }
+}
+
+function undoImportEdit() {
+  if (!state.importPreview || !state.importUndoStack.length) return;
+  state.importRedoStack.push(importReviewSnapshot());
+  restoreImportReviewSnapshot(state.importUndoStack.pop());
+}
+
+function redoImportEdit() {
+  if (!state.importPreview || !state.importRedoStack.length) return;
+  state.importUndoStack.push(importReviewSnapshot());
+  restoreImportReviewSnapshot(state.importRedoStack.pop());
+}
+
+function clearImportStatuses() {
+  const payload = state.importPreview;
+  if (!payload) return;
+  const requests = (payload.requests || []).filter((request) =>
+    request.status && ALM_IMPORT_STATUS_OPTIONS[request.group]);
+  if (!requests.length) return;
+  recordImportEdit();
+  requests.forEach((request) => { request.status = ""; });
+  renderImportPreview();
+  updateImportPrepareButton(payload);
+  saveCurrentImportDraft();
+}
+
+function persistBacklogIgnore(request, ignored) {
+  const serial = String(request.serial || "").trim();
+  const username = String(request.username || "").trim();
+  if (!serial || !username) return;
+  const requestOptions = ignored
+    ? {
+        method: "POST",
+        body: JSON.stringify({ serial, username }),
+      }
+    : { method: "DELETE" };
+  const path = ignored
+    ? "/api/import/backlog/ignore"
+    : `/api/import/backlog/ignore?serial=${encodeURIComponent(serial)}&username=${encodeURIComponent(username)}`;
+  void api(path, requestOptions).catch((error) => toast(error.message, "error"));
+}
+
 function renderBacklogPreview(payload) {
   const requests = Array.isArray(payload.requests) ? payload.requests : (payload.requests = []);
   const included = requests.filter((request) => request.included !== false);
@@ -4201,7 +4130,7 @@ function renderBacklogPreview(payload) {
   $("#importPreviewSubtitle").textContent = `${payload.sheet} · ${payload.start_date} to ${payload.end_date}${payload.include_today ? " · including today" : ""}`;
   $("#importPreviewCount").textContent = `${included.length} selected`;
   const rows = requests.map((request, index) => {
-    const options = DEVICE_MODEL_STATUS_OPTIONS.user;
+    const options = ALM_IMPORT_STATUS_OPTIONS.Deployments;
     const notAttending = request.attending === false;
     const usernameOccurrence = Number(request.username_occurrence || 0);
     const usernameOccurrenceTotal = Number(request.username_occurrence_total || 0);
@@ -4219,7 +4148,6 @@ function renderBacklogPreview(payload) {
         <option value="">Choose a deployment status</option>
         ${options.map((option) => `<option value="${escapeHtml(option.value)}" ${request.status === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
       </select>
-      <button class="button secondary compact" type="button" data-model-status-backlog="${escapeHtml(request.id)}" title="Suggest a status from the checked device model">Suggest</button>
     </div>`;
     const validation = importValidationStatus(request);
     const includedRow = request.included !== false;
@@ -4229,7 +4157,7 @@ function renderBacklogPreview(payload) {
         <span>${index + 1}</span>
       </label>
       <div><small class="import-field-title">Deployment serial</small><strong>${escapeHtml(request.serial)}</strong><small class="import-device-allocation">${escapeHtml(request.date)}${request.device_allocation ? ` · ${escapeHtml(request.device_allocation)}` : ""}</small></div>
-      <div><small class="import-field-title">User</small><strong>${escapeHtml(request.username)}</strong><small class="import-device-allocation">Current: ${escapeHtml(request.current_status)}</small>${occurrenceLabel ? `<small class="import-duplicate-warning">${escapeHtml(occurrenceLabel)}</small>` : ""}${notAttending ? '<small class="import-attendance-warning">Did not attend</small>' : ""}</div>
+      ${importPersonMarkup(request).replace("</div>", `<small class="import-device-allocation">Current: ${escapeHtml(request.current_status)}</small>${occurrenceLabel ? `<small class="import-duplicate-warning">${escapeHtml(occurrenceLabel)}</small>` : ""}${notAttending ? '<small class="import-attendance-warning">Did not attend</small>' : ""}</div>`)}
       <div>${statusControl}${includedRow ? validation : `<small class="${notAttending ? "import-attendance-warning" : ""}">${escapeHtml(exclusionLabel)}</small>`}<div class="backlog-row-actions"><button class="text-button" type="button" data-backlog-ignore="${escapeHtml(request.id)}">Ignore in future</button></div></div>
     </div>`;
   }).join("");
@@ -4239,34 +4167,27 @@ function renderBacklogPreview(payload) {
     : Number(counts.today_excluded || 0) > 0 && !payload.include_today
       ? "No prior days matched. Include today to check today's rows."
       : "No undeployed devices were found in this range.";
+  const allIncluded = requests.length > 0 && included.length === requests.length;
   $("#importPreviewList").innerHTML = rows
-    ? `<section class="import-preview-section"><div class="import-group-heading"><div><strong>Undeployed devices</strong><small>${included.length} of ${requests.length} selected</small></div><div class="import-group-actions"><button class="text-button" type="button" data-backlog-group="all">All</button><button class="text-button" type="button" data-backlog-group="none">None</button></div></div>${rows}</section>`
+    ? `<section class="import-preview-section"><div class="import-group-heading"><div><strong>Undeployed devices</strong><small>${included.length} of ${requests.length} selected</small></div><div class="import-group-actions"><button class="text-button" type="button" data-backlog-toggle>${allIncluded ? "Deselect all deployments" : "Select all deployments"}</button></div></div>${rows}</section>`
     : `<div class="import-empty">${escapeHtml(emptyMessage)}</div>`;
   $("#importPreviewList").querySelectorAll("[data-backlog-status]").forEach((select) => select.addEventListener("change", () => {
     const request = requests.find((item) => item.id === select.dataset.backlogStatus);
-    if (request) request.status = select.value;
+    if (request && request.status !== select.value) {
+      recordImportEdit();
+      request.status = select.value;
+    }
     updateImportPrepareButton(payload);
     saveCurrentImportDraft();
-  }));
-  $("#importPreviewList").querySelectorAll("[data-model-status-backlog]").forEach((button) => button.addEventListener("click", () => {
-    const request = requests.find((item) => item.id === button.dataset.modelStatusBacklog);
-    if (!request) return;
-    openModelStatusDialog({
-      kind: "user",
-      targets: [{ serial: request.serial, currentStatus: request.status, deviceType: request.eudm_device_type, almDeviceType: request.device_allocation }],
-      apply: (status) => {
-        request.status = status;
-        renderImportPreview();
-        updateImportPrepareButton(payload);
-        saveCurrentImportDraft();
-      },
-    });
   }));
   $("#importPreviewList").querySelectorAll("[data-backlog-include]").forEach((checkbox) => checkbox.addEventListener("change", () => {
     const request = requests.find((item) => item.id === checkbox.dataset.backlogInclude);
     if (!request) return;
+    if (request.included !== checkbox.checked) recordImportEdit();
     request.included = checkbox.checked;
     request.default_excluded = false;
+    const wasIgnored = request.backlog_ignored === true;
+    request.backlog_ignored = !checkbox.checked;
     request.backlog_validation_epoch = Number(request.backlog_validation_epoch || 0) + 1;
     const shouldValidate = checkbox.checked && request.import_validation !== "valid";
     if (!checkbox.checked) {
@@ -4278,7 +4199,9 @@ function renderBacklogPreview(payload) {
       request.cached_user_verification = false;
     }
     if (!checkbox.checked) {
-      void api("/api/import/backlog/ignore", { method: "POST", body: JSON.stringify({ serial: request.serial, username: request.username }) });
+      persistBacklogIgnore(request, true);
+    } else if (wasIgnored) {
+      persistBacklogIgnore(request, false);
     }
     renderImportPreview();
     updateImportPrepareButton(payload);
@@ -4288,8 +4211,10 @@ function renderBacklogPreview(payload) {
   $("#importPreviewList").querySelectorAll("[data-backlog-ignore]").forEach((button) => button.addEventListener("click", () => {
     const request = requests.find((item) => item.id === button.dataset.backlogIgnore);
     if (!request) return;
+    if (request.included !== false) recordImportEdit();
     request.included = false;
     request.default_excluded = false;
+    request.backlog_ignored = true;
     request.backlog_validation_epoch = Number(request.backlog_validation_epoch || 0) + 1;
     state.backlogValidationIds.delete(request.id);
     request.import_validation = "idle";
@@ -4297,17 +4222,21 @@ function renderBacklogPreview(payload) {
     request.import_failed_fields = [];
     request.cached_serial_verification = false;
     request.cached_user_verification = false;
-    void api("/api/import/backlog/ignore", { method: "POST", body: JSON.stringify({ serial: request.serial, username: request.username }) });
+    persistBacklogIgnore(request, true);
     renderImportPreview();
     updateImportPrepareButton(payload);
     saveCurrentImportDraft();
   }));
-  $("#importPreviewList").querySelectorAll("[data-backlog-group]").forEach((button) => button.addEventListener("click", () => {
-    const include = button.dataset.backlogGroup === "all";
+  $("#importPreviewList").querySelectorAll("[data-backlog-toggle]").forEach((button) => button.addEventListener("click", () => {
+    const include = requests.some((request) => request.included === false);
     const toValidate = [];
+    if (!requests.length) return;
+    recordImportEdit();
     requests.forEach((request) => {
+      const wasIgnored = request.backlog_ignored === true;
       request.included = include;
       request.default_excluded = false;
+      request.backlog_ignored = !include;
       request.backlog_validation_epoch = Number(request.backlog_validation_epoch || 0) + 1;
       state.backlogValidationIds.delete(request.id);
       if (include) {
@@ -4319,7 +4248,7 @@ function renderBacklogPreview(payload) {
         request.cached_serial_verification = false;
         request.cached_user_verification = false;
       }
-      if (!include) void api("/api/import/backlog/ignore", { method: "POST", body: JSON.stringify({ serial: request.serial, username: request.username }) });
+      if (!include || wasIgnored) persistBacklogIgnore(request, !include);
     });
     renderImportPreview();
     updateImportPrepareButton(payload);
@@ -4332,6 +4261,7 @@ function renderBacklogPreview(payload) {
 function renderImportPreview() {
   const payload = state.importPreview;
   if (!payload) return;
+  updateImportHistoryControls();
   if (payload.mode === "backlog") {
     renderBacklogPreview(payload);
     return;
@@ -4383,7 +4313,6 @@ function renderImportPreview() {
               <option value="" ${!request.status ? "selected" : ""}>Choose a ${isDeployment ? "deployment" : "returned-device"} status</option>
               ${statusOptions.map((option) => `<option value="${escapeHtml(option.value)}" ${request.status === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
             </select>
-            <button class="button secondary compact" type="button" data-model-status-import="${escapeHtml(request.id)}" title="Suggest a status from the checked device model">Suggest</button>
             </div>`
         : `<span class="fixed-status">Deployed - Pending Return</span>`;
       const validation = importValidationStatus(request);
@@ -4403,7 +4332,7 @@ function renderImportPreview() {
         : "";
       const personColumn = isReturnedDevice
         ? `<div><small class="import-field-title">Destination</small><strong>${escapeHtml(destination)}</strong></div>`
-        : `<div><small class="import-field-title">User</small><strong>${escapeHtml(request.user || "No user")}</strong>${missingReturnWarning}</div>`;
+        : `${importPersonMarkup(request).replace("</div>", `${missingReturnWarning}</div>`)}`;
       return `<div class="import-preview-row ${isIncluded ? "" : "excluded"}">
         <label class="include-control" title="${isIncluded ? "Included" : "Do not deploy"}">
           <input type="checkbox" data-import-include="${escapeHtml(request.id)}" ${isIncluded ? "checked" : ""}>
@@ -4420,28 +4349,17 @@ function renderImportPreview() {
     const bulkStatusOptions = ALM_IMPORT_STATUS_OPTIONS[group.key] || [];
     const bulkStatusControl = bulkStatusOptions.length
       ? `<select data-import-status-all="${escapeHtml(group.key)}" aria-label="Set status for all ${escapeHtml(group.key.toLowerCase())}">
-          <option value="">Set all statuses</option>
+          <option value="">Set all unselected statuses</option>
           ${bulkStatusOptions.map((option) => `<option value="${escapeHtml(option.value)}">${escapeHtml(option.label)}</option>`).join("")}
         </select>`
       : "";
-    const suggestionTotal = selectedCount;
-    const suggestedCount = requests.filter((request) => {
-      if (request.included === false) return false;
-      const mapping = modelMappingForName(request.device_allocation);
-      return Boolean(mapping?.user_status);
-    }).length;
-    const applySuggestionsButton = group.key === "Deployments" && suggestionTotal
-      ? `<button class="button secondary compact" type="button" data-import-apply-suggestions="Deployments" title="Apply statuses for ALM model names that exactly match a configured device model mapping" ${suggestedCount ? "" : "disabled"}>Apply ${suggestedCount}/${suggestionTotal} suggested</button>`
+    const groupActions = requests.length
+      ? `${bulkStatusControl}<button class="text-button" type="button" data-import-group-toggle="${escapeHtml(group.key)}">${selectedCount === requests.length ? "Deselect" : "Select"} all ${group.key === "Deployments" ? "deployments" : group.key === "Returned devices" ? "returned devices" : "pending returns"}</button>`
       : "";
     return `<section class="import-preview-section">
       <div class="import-group-heading">
         <div><strong>${group.title}</strong><small>${group.detail} · ${selectedCount} of ${requests.length} selected</small></div>
-        <div class="import-group-actions">
-          ${bulkStatusControl}
-          ${applySuggestionsButton}
-          <button class="text-button" type="button" data-import-group="${escapeHtml(group.key)}" data-include="true">All</button>
-          <button class="text-button" type="button" data-import-group="${escapeHtml(group.key)}" data-include="false">None</button>
-        </div>
+        ${groupActions ? `<div class="import-group-actions">${groupActions}</div>` : ""}
       </div>
       ${missingUsernameWarning}
       ${rows}
@@ -4451,64 +4369,34 @@ function renderImportPreview() {
   $("#importPreviewList").querySelectorAll("[data-import-status]").forEach((select) => {
     select.addEventListener("change", () => {
       const request = payload.requests.find((item) => item.id === select.dataset.importStatus);
-      if (request) request.status = select.value;
+      if (request && request.status !== select.value) {
+        recordImportEdit();
+        request.status = select.value;
+      }
       updateImportPrepareButton(payload);
       saveCurrentImportDraft();
-    });
-  });
-  $("#importPreviewList").querySelectorAll("[data-model-status-import]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const request = payload.requests.find((item) => item.id === button.dataset.modelStatusImport);
-      if (!request) return;
-      openModelStatusDialog({
-        kind: request.group === "Deployments" ? "user" : "location",
-        targets: [{
-          serial: request.serials[0],
-          currentStatus: request.status,
-          deviceType: request.eudm_device_type,
-          almDeviceType: request.device_allocation,
-        }],
-        apply: (status) => {
-          request.status = status;
-          renderImportPreview();
-          updateImportPrepareButton(payload);
-          saveCurrentImportDraft();
-        },
-      });
     });
   });
   $("#importPreviewList").querySelectorAll("[data-import-status-all]").forEach((select) => select.addEventListener("change", () => {
     const status = select.value;
     if (!status) return;
-    payload.requests
-      .filter((request) => request.group === select.dataset.importStatusAll)
-      .forEach((request) => { request.status = status; });
+    const requests = payload.requests.filter((request) =>
+      request.group === select.dataset.importStatusAll
+      && request.included !== false
+      && !request.status
+    );
+    if (!requests.length) return;
+    recordImportEdit();
+    requests.forEach((request) => { request.status = status; });
     renderImportPreview();
     updateImportPrepareButton(payload);
     saveCurrentImportDraft();
-  }));
-  $("#importPreviewList").querySelectorAll("[data-import-apply-suggestions]").forEach((button) => button.addEventListener("click", () => {
-    const group = button.dataset.importApplySuggestions;
-    let applied = 0;
-    payload.requests
-      .filter((request) => request.group === group && request.included !== false)
-      .forEach((request) => {
-        const mapping = modelMappingForName(request.device_allocation);
-        if (!mapping) return;
-        const status = mapping.user_status;
-        if (!status || request.status === status) return;
-        request.status = status;
-        applied += 1;
-      });
-    renderImportPreview();
-    updateImportPrepareButton(payload);
-    saveCurrentImportDraft();
-    toast(applied ? `Applied ${applied} model suggestion${applied === 1 ? "" : "s"}.` : "No exact model mappings matched the ALM allocation names.", applied ? "success" : "info");
   }));
   $("#importPreviewList").querySelectorAll("[data-import-include]").forEach((checkbox) => {
     checkbox.addEventListener("change", () => {
       const request = payload.requests.find((item) => item.id === checkbox.dataset.importInclude);
       if (!request) return;
+      if (request.included !== checkbox.checked) recordImportEdit();
       request.included = checkbox.checked;
       request.import_validation_epoch = Number(request.import_validation_epoch || 0) + 1;
       if (!checkbox.checked) {
@@ -4526,12 +4414,15 @@ function renderImportPreview() {
       if (checkbox.checked && request.import_validation !== "valid") void validateImportPreview([request]);
     });
   });
-  $("#importPreviewList").querySelectorAll("[data-import-group]").forEach((button) => {
+  $("#importPreviewList").querySelectorAll("[data-import-group-toggle]").forEach((button) => {
     button.addEventListener("click", () => {
-      const included = button.dataset.include === "true";
+      const groupRequests = payload.requests.filter((request) => request.group === button.dataset.importGroupToggle);
+      const included = groupRequests.some((request) => request.included === false);
+      if (!groupRequests.length) return;
+      recordImportEdit();
       const toValidate = [];
       payload.requests
-        .filter((request) => request.group === button.dataset.importGroup)
+        .filter((request) => request.group === button.dataset.importGroupToggle)
         .forEach((request) => {
           request.included = included;
           request.import_validation_epoch = Number(request.import_validation_epoch || 0) + 1;
@@ -4562,6 +4453,7 @@ function renderImportPreview() {
   $("#importPreviewList").querySelectorAll("[data-import-retry]").forEach((button) => button.addEventListener("click", () => {
     const request = payload.requests.find((item) => item.id === button.dataset.importRetry);
     if (!request) return;
+    recordImportEdit();
     const serial = $(`[data-import-serial="${button.dataset.importRetry}"]`);
     const user = $(`[data-import-user="${button.dataset.importRetry}"]`);
     if (serial) request.serials = [serial.value.trim()];
@@ -4648,7 +4540,6 @@ async function validateImportPreview(retryRequests = null) {
     request.import_validation = "checking";
     request.import_error = "";
     request.import_failed_fields = [];
-    request.eudm_device_type = "";
     request.cached_serial_verification = false;
     request.cached_user_verification = false;
     request.serial_validation = "checking";
@@ -4692,7 +4583,6 @@ async function validateImportPreview(retryRequests = null) {
         validationError.failedFields = missingFields;
         throw validationError;
       }
-      request.eudm_device_type = deviceTypeFromResult(asset, serial);
       if (needsUserVerification) {
         request.user = userInfo.login;
         request.user_info = userInfo;
@@ -4708,7 +4598,6 @@ async function validateImportPreview(retryRequests = null) {
           const freshAsset = (freshPayload.results || []).find((item) => serialResultMatches(item, serial));
           request.cached_serial_verification = false;
           if (freshAsset) {
-            request.eudm_device_type = deviceTypeFromResult(freshAsset, serial);
           } else {
             request.import_validation = "failed";
             request.serial_validation = "failed";
@@ -4824,7 +4713,6 @@ async function validateBacklogPreview(payload = state.importPreview, retryReques
     request.user_validation = "checking";
     request.cached_serial_verification = false;
     request.cached_user_verification = false;
-    request.eudm_device_type = "";
     request.user_info = null;
   });
   renderImportPreview();
@@ -4858,7 +4746,6 @@ async function validateBacklogPreview(payload = state.importPreview, retryReques
         request.user_info = null;
         return;
       }
-      request.eudm_device_type = deviceTypeFromResult(asset, serial);
       request.user_info = userInfo;
       request.serial_validation = "valid";
       request.user_validation = "valid";
@@ -4871,7 +4758,6 @@ async function validateBacklogPreview(payload = state.importPreview, retryReques
           const freshAsset = (freshPayload.results || []).find((item) => serialResultMatches(item, serial));
           request.cached_serial_verification = false;
           if (freshAsset) {
-            request.eudm_device_type = deviceTypeFromResult(freshAsset, serial);
           } else {
             request.import_validation = "failed";
             request.serial_validation = "failed";
@@ -4928,6 +4814,9 @@ async function validateBacklogPreview(payload = state.importPreview, retryReques
 
 function backToImportSelection() {
   state.importPreview = null;
+  state.importUndoStack = [];
+  state.importRedoStack = [];
+  updateImportHistoryControls();
   setImportStage("options");
   $("#backImportButton").hidden = true;
   $("#prepareImportButton").textContent = "Review import";
@@ -4979,7 +4868,6 @@ async function prepareImport() {
         serial_validation: "valid",
         user_validation: "valid",
         user_info: request.user_info || null,
-        eudm_device_type: request.eudm_device_type || "",
       }));
       state.queue.push(...requests);
       state.selectedId = requests[0]?.id || state.selectedId;
@@ -5061,7 +4949,6 @@ async function prepareImport() {
         ...candidate,
         import_validation: candidate.included === false ? "idle" : "checking",
         import_error: "",
-        eudm_device_type: "",
         user_info: null,
       }));
       state.importPreview = payload;
@@ -5103,7 +4990,6 @@ async function prepareImport() {
     });
     payload.requests.forEach((request) => {
       request.included = true;
-      if (request.group !== "Pending returns") request.status = "";
       request.import_validation = "checking";
       request.import_error = "";
       request.import_failed_fields = [];
@@ -5430,8 +5316,6 @@ function reAddHistoryEntry(entry, run) {
     : `Re-added from history · ${formatHistoryDate(run?.created_at)}`;
   request.serial_validation = request.serials?.length ? "valid" : "empty";
   request.serial_validation_error = "";
-  request.eudm_device_type = "";
-  request.eudm_device_types = {};
   request.user_validation = request.user ? "valid" : "empty";
   request.user_validation_error = "";
   request.returning_user_validation = request.returning_user ? "valid" : "empty";
@@ -5728,23 +5612,6 @@ function bindEvents() {
     $$('[data-settings-tab]').forEach((item) => item.classList.toggle("active", item === tab));
     $$('[data-settings-panel]').forEach((panel) => { panel.hidden = panel.dataset.settingsPanel !== tab.dataset.settingsTab; });
   }));
-  $("#addDeviceModelMappingButton").addEventListener("click", () => {
-    const mappings = readDeviceModelMappings();
-    mappings.push({
-      model_name: "",
-      user_status: "Deployed - New Stock",
-      location_status: "Pending Rebuild",
-    });
-    renderDeviceModelMappings(mappings);
-    $("[data-model-mapping-row]:last-child [data-model-mapping-name]")?.focus();
-  });
-  $("#deviceModelMappings").addEventListener("click", (event) => {
-    const button = event.target.closest("[data-model-mapping-remove]");
-    if (!button) return;
-    const mappings = readDeviceModelMappings();
-    mappings.splice(Number(button.dataset.modelMappingRemove), 1);
-    renderDeviceModelMappings(mappings);
-  });
   $$('[data-request-status-list]').forEach((list) => list.addEventListener("click", (event) => {
     const button = event.target.closest("[data-request-status-move]");
     if (button) moveRequestStatus(button);
@@ -5769,15 +5636,11 @@ function bindEvents() {
       enabled: $("#spreadsheetEnabledColumnInput").value.trim(),
       device_allocation: $("#spreadsheetDeviceAllocationColumnInput").value.trim(),
       new_asset_status: $("#spreadsheetNewAssetStatusColumnInput").value.trim(),
+      first_name: $("#spreadsheetFirstNameColumnInput").value.trim(),
+      last_name: $("#spreadsheetLastNameColumnInput").value.trim(),
     };
     if (!columns.username || !columns.deployment_serial || !columns.pending_return) {
       toast("Set the username, deployment serial, and pending return columns.", "error");
-      return;
-    }
-    const deviceModelMappingsValue = readDeviceModelMappings();
-    const modelMappingError = validateDeviceModelMappings(deviceModelMappingsValue);
-    if (modelMappingError) {
-      toast(modelMappingError, "error");
       return;
     }
     const requestStatuses = readRequestStatusSettings();
@@ -5791,7 +5654,8 @@ function bindEvents() {
       validate_quick_import: $("#validateQuickImportInput").checked,
       validate_workbook_import: $("#validateWorkbookImportInput").checked,
       save_alm_import_drafts: $("#saveAlmImportDraftsInput").checked,
-      device_model_mappings: deviceModelMappingsValue,
+      alm_workbook_path: $("#almWorkbookPathInput").value.trim(),
+      alm_workbook_sync_before_load: $("#almWorkbookSyncBeforeLoadInput").checked,
       request_statuses: requestStatuses,
       import_columns: columns,
     };
@@ -5810,6 +5674,7 @@ function bindEvents() {
       localStorage.setItem(IMPORT_COLUMNS_STORAGE_KEY, JSON.stringify(columns));
       localStorage.setItem(CONCURRENCY_STORAGE_KEY, elements.concurrency.value);
       $("#settingsDialog").close();
+      updateSharepointWorkbookButton();
       toast("Settings saved.", "success");
     } catch (error) {
       toast(error.message, "error");
@@ -5826,31 +5691,9 @@ function bindEvents() {
       toast(error.message, "error");
     }
   });
-  $("#modelStatusModelChoices").addEventListener("change", updateModelStatusDialog);
-  $("#modelStatusModelChoices").addEventListener("click", (event) => {
-    const button = event.target.closest("[data-model-status-add-mapping]");
-    if (button) saveModelMappingFromStatusDialog(Number(button.dataset.modelStatusAddMapping));
-  });
-  $$('input[name="modelStatusDestination"]').forEach((input) => input.addEventListener("change", updateModelStatusDialog));
-  $("#modelStatusDialog form").addEventListener("submit", (event) => {
-    if (event.submitter?.value === "cancel") return;
-    event.preventDefault();
-    const context = state.modelStatusContext;
-    if (!context) return;
-    const destination = modelStatusDestination();
-    const mappings = context.selections.map((selection) => modelMappingForName(selection));
-    const statuses = mappings.map((mapping) => mapping?.[destination === "user" ? "user_status" : "location_status"]);
-    if (!destination || statuses.some((status) => !status) || new Set(statuses).size !== 1) {
-      updateModelStatusDialog();
-      return;
-    }
-    context.apply(statuses[0], destination, context.selections);
-    $("#modelStatusDialog").close();
-  });
-  $("#modelStatusDialog").addEventListener("close", () => {
-    state.modelStatusContext = null;
-  });
   $("#importSheetButton").addEventListener("click", openAlmWorkbookImport);
+  $("#loadSharepointAlmButton").addEventListener("click", loadSharepointWorkbook);
+  $("#chooseAlmWorkbookPathButton").addEventListener("click", chooseSharepointWorkbookPath);
   $("#almBacklogButton").addEventListener("click", openAlmBacklogImport);
   $("#importDialog").addEventListener("close", () => {
     saveCurrentImportDraft({ immediate: true });
@@ -5866,10 +5709,54 @@ function bindEvents() {
     if (event.submitter?.value !== "cancel") event.preventDefault();
   });
   importForm.addEventListener("keydown", (event) => {
+    const key = String(event.key || "").toLowerCase();
+    const target = event.target;
+    const editingText = target instanceof HTMLInputElement
+      || target instanceof HTMLTextAreaElement
+      || target?.isContentEditable;
+    if (state.importPreview && (event.metaKey || event.ctrlKey) && !event.altKey
+      && !editingText && (key === "z" || key === "y")) {
+      event.preventDefault();
+      if (key === "y" || (key === "z" && event.shiftKey)) redoImportEdit();
+      else undoImportEdit();
+      return;
+    }
     if (event.key !== "Enter" || event.isComposing) return;
     event.preventDefault();
-    const retry = event.target.closest(".import-inline-edit")?.querySelector("[data-import-retry]");
+    const retry = target instanceof Element
+      ? target.closest(".import-inline-edit")?.querySelector("[data-import-retry]")
+      : null;
     if (retry) retry.click();
+  });
+  const importDialog = $("#importDialog");
+  let importDropDepth = 0;
+  importDialog.addEventListener("dragenter", (event) => {
+    if (!state.config?.spreadsheet_import_enabled || !fileDrag(event)) return;
+    event.preventDefault();
+    importDropDepth += 1;
+    setImportDialogDropActive(true);
+  });
+  importDialog.addEventListener("dragover", (event) => {
+    if (!state.config?.spreadsheet_import_enabled || !fileDrag(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  });
+  importDialog.addEventListener("dragleave", (event) => {
+    if (!fileDrag(event)) return;
+    importDropDepth = Math.max(0, importDropDepth - 1);
+    if (!importDropDepth) setImportDialogDropActive(false);
+  });
+  importDialog.addEventListener("drop", (event) => {
+    if (!state.config?.spreadsheet_import_enabled || !fileDrag(event)) return;
+    event.preventDefault();
+    importDropDepth = 0;
+    setImportDialogDropActive(false);
+    const files = Array.from(event.dataTransfer?.files || []);
+    if (files.length !== 1) {
+      toast("Drop one ALM Workbook at a time.", "error");
+      return;
+    }
+    importDroppedIntoDialog(files[0]);
   });
   $("#workbookInput").addEventListener("change", (event) => {
     if (event.target.files[0]) uploadWorkbook(event.target.files[0]);
@@ -5913,10 +5800,12 @@ function bindEvents() {
     "#importMapDeployment",
     "#importMapReturned",
     "#importMapPending",
-  "#importMapEnabled",
-  "#importMapDeviceAllocation",
-  "#importMapNewAssetStatus",
-].forEach((selector) => $(selector).addEventListener("change", updateImportColumnMapButton));
+    "#importMapEnabled",
+    "#importMapDeviceAllocation",
+    "#importMapNewAssetStatus",
+    "#importMapFirstName",
+    "#importMapLastName",
+  ].forEach((selector) => $(selector).addEventListener("change", updateImportColumnMapButton));
   $("#sheetInput").addEventListener("change", () => {
     updateImportDates();
   });
@@ -5967,6 +5856,9 @@ function bindEvents() {
   });
   $("#prepareImportButton").addEventListener("click", prepareImport);
   $("#backImportButton").addEventListener("click", backToImportSelection);
+  $("#undoImportButton").addEventListener("click", undoImportEdit);
+  $("#redoImportButton").addEventListener("click", redoImportEdit);
+  $("#clearImportStatusesButton").addEventListener("click", clearImportStatuses);
   elements.reviewButton.addEventListener("click", openReview);
   $("#reviewDialog form").addEventListener("submit", (event) => {
     if (event.submitter?.value === "cancel") return;
@@ -6020,8 +5912,6 @@ function bindEvents() {
     request.serial_validation = request.serials.length ? "pending" : "empty";
     request.serial_validation_error = "";
     request.cached_serial_verification = false;
-    request.eudm_device_type = "";
-    updateModelStatusButton(request);
     if (value) setLookupInputStatus("serial", value);
     if (request.serials.length) scheduleValidation(request, "serial", () => loadSerialSuggestions(request, value, { requireSelection: true }));
     refreshSelectedValidation();
@@ -6032,7 +5922,6 @@ function bindEvents() {
     const request = selectedRequest();
     if (!request) return;
     request.serials = parseSerials(elements.serialsInput.value);
-    request.eudm_device_types = {};
     request.bulk_validation_epoch = Number(request.bulk_validation_epoch || 0) + 1;
     request.bulk_validation = request.serials.length
       ? "pending"
@@ -6041,7 +5930,6 @@ function bindEvents() {
     request.bulk_validation_missing = [];
     request.bulk_serial_states = {};
     request.bulk_serial_errors = {};
-    updateModelStatusButton(request);
     elements.serialHint.textContent = request.serials.length + " serial" + (request.serials.length === 1 ? "" : "s");
     refreshBulkValidationButton(request);
     refreshSelectedValidation();
@@ -6053,7 +5941,6 @@ function bindEvents() {
     applyInferredKind(request, elements.statusInput.value);
     renderAll();
   });
-  $("#modelStatusButton").addEventListener("click", openModelStatusForRequest);
   elements.userInput.addEventListener("input", () => {
     hideSearchResults();
     setLookupStatus("user", "");
@@ -6231,6 +6118,7 @@ async function init() {
     if (state.preferences.save_alm_import_drafts !== false) await loadImportDrafts();
     const spreadsheetEnabled = Boolean(state.config.spreadsheet_import_enabled);
     $("#importSheetButton").hidden = !spreadsheetEnabled;
+    $("#loadSharepointAlmButton").hidden = !spreadsheetEnabled;
     const spreadsheetSettings = $('[data-settings-tab="spreadsheet"]');
     if (spreadsheetSettings) spreadsheetSettings.hidden = !spreadsheetEnabled;
     configureConcurrency(state.config.concurrency);

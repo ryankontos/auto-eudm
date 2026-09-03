@@ -5,8 +5,8 @@ from __future__ import annotations
 import base64
 import binascii
 from collections import Counter
-from dataclasses import dataclass
-from datetime import date, timedelta
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta
 from io import BytesIO
 import re
 from typing import Any, Callable
@@ -14,6 +14,7 @@ import uuid
 
 from . import eudm_inventory_import as inventory
 from . import eudm_request as eudm
+from .fast_workbook import FastWorkbook, FastWorkbookError
 from .identifiers import is_login_id, is_serial
 
 
@@ -160,6 +161,8 @@ class RequestSpec:
     user_info: dict[str, Any] | None = None
     source: str | None = None
     device_allocation: str | None = None
+    first_name: str | None = None
+    last_name: str | None = None
 
     @classmethod
     def from_json(cls, raw: Any) -> "RequestSpec":
@@ -213,6 +216,8 @@ class RequestSpec:
             user_info=user_info,
             source=clean(raw.get("source")) or None,
             device_allocation=clean(raw.get("device_allocation")) or None,
+            first_name=clean(raw.get("first_name")) or None,
+            last_name=clean(raw.get("last_name")) or None,
         )
 
     def validate(
@@ -321,6 +326,8 @@ class RequestSpec:
             "group": self.group,
             "source": self.source or "",
             "device_allocation": self.device_allocation or "",
+            "first_name": self.first_name or "",
+            "last_name": self.last_name or "",
             "errors": self.validate(),
             "destination": self.destination(),
             "device_count": self.device_count(),
@@ -398,6 +405,8 @@ class WorkbookImport:
     import_id: str
     filename: str
     sheets: dict[str, list[inventory.SheetRow]]
+    _summary_cache: dict[str, Any] | None = field(default=None, repr=False)
+    _inspection_cache: dict[str, Any] | None = field(default=None, repr=False)
 
     @staticmethod
     def decode_upload(filename: str, encoded: str) -> bytes:
@@ -418,31 +427,473 @@ class WorkbookImport:
     def inspect_payload(filename: str, payload: bytes) -> dict[str, Any]:
         """Return selectable headings before committing to a column mapping."""
         try:
+            with FastWorkbook(payload) as workbook:
+                return WorkbookImport._inspect_fast_workbook(filename, workbook)
+        except FastWorkbookError:
+            # Keep the compatibility reader for unusual but valid workbooks.
+            pass
+        try:
             from openpyxl import load_workbook
             workbook = load_workbook(BytesIO(payload), data_only=True, read_only=True)
         except Exception as exc:
             raise eudm.EUDMError("Could not read the workbook. Use an unencrypted .xlsx or .xlsm file.") from exc
         try:
-            sheets = []
-            for sheet in workbook.worksheets:
-                headings: list[str] = []
-                for row in sheet.iter_rows(min_row=1, max_row=min(25, int(sheet.max_row or 25))):
-                    values = [inventory.clean_text(cell.value) for cell in row]
-                    # Tracking headers always include Date; only offer header-like rows.
-                    if any(inventory.normalized_header(value) in {"date", "deployment date", "booking date"} for value in values):
-                        headings = [value for value in values if value]
-                        break
-                if headings:
-                    sheets.append({"name": sheet.title, "headings": headings})
-            if not sheets:
-                raise eudm.EUDMError("No sheet with a Date heading was found.")
-            default_sheet = "Bookings 2026" if any(item["name"] == "Bookings 2026" for item in sheets) else sheets[0]["name"]
-            return {"filename": filename, "default_sheet": default_sheet, "sheets": sheets, "needs_mapping": True}
+            return WorkbookImport._inspect_openpyxl_workbook(filename, workbook)
         finally:
             workbook.close()
 
+    @staticmethod
+    def _inspect_fast_workbook(filename: str, workbook: FastWorkbook) -> dict[str, Any]:
+        """Inspect the small header window without creating openpyxl cells."""
+        source_sheets = (
+            ["Bookings 2026"]
+            if "Bookings 2026" in workbook.sheet_names
+            else list(workbook.sheet_names)
+        )
+        sheets = []
+        for sheet_name in source_sheets:
+            headings: list[str] = []
+            for row in workbook.iter_rows(sheet_name):
+                if row.row_number > 25:
+                    break
+                values = {
+                    column: inventory.clean_text(row.cells[column][0])
+                    for column in sorted(row.cells)
+                }
+                if any(
+                    inventory.normalized_header(value)
+                    in {"date", "deployment date", "booking date"}
+                    for value in values.values()
+                ):
+                    headings = [value for value in values.values() if value]
+                    break
+            if headings:
+                sheets.append({"name": sheet_name, "headings": headings})
+        if not sheets:
+            raise eudm.EUDMError("No sheet with a Date heading was found.")
+        return {
+            "filename": filename,
+            "default_sheet": sheets[0]["name"],
+            "sheets": sheets,
+            "needs_mapping": True,
+        }
+
+    @staticmethod
+    def inspect_path(filename: str, path: str | Any) -> dict[str, Any]:
+        """Inspect a local workbook without copying it through the browser."""
+        try:
+            from openpyxl import load_workbook
+            workbook = load_workbook(path, data_only=True, read_only=True)
+        except Exception as exc:
+            raise eudm.EUDMError(
+                "Could not read the workbook. Use an unencrypted .xlsx or .xlsm file."
+            ) from exc
+        try:
+            return WorkbookImport._inspect_openpyxl_workbook(filename, workbook)
+        finally:
+            workbook.close()
+
+    @staticmethod
+    def _inspect_openpyxl_workbook(filename: str, workbook: Any) -> dict[str, Any]:
+        """Read only the headings needed to populate the import mapping step."""
+        # The normal ALM source is the current Bookings sheet. Looking there
+        # first avoids opening every archival/notes tab in a large workbook.
+        source_sheets = (
+            [workbook["Bookings 2026"]]
+            if "Bookings 2026" in workbook.sheetnames
+            else list(workbook.worksheets)
+        )
+        sheets = []
+        for sheet in source_sheets:
+            headings: list[str] = []
+            for row in sheet.iter_rows(
+                min_row=1, max_row=min(25, int(sheet.max_row or 25))
+            ):
+                values = [inventory.clean_text(cell.value) for cell in row]
+                # Tracking headers always include Date; only offer header-like rows.
+                if any(
+                    inventory.normalized_header(value)
+                    in {"date", "deployment date", "booking date"}
+                    for value in values
+                ):
+                    headings = [value for value in values if value]
+                    break
+            if headings:
+                sheets.append({"name": sheet.title, "headings": headings})
+        if not sheets:
+            raise eudm.EUDMError("No sheet with a Date heading was found.")
+        default_sheet = sheets[0]["name"]
+        return {
+            "filename": filename,
+            "default_sheet": default_sheet,
+            "sheets": sheets,
+            "needs_mapping": True,
+        }
+
+    @staticmethod
+    def _fast_header_indexes(
+        workbook: FastWorkbook,
+        sheet_name: str,
+        columns: inventory.ImportColumns,
+    ) -> tuple[int, dict[str, int], int]:
+        """Find the configured headers while scanning only the first 25 rows."""
+        desired = {
+            "username": columns.username,
+            "deployment_serial": columns.deployment_serial,
+            "returned_device": columns.returned_device,
+            "pending_return": columns.pending_return,
+            "enabled": columns.enabled,
+            "device_allocation": columns.device_allocation,
+            "new_asset_status": columns.new_asset_status,
+            "first_name": columns.first_name,
+            "last_name": columns.last_name,
+        }
+        targets = {
+            key: inventory.normalized_header(value)
+            for key, value in desired.items()
+        }
+        date_titles = {"date", "deployment date", "booking date"}
+        for row in workbook.iter_rows(sheet_name):
+            if row.row_number > 25:
+                break
+            found: dict[str, int] = {}
+            for column, (value, _style) in row.cells.items():
+                title = inventory.normalized_header(inventory.clean_text(value))
+                if title:
+                    found[title] = column
+            indexes = {key: found.get(title) for key, title in targets.items()}
+            if not indexes["username"] or not indexes["deployment_serial"] or not indexes["pending_return"]:
+                continue
+            if not indexes["enabled"] and not columns.enabled:
+                for title in (
+                    "attend",
+                    "attended",
+                    "attendance",
+                    "eligible",
+                    "enabled",
+                ):
+                    if title in found:
+                        indexes["enabled"] = found[title]
+                        break
+            date_index = next(
+                (found[title] for title in date_titles if title in found),
+                None,
+            )
+            if date_index:
+                return (
+                    row.row_number,
+                    {key: value or 0 for key, value in indexes.items()},
+                    date_index,
+                )
+        required = (
+            columns.username,
+            columns.deployment_serial,
+            columns.pending_return,
+            "Date",
+        )
+        missing = ", ".join(f"{name!r}" for name in required)
+        raise eudm.EUDMError(
+            "Could not find the required spreadsheet headers. Check ALM Workbook settings: "
+            + missing
+        )
+
+    @staticmethod
+    def _fast_cell_value(row: Any, column: int) -> Any:
+        cell = row.cells.get(column)
+        return cell[0] if cell else None
+
+    @staticmethod
+    def _fast_normalize_date(value: Any, epoch: datetime, from_excel: Any) -> date | None:
+        """Convert fast-reader date values without importing openpyxl per row."""
+        if isinstance(value, (int, float)):
+            try:
+                converted = from_excel(value, epoch)
+            except (TypeError, ValueError, OverflowError):
+                return None
+            return converted.date() if isinstance(converted, datetime) else converted
+        return inventory.normalize_date(value, epoch)
+
+    @staticmethod
+    def _row_to_cache(row: inventory.SheetRow) -> dict[str, Any]:
+        return {
+            "row_number": row.row_number,
+            "deployment_date": row.deployment_date.isoformat(),
+            "username": row.username,
+            "deployment_serial": row.deployment_serial,
+            "returned_device_serial": row.returned_device_serial,
+            "pending_return_serial": row.pending_return_serial,
+            "marked_red": row.marked_red,
+            "enabled": row.enabled,
+            "date_group": row.date_group,
+            "returned_device_column_present": row.returned_device_column_present,
+            "device_allocation": row.device_allocation,
+            "new_asset_status": row.new_asset_status,
+            "new_joiner": row.new_joiner,
+            "first_name": row.first_name,
+            "last_name": row.last_name,
+            "deployment_status_hint": row.deployment_status_hint,
+            "returned_device_status_hint": row.returned_device_status_hint,
+        }
+
+    def cache_json(self) -> dict[str, Any]:
+        """Serialize the parsed rows for fast reuse of an unchanged local file."""
+        return {
+            "version": 2,
+            "filename": self.filename,
+            "sheets": {
+                name: [self._row_to_cache(row) for row in rows]
+                for name, rows in self.sheets.items()
+            },
+            "summary": self.summary(),
+            "inspection": self._inspection_cache,
+        }
+
+    @classmethod
+    def from_cache_json(
+        cls,
+        import_id: str,
+        filename: str,
+        raw: Any,
+    ) -> "WorkbookImport | None":
+        """Restore a cache entry, returning None when it is incomplete."""
+        try:
+            if not isinstance(raw, dict) or raw.get("version") != 2:
+                return None
+            raw_sheets = raw.get("sheets")
+            if not isinstance(raw_sheets, dict) or not raw_sheets:
+                return None
+            sheets: dict[str, list[inventory.SheetRow]] = {}
+            for name, raw_rows in raw_sheets.items():
+                if not isinstance(name, str) or not isinstance(raw_rows, list):
+                    return None
+                rows: list[inventory.SheetRow] = []
+                for raw_row in raw_rows:
+                    if not isinstance(raw_row, dict):
+                        return None
+                    rows.append(
+                        inventory.SheetRow(
+                            row_number=int(raw_row["row_number"]),
+                            deployment_date=date.fromisoformat(
+                                str(raw_row["deployment_date"])
+                            ),
+                            username=raw_row.get("username") or None,
+                            deployment_serial=raw_row.get("deployment_serial") or None,
+                            returned_device_serial=raw_row.get("returned_device_serial") or None,
+                            pending_return_serial=raw_row.get("pending_return_serial") or None,
+                            marked_red=bool(raw_row.get("marked_red")),
+                            enabled=bool(raw_row.get("enabled")),
+                            date_group=int(raw_row.get("date_group", 1)),
+                            returned_device_column_present=bool(
+                                raw_row.get("returned_device_column_present", True)
+                            ),
+                            device_allocation=raw_row.get("device_allocation") or None,
+                            new_asset_status=raw_row.get("new_asset_status") or None,
+                            new_joiner=bool(raw_row.get("new_joiner")),
+                            first_name=raw_row.get("first_name") or None,
+                            last_name=raw_row.get("last_name") or None,
+                            deployment_status_hint=raw_row.get("deployment_status_hint") or None,
+                            returned_device_status_hint=raw_row.get("returned_device_status_hint") or None,
+                        )
+                    )
+                sheets[name] = rows
+            summary = raw.get("summary")
+            inspection = raw.get("inspection")
+            cached_import_id = import_id
+            if isinstance(summary, dict):
+                try:
+                    # Keep the persisted payload ID when one exists. Drafts
+                    # resumed after an application restart use this ID to
+                    # restore the workbook without re-reading the source.
+                    cached_import_id = uuid.UUID(
+                        str(summary.get("import_id", ""))
+                    ).hex
+                except (ValueError, AttributeError, TypeError):
+                    pass
+            return cls(
+                cached_import_id,
+                filename,
+                sheets,
+                summary if isinstance(summary, dict) else None,
+                inspection if isinstance(inspection, dict) else None,
+            )
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return None
+
     @classmethod
     def from_payload(
+        cls,
+        filename: str,
+        payload: bytes,
+        *,
+        columns: inventory.ImportColumns | None = None,
+        on_progress: Callable[[str, int, int], None] | None = None,
+    ) -> "WorkbookImport":
+        """Parse an ALM workbook, using the streaming reader when possible."""
+        try:
+            return cls._from_fast_payload(
+                filename,
+                payload,
+                columns=columns,
+                on_progress=on_progress,
+            )
+        except FastWorkbookError:
+            # Some valid workbooks use XML features outside this focused
+            # reader. Keep openpyxl as a compatibility path for those files.
+            return cls._from_openpyxl_payload(
+                filename,
+                payload,
+                columns=columns,
+                on_progress=on_progress,
+            )
+
+    @classmethod
+    def _from_fast_payload(
+        cls,
+        filename: str,
+        payload: bytes,
+        *,
+        columns: inventory.ImportColumns | None = None,
+        on_progress: Callable[[str, int, int], None] | None = None,
+    ) -> "WorkbookImport":
+        try:
+            from openpyxl.utils.datetime import from_excel
+        except ImportError as exc:
+            raise FastWorkbookError("Spreadsheet support is not installed.") from exc
+        workbook = FastWorkbook(payload)
+        try:
+            source_sheets = (
+                ["Bookings 2026"]
+                if "Bookings 2026" in workbook.sheet_names
+                else list(workbook.sheet_names)
+            )
+            max_rows = {
+                name: workbook.sheet_max_row(name)
+                for name in source_sheets
+            }
+            total_rows = sum(max(0, max_rows[name] - 1) for name in source_sheets)
+            processed_rows = 0
+            selected_columns = columns or inventory.ImportColumns()
+            sheets: dict[str, list[inventory.SheetRow]] = {}
+            for sheet_name in source_sheets:
+                try:
+                    header_row, indexes, date_index = cls._fast_header_indexes(
+                        workbook,
+                        sheet_name,
+                        selected_columns,
+                    )
+                except eudm.EUDMError:
+                    continue
+                rows: list[inventory.SheetRow] = []
+                current_date = None
+                current_fill = None
+                date_group = 0
+                for row in workbook.iter_rows(sheet_name):
+                    if row.row_number <= header_row:
+                        continue
+                    processed_rows += 1
+                    if on_progress and (
+                        processed_rows == total_rows or processed_rows % 150 == 0
+                    ):
+                        on_progress(sheet_name, processed_rows, total_rows)
+                    date_value = cls._fast_cell_value(row, date_index)
+                    date_cell = row.cells.get(date_index, (None, 0))
+                    explicit_date = cls._fast_normalize_date(
+                        date_value,
+                        workbook.epoch,
+                        from_excel,
+                    )
+                    if explicit_date is not None:
+                        fill_key = workbook.fill_key(date_cell[1])
+                        if explicit_date != current_date:
+                            date_group = 1
+                        elif fill_key != current_fill:
+                            date_group += 1
+                        current_date = explicit_date
+                        current_fill = fill_key
+                        deployment_date = explicit_date
+                    elif current_date is not None and any(
+                        inventory.clean_text(value)
+                        for column, (value, _style) in row.cells.items()
+                        if column != date_index
+                    ):
+                        if date_index in row.cells:
+                            fill_key = workbook.fill_key(date_cell[1])
+                            if fill_key != current_fill:
+                                date_group += 1
+                                current_fill = fill_key
+                        deployment_date = current_date
+                    else:
+                        continue
+                    deployment_serial, deployment_status_hint = inventory.serial_and_status_hint(
+                        cls._fast_cell_value(row, indexes["deployment_serial"])
+                        if indexes["deployment_serial"]
+                        else None
+                    )
+                    returned_device_serial, returned_device_status_hint = inventory.serial_and_status_hint(
+                        cls._fast_cell_value(row, indexes["returned_device"])
+                        if indexes["returned_device"]
+                        else None,
+                        returned_device=True,
+                    )
+                    rows.append(
+                        inventory.SheetRow(
+                            row_number=row.row_number,
+                            deployment_date=deployment_date,
+                            username=inventory.clean_text(
+                                cls._fast_cell_value(row, indexes["username"])
+                            ),
+                            deployment_serial=deployment_serial,
+                            returned_device_serial=returned_device_serial,
+                            pending_return_serial=inventory.clean_text(
+                                cls._fast_cell_value(row, indexes["pending_return"])
+                            ) if indexes["pending_return"] else None,
+                            # Font colour is presentation only. Eligibility is
+                            # controlled by the configured TRUE/FALSE column.
+                            marked_red=False,
+                            enabled=inventory.enabled_column_allows(
+                                cls._fast_cell_value(row, indexes["enabled"])
+                            ) if indexes["enabled"] else True,
+                            date_group=date_group,
+                            returned_device_column_present=bool(
+                                indexes["returned_device"]
+                            ),
+                            device_allocation=inventory.clean_text(
+                                cls._fast_cell_value(row, indexes["device_allocation"])
+                            ) if indexes["device_allocation"] else None,
+                            new_asset_status=inventory.clean_text(
+                                cls._fast_cell_value(row, indexes["new_asset_status"])
+                            ) if indexes["new_asset_status"] else None,
+                            new_joiner=inventory.row_contains_new_joiner(
+                                value for value, _style in row.cells.values()
+                            ),
+                            first_name=inventory.clean_text(
+                                cls._fast_cell_value(row, indexes["first_name"])
+                            ) if indexes["first_name"] else None,
+                            last_name=inventory.clean_text(
+                                cls._fast_cell_value(row, indexes["last_name"])
+                            ) if indexes["last_name"] else None,
+                            deployment_status_hint=deployment_status_hint,
+                            returned_device_status_hint=returned_device_status_hint,
+                        )
+                    )
+                if rows:
+                    sheets[sheet_name] = rows
+            if on_progress:
+                on_progress(
+                    source_sheets[-1] if source_sheets else "Workbook",
+                    processed_rows,
+                    total_rows,
+                )
+        finally:
+            workbook.close()
+        if not sheets:
+            raise eudm.EUDMError(
+                "No dated rows were found with the configured spreadsheet headers."
+            )
+        return cls(uuid.uuid4().hex, filename, sheets)
+
+    @classmethod
+    def _from_openpyxl_payload(
         cls,
         filename: str,
         payload: bytes,
@@ -523,17 +974,33 @@ class WorkbookImport:
                         if index != date_index - 1
                     ):
                         # Merged/continued date cells are blank after the
-                        # first row; retain their date section and fill.
+                        # first row; retain their date section and detect a
+                        # new Col A fill section when the styled cell changes.
+                        fill_key = inventory.background_fill_key(date_cell)
+                        if getattr(date_cell, "has_style", False) and fill_key != current_fill:
+                            date_group += 1
+                            current_fill = fill_key
                         deployment_date = current_date
                     else:
                         continue
+                    deployment_serial, deployment_status_hint = inventory.serial_and_status_hint(
+                        values[indexes["deployment_serial"] - 1].value
+                        if indexes["deployment_serial"]
+                        else None
+                    )
+                    returned_device_serial, returned_device_status_hint = inventory.serial_and_status_hint(
+                        values[indexes["returned_device"] - 1].value
+                        if indexes["returned_device"]
+                        else None,
+                        returned_device=True,
+                    )
                     rows.append(
                         inventory.SheetRow(
                             row_number=row_number,
                             deployment_date=deployment_date,
                             username=inventory.username_for(values, indexes["username"]),
-                            deployment_serial=inventory.clean_text(values[indexes["deployment_serial"] - 1].value) if indexes["deployment_serial"] else None,
-                            returned_device_serial=inventory.clean_text(values[indexes["returned_device"] - 1].value) if indexes["returned_device"] else None,
+                            deployment_serial=deployment_serial,
+                            returned_device_serial=returned_device_serial,
                             pending_return_serial=inventory.clean_text(values[indexes["pending_return"] - 1].value) if indexes["pending_return"] else None,
                             # Font colour is presentation only. Eligibility is
                             # controlled by the configured TRUE/FALSE column.
@@ -546,6 +1013,10 @@ class WorkbookImport:
                             device_allocation=inventory.clean_text(values[indexes["device_allocation"] - 1].value) if indexes["device_allocation"] else None,
                             new_asset_status=inventory.clean_text(values[indexes["new_asset_status"] - 1].value) if indexes["new_asset_status"] else None,
                             new_joiner=inventory.row_contains_new_joiner(values),
+                            first_name=inventory.clean_text(values[indexes["first_name"] - 1].value) if indexes["first_name"] else None,
+                            last_name=inventory.clean_text(values[indexes["last_name"] - 1].value) if indexes["last_name"] else None,
+                            deployment_status_hint=deployment_status_hint,
+                            returned_device_status_hint=returned_device_status_hint,
                         )
                     )
                 if rows:
@@ -565,6 +1036,12 @@ class WorkbookImport:
         return cls(uuid.uuid4().hex, filename, sheets)
 
     def summary(self) -> dict[str, Any]:
+        if self._summary_cache is not None:
+            return {
+                **self._summary_cache,
+                "import_id": self.import_id,
+                "filename": self.filename,
+            }
         sheet_summaries = []
         for name, rows in self.sheets.items():
             rows_by_date: dict[date, list[inventory.SheetRow]] = {}
@@ -767,12 +1244,18 @@ class WorkbookImport:
                 client_id=uuid.uuid4().hex,
                 kind=action.kind,
                 serials=(action.serial,),
-                status=action.status if action.group == "Pending returns" else "",
+                status=(
+                    action.status
+                    if action.group == "Pending returns" or action.status_preselected
+                    else ""
+                ),
                 user=action.username if action.kind == "user" else None,
                 location=location if action.kind == "location" else None,
                 group=action.group,
                 source=f"{self.filename} · {sheet_name}",
                 device_allocation=action.device_allocation,
+                first_name=action.first_name,
+                last_name=action.last_name,
             ).to_json()
             request["new_asset_status"] = action.new_asset_status or ""
             request["has_returned_device_serial"] = action.has_returned_device_serial
@@ -888,6 +1371,8 @@ class WorkbookImport:
                 "date": row.deployment_date.isoformat(),
                 "serial": serial,
                 "username": username,
+                "first_name": row.first_name or "",
+                "last_name": row.last_name or "",
                 "username_occurrence": occurrence,
                 "username_occurrence_total": username_totals[username_key],
                 "current_status": current_status or "No status",
@@ -896,7 +1381,8 @@ class WorkbookImport:
                 "attending": row.enabled,
                 "included": row.enabled,
                 "default_excluded": not row.enabled,
-                "status": "",
+                "backlog_ignored": False,
+                "status": row.deployment_status_hint or "",
             })
         return {
             "mode": "backlog",

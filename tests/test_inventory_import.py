@@ -62,6 +62,32 @@ class ImportColumnTests(unittest.TestCase):
         self.assertTrue(inventory.contains_new_joiner_marker("new - starter"))
         self.assertFalse(inventory.contains_new_joiner_marker("existing starter"))
 
+    def test_serial_suffixes_are_optional_status_hints(self) -> None:
+        self.assertEqual(
+            inventory.serial_and_status_hint("  SERIAL123   U "),
+            ("SERIAL123", inventory.EXISTING_STOCK),
+        )
+        self.assertEqual(
+            inventory.serial_and_status_hint("SERIAL456 N"),
+            ("SERIAL456", inventory.NEW_STOCK),
+        )
+        self.assertEqual(
+            inventory.serial_and_status_hint("SERIAL789 PR", returned_device=True),
+            ("SERIAL789", "Pending Rebuild"),
+        )
+        self.assertEqual(
+            inventory.serial_and_status_hint("SERIAL789 PD", returned_device=True),
+            ("SERIAL789", "Pending Decom"),
+        )
+        self.assertEqual(
+            inventory.serial_and_status_hint("SERIAL789 US", returned_device=True),
+            ("SERIAL789", "Used Stock"),
+        )
+        self.assertEqual(
+            inventory.serial_and_status_hint("SERIAL789 XX"),
+            ("SERIAL789 XX", None),
+        )
+
 
 class ImportActionTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -92,6 +118,20 @@ class ImportActionTests(unittest.TestCase):
             ],
         )
         self.assertFalse(ignored)
+
+    def test_status_hint_preselects_only_when_a_suffix_is_present(self) -> None:
+        hinted = replace(self.row, deployment_status_hint=inventory.EXISTING_STOCK)
+        actions, _ = inventory.build_actions(
+            [hinted], self.selected_date, "deployments"
+        )
+        self.assertEqual(actions[0].status, inventory.EXISTING_STOCK)
+        self.assertTrue(actions[0].status_preselected)
+
+        actions, _ = inventory.build_actions(
+            [self.row], self.selected_date, "deployments"
+        )
+        self.assertEqual(actions[0].status, inventory.NEW_STOCK)
+        self.assertFalse(actions[0].status_preselected)
 
     def test_red_font_marker_does_not_exclude_a_true_row(self) -> None:
         row = replace(self.row, marked_red=True)

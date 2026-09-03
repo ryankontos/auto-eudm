@@ -240,6 +240,45 @@ class WorkbookUploadTests(unittest.TestCase):
             payload["requests"][0]["device_allocation"], "MacBookPro18,3"
         )
 
+    def test_workbook_prepare_persists_names_and_optional_status_hint(self) -> None:
+        row = inventory.SheetRow(
+            row_number=2,
+            deployment_date=date(2025, 2, 3),
+            username="valid.user",
+            deployment_serial="SERIAL123",
+            returned_device_serial=None,
+            pending_return_serial=None,
+            marked_red=False,
+            enabled=True,
+            first_name="Valid",
+            last_name="User",
+            deployment_status_hint="Deployed - Existing Stock",
+        )
+        workbook = WorkbookImport("import-names", "tracking.xlsx", {"Sheet": [row]})
+
+        payload = workbook.prepare("Sheet", "2025-02-03", "deployments")
+        request = payload["requests"][0]
+
+        self.assertEqual(request["first_name"], "Valid")
+        self.assertEqual(request["last_name"], "User")
+        self.assertEqual(request["status"], "Deployed - Existing Stock")
+
+        row_without_hint = inventory.SheetRow(
+            row_number=3,
+            deployment_date=date(2025, 2, 3),
+            username="another.user",
+            deployment_serial="SERIAL456",
+            returned_device_serial=None,
+            pending_return_serial=None,
+            marked_red=False,
+            enabled=True,
+        )
+        no_hint = WorkbookImport("import-no-hint", "tracking.xlsx", {"Sheet": [row_without_hint]})
+        self.assertEqual(
+            no_hint.prepare("Sheet", "2025-02-03", "deployments")["requests"][0]["status"],
+            "",
+        )
+
     def test_workbook_prepare_persists_new_joiner_marker(self) -> None:
         row = inventory.SheetRow(
             row_number=2,
@@ -490,6 +529,7 @@ class WorkbookUploadTests(unittest.TestCase):
 
     def test_workbook_can_be_inspected_and_read_from_one_payload(self) -> None:
         from openpyxl import Workbook as OpenPyXLWorkbook
+        from openpyxl.styles import PatternFill
 
         source = OpenPyXLWorkbook()
         source.active.title = "Bookings 2026"
@@ -503,6 +543,15 @@ class WorkbookUploadTests(unittest.TestCase):
             True,
             "New\n   Starter",
         ])
+        sheet.append([
+            date(2025, 2, 3),
+            "second.user",
+            "SERIAL456",
+            "PENDING456",
+            True,
+            "",
+        ])
+        sheet.cell(3, 1).fill = PatternFill("solid", fgColor="FFFF0000")
         buffer = BytesIO()
         source.save(buffer)
         payload = buffer.getvalue()
@@ -514,7 +563,25 @@ class WorkbookUploadTests(unittest.TestCase):
         self.assertIn("Bookings 2026", workbook.sheets)
         self.assertTrue(workbook.summary()["sheets"])
         prepared = workbook.prepare("Bookings 2026", "2025-02-03", "deployments")
+        self.assertEqual(
+            [request["serials"][0] for request in prepared["requests"]],
+            ["SERIAL123", "SERIAL456"],
+        )
         self.assertTrue(prepared["requests"][0]["new_joiner"])
+
+        # The focused XML reader and the compatibility reader should produce
+        # the same import rows, including the date-section grouping metadata.
+        compatibility = WorkbookImport._from_openpyxl_payload(
+            "tracking.xlsx", payload
+        )
+        self.assertEqual(
+            workbook.sheets["Bookings 2026"],
+            compatibility.sheets["Bookings 2026"],
+        )
+        self.assertEqual(
+            [row.date_group for row in workbook.sheets["Bookings 2026"]],
+            [1, 2],
+        )
 
 
 if __name__ == "__main__":

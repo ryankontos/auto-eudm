@@ -39,6 +39,10 @@
           <span class="tool-icon import-icon" aria-hidden="true">↓</span>
           <span><strong>Import ALM Workbook</strong><small>Import a local spreadsheet</small></span>
         </button>
+        <button id="loadSharepointAlmButton" class="tool-button" type="button" disabled>
+          <span class="tool-icon import-icon" aria-hidden="true">↻</span>
+          <span><strong>Load SharePoint ALM workbook</strong><small id="loadSharepointAlmDetail">Set a file path in Settings</small></span>
+        </button>
         <button id="almBacklogButton" class="tool-button" type="button">
           <span class="tool-icon import-icon" aria-hidden="true">↗</span>
           <span><strong>ALM deployment backlog</strong><small>Find undeployed devices</small></span>
@@ -177,10 +181,7 @@
 
         <div id="statusFields" class="form-field">
           <label for="statusInput">Change status to <em>Required</em></label>
-          <div class="status-select-row">
-            <select id="statusInput"></select>
-            <button id="modelStatusButton" class="button secondary compact" type="button" hidden title="Suggest a status from the checked device model">Suggest</button>
-          </div>
+          <select id="statusInput"></select>
         </div>
 
         <div id="userFields">
@@ -379,6 +380,8 @@
                 <label>TRUE/FALSE <small>Optional</small><select id="importMapEnabled"></select></label>
                 <label>Device allocation <small>Optional</small><select id="importMapDeviceAllocation"></select></label>
                 <label>New asset status <small>Optional for normal imports</small><select id="importMapNewAssetStatus"></select></label>
+                <label>First name <small>Optional</small><select id="importMapFirstName"></select></label>
+                <label>Last name <small>Optional</small><select id="importMapLastName"></select></label>
               </div>
             </div>
           </div>
@@ -445,6 +448,11 @@
                 <small id="importPreviewSubtitle"></small>
               </div>
               <span id="importPreviewCount" class="count-badge"></span>
+              <div class="import-preview-tools">
+                <button id="undoImportButton" class="button quiet compact" type="button" disabled>Undo</button>
+                <button id="redoImportButton" class="button quiet compact" type="button" disabled>Redo</button>
+                <button id="clearImportStatusesButton" class="button secondary compact" type="button">Clear all statuses</button>
+              </div>
             </div>
             <div id="importPreviewList" class="import-preview-list"></div>
           </div>
@@ -481,7 +489,6 @@
         <button class="settings-tab active" data-settings-tab="run" type="button">General</button>
         <button class="settings-tab" data-settings-tab="validation" type="button">Validation</button>
         <button class="settings-tab" data-settings-tab="spreadsheet" type="button">ALM Workbook</button>
-        <button class="settings-tab" data-settings-tab="models" type="button">Device models</button>
         <button class="settings-tab" data-settings-tab="statuses" type="button">Request statuses</button>
       </div>
       <section data-settings-panel="run">
@@ -503,6 +510,16 @@
       </section>
       <section data-settings-panel="spreadsheet" hidden>
         <label class="settings-checkbox"><input id="saveAlmImportDraftsInput" type="checkbox"><span>Save ALM imports for resume for up to 6 hours</span></label>
+        <div class="settings-path-block">
+          <label>SharePoint ALM workbook path
+            <input id="almWorkbookPathInput" type="text" autocomplete="off" spellcheck="false" placeholder="/Users/you/OneDrive/.../ALM.xlsx">
+          </label>
+          <div class="settings-inline-action settings-path-actions">
+            <small>Choose the local OneDrive shortcut file used by the SharePoint loader.</small>
+            <button id="chooseAlmWorkbookPathButton" class="button secondary compact" type="button">Choose file</button>
+          </div>
+          <label class="settings-checkbox"><input id="almWorkbookSyncBeforeLoadInput" type="checkbox"><span>Wait for OneDrive to make the file available before loading</span></label>
+        </div>
         <div class="settings-column-grid">
           <label>Username column<input id="spreadsheetUsernameColumnInput" type="text" placeholder="Username"></label>
           <label>Deployment serial column<input id="spreadsheetDeploymentColumnInput" type="text" placeholder="SN"></label>
@@ -511,13 +528,10 @@
           <label>TRUE/FALSE column<input id="spreadsheetEnabledColumnInput" type="text" placeholder="Optional"></label>
           <label>Device allocation column<input id="spreadsheetDeviceAllocationColumnInput" type="text" placeholder="Device(s) Allocation"></label>
           <label>New asset status column<input id="spreadsheetNewAssetStatusColumnInput" type="text" placeholder="New Asset Status"></label>
+          <label>First name column<input id="spreadsheetFirstNameColumnInput" type="text" placeholder="First Name"></label>
+          <label>Last name column<input id="spreadsheetLastNameColumnInput" type="text" placeholder="Last Name"></label>
         </div>
         <div class="settings-inline-action"><small>Backlog rows marked as ignored are remembered in the project files.</small><button id="clearAlmBacklogIgnoredButton" class="text-button" type="button">Clear ignored backlog rows</button></div>
-      </section>
-      <section data-settings-panel="models" hidden>
-        <p class="settings-help">Select the model number you checked on the device when importing. Each model can choose one status for user deployments and one for location deployments; either status can be set to No suggestion.</p>
-        <div id="deviceModelMappings" class="device-model-mappings"></div>
-        <button id="addDeviceModelMappingButton" class="button secondary compact" type="button">Add model mapping</button>
       </section>
       <section data-settings-panel="statuses" hidden>
         <p class="settings-help">Choose which deployment statuses appear in the request editor and arrange their order. Hidden statuses remain available on existing requests.</p>
@@ -527,25 +541,6 @@
         </div>
       </section>
       <div class="modal-actions"><button class="button secondary" value="cancel">Cancel</button><button id="saveSettingsButton" class="button primary" value="default" type="button">Save settings</button></div>
-    </form>
-  </dialog>
-
-  <dialog id="modelStatusDialog" class="modal">
-    <form method="dialog" class="modal-card model-status-card">
-      <div class="modal-header"><h2>Suggest status</h2><button class="icon-button" value="cancel" aria-label="Close">×</button></div>
-      <p id="modelStatusIntro" class="model-status-intro"></p>
-      <div id="modelStatusDestinationFields" class="model-status-destination" hidden>
-        <span class="model-status-label">Destination</span>
-        <label class="radio-choice"><input type="radio" name="modelStatusDestination" value="user"><span>Deploy to a user</span></label>
-        <label class="radio-choice"><input type="radio" name="modelStatusDestination" value="location"><span>Deploy to a location</span></label>
-      </div>
-      <div id="modelStatusModelChoices" class="model-status-models"></div>
-      <div id="modelStatusSuggestion" class="model-status-suggestion" role="status" aria-live="polite"></div>
-      <div id="modelStatusError" class="inline-error" hidden></div>
-      <div class="modal-actions">
-        <button class="button secondary" value="cancel">Cancel</button>
-        <button id="applyModelStatusButton" class="button primary" value="default" type="submit" disabled>Apply status</button>
-      </div>
     </form>
   </dialog>
 
