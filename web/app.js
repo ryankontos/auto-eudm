@@ -3978,11 +3978,14 @@ function updateImportPrepareButton(payload = state.importPreview) {
 }
 
 function importPersonMarkup(request) {
-  const fullName = [request.first_name, request.last_name]
+  const username = String(request.username || request.user || "").trim();
+  const workbookName = [request.first_name, request.last_name]
     .map((value) => String(value || "").trim())
     .filter(Boolean)
     .join(" ");
-  const username = String(request.username || request.user || "").trim();
+  const verifiedPerson = confirmedPersonLabel(username, request.user_info);
+  const verifiedName = verifiedPerson.login ? verifiedPerson.fullName : "";
+  const fullName = workbookName || verifiedName;
   return `<div><small class="import-field-title">User</small>${fullName ? `<strong class="import-person-name">${escapeHtml(fullName)}</strong>` : ""}${username ? `<small class="import-person-username">${escapeHtml(username)}</small>` : `<small class="import-person-username">No username</small>`}</div>`;
 }
 
@@ -4865,6 +4868,8 @@ async function prepareImport() {
         group: "Deployments",
         source: `${state.workbook?.filename || "ALM Workbook"} · backlog · ${request.date}`,
         device_allocation: request.device_allocation || "",
+        first_name: request.first_name || "",
+        last_name: request.last_name || "",
         serial_validation: "valid",
         user_validation: "valid",
         user_info: request.user_info || null,

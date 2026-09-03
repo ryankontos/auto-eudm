@@ -534,7 +534,7 @@ class WorkbookUploadTests(unittest.TestCase):
         source = OpenPyXLWorkbook()
         source.active.title = "Bookings 2026"
         sheet = source.active
-        sheet.append(["Date", "Username", "SN", "OLD Device SN", "Attend", "Notes"])
+        sheet.append(["Date", "Username", "SN", "OLD Device SN", "Attend", "Notes", "First Name", "Last Name"])
         sheet.append([
             date(2025, 2, 3),
             "valid.user",
@@ -542,6 +542,8 @@ class WorkbookUploadTests(unittest.TestCase):
             "PENDING123",
             True,
             "New\n   Starter",
+            "Valid",
+            "User",
         ])
         sheet.append([
             date(2025, 2, 3),
@@ -550,6 +552,8 @@ class WorkbookUploadTests(unittest.TestCase):
             "PENDING456",
             True,
             "",
+            "Second",
+            "User",
         ])
         sheet.cell(3, 1).fill = PatternFill("solid", fgColor="FFFF0000")
         buffer = BytesIO()
@@ -568,6 +572,8 @@ class WorkbookUploadTests(unittest.TestCase):
             ["SERIAL123", "SERIAL456"],
         )
         self.assertTrue(prepared["requests"][0]["new_joiner"])
+        self.assertEqual(prepared["requests"][0]["first_name"], "Valid")
+        self.assertEqual(prepared["requests"][0]["last_name"], "User")
 
         # The focused XML reader and the compatibility reader should produce
         # the same import rows, including the date-section grouping metadata.

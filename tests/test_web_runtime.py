@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
+from io import BytesIO
 import json
 from pathlib import Path
 import tempfile
@@ -9,6 +10,7 @@ import threading
 from types import SimpleNamespace
 import unittest
 from unittest import mock
+import zipfile
 
 from auto_eudm import eudm_request as eudm
 from auto_eudm import eudm_inventory_import as inventory
@@ -225,6 +227,33 @@ class RequestStatusPreferenceTests(unittest.TestCase):
     def test_local_workbook_path_must_be_an_excel_workbook(self) -> None:
         with self.assertRaisesRegex(eudm.EUDMError, "xlsx or .xlsm"):
             self.app._normalise_local_workbook_path("~/OneDrive/ALM.csv")
+
+    def test_local_workbook_read_rejects_an_unhydrated_onedrive_file(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "ALM.xlsx"
+            path.write_bytes(b"not a downloaded workbook")
+
+            with self.assertRaisesRegex(eudm.EUDMError, "not a complete Excel workbook"):
+                self.app._read_local_workbook_payload(
+                    path,
+                    sync_before_load=False,
+                )
+
+    def test_local_workbook_read_accepts_a_complete_office_package(self) -> None:
+        package = BytesIO()
+        with zipfile.ZipFile(package, "w") as workbook:
+            workbook.writestr("[Content_Types].xml", "<Types />")
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "ALM.xlsx"
+            path.write_bytes(package.getvalue())
+
+            payload, signature = self.app._read_local_workbook_payload(
+                path,
+                sync_before_load=False,
+            )
+
+        self.assertEqual(payload, package.getvalue())
+        self.assertEqual(signature[0], len(payload))
 
 
 class SearchProbePoolTests(unittest.TestCase):

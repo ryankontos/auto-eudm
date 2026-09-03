@@ -8,6 +8,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import hashlib
+from io import BytesIO
 import json
 from pathlib import Path
 import subprocess
@@ -19,6 +20,7 @@ import urllib.error
 import urllib.request
 import uuid
 import webbrowser
+import zipfile
 
 from . import eudm_inventory_import as inventory
 from . import eudm_request as eudm
@@ -27,6 +29,7 @@ from .eudm_config import AppConfig
 from .web_models import (
     CITIES,
     LOCATION_STATUSES,
+    MAX_WORKBOOK_BYTES,
     USER_STATUSES,
     Location,
     RequestSpec,
@@ -1336,13 +1339,18 @@ class Application:
                 before = path.stat()
                 if not path.is_file():
                     raise OSError("The configured path is not a file.")
-                if before.st_size > inventory.MAX_WORKBOOK_BYTES:
+                if before.st_size > MAX_WORKBOOK_BYTES:
                     raise eudm.EUDMError(
                         "The ALM Workbook is larger than the 100 MB local limit."
                     )
                 payload = path.read_bytes()
                 if not payload:
                     raise OSError("The workbook is empty.")
+                if not zipfile.is_zipfile(BytesIO(payload)):
+                    raise OSError(
+                        "The file is not a complete Excel workbook yet. "
+                        "Open it once in Excel or enable the OneDrive freshness check."
+                    )
                 signature = self._local_workbook_signature(path)
                 if signature is None:
                     raise OSError("The file disappeared while it was being read.")
@@ -2093,9 +2101,13 @@ class Application:
         except eudm.EUDMError as exc:
             job.fail(str(exc))
         except Exception:
+            run_reporting.exception(
+                "Could not inspect the configured SharePoint ALM workbook"
+            )
             job.fail(
                 "The SharePoint ALM workbook could not be read. "
-                "Check the saved path and try again."
+                "Open the file once in Excel to make sure OneDrive has downloaded it, "
+                "then try again."
             )
 
     def _read_import(
@@ -2152,6 +2164,7 @@ class Application:
         except eudm.EUDMError as exc:
             job.fail(str(exc))
         except Exception:
+            run_reporting.exception("Could not parse an ALM workbook")
             job.fail("The workbook could not be read. Choose an unencrypted .xlsx or .xlsm file.")
 
     def import_status(self, job_id: str) -> dict[str, Any]:

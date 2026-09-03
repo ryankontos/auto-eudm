@@ -305,6 +305,7 @@ input, select, textarea {
   border-radius: 4px;
   color: var(--ink);
   background: var(--surface);
+  transition: border-color .14s ease, background-color .14s ease, box-shadow .14s ease;
 }
 input, select { min-height: 36px; padding: 6px 9px; }
 textarea { width: 100%; padding: 9px; resize: vertical; }
@@ -363,6 +364,7 @@ input:hover, select:hover, textarea:hover { border-color: #99a8b5; }
   background: var(--primary-blue);
   font-size: 25px;
   line-height: 1;
+  transition: background-color .14s ease, border-color .14s ease, transform .14s ease;
 }
 .new-request-button:hover { background: var(--blue-dark); }
 
@@ -373,9 +375,10 @@ input:hover, select:hover, textarea:hover { border-color: #99a8b5; }
   justify-content: center;
   padding: 0 15px;
   border: 1px solid transparent;
-  border-radius: 4px;
+  border-radius: 5px;
   font-weight: 650;
   text-decoration: none;
+  transition: color .14s ease, border-color .14s ease, background-color .14s ease, box-shadow .14s ease;
 }
 .button.primary { color: #fff; border-color: var(--blue-dark); background: var(--primary-blue); }
 .button.primary:hover { background: var(--blue-dark); }
@@ -693,8 +696,8 @@ fieldset { margin: 0; padding: 0; border: 0; }
   max-height: calc(100vh - 24px);
   max-width: none;
   padding: 0;
-  border: 0;
-  border-radius: 7px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
   box-shadow: var(--shadow);
   color: var(--ink);
   overflow: hidden;
@@ -720,6 +723,28 @@ fieldset { margin: 0; padding: 0; border: 0; }
   padding: 24px 28px 0;
   overflow: hidden;
 }
+#importDialog .modal-header { margin-bottom: 16px; }
+#importDialog .modal-header h2 { font-size: 23px; letter-spacing: -.015em; }
+#importDialog .wizard-steps {
+  gap: 5px;
+  margin-bottom: 18px;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-alt);
+}
+#importDialog .wizard-steps li {
+  min-height: 38px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 5px;
+}
+#importDialog .wizard-steps li.active {
+  color: var(--ink);
+  background: var(--surface);
+  box-shadow: 0 1px 3px rgba(32, 46, 59, .1);
+}
+#importDialog .wizard-steps li.complete { color: var(--muted); }
 #importDialog .import-stage {
   display: flex;
   flex: 1 1 0;
@@ -928,6 +953,16 @@ fieldset { margin: 0; padding: 0; border: 0; }
   min-height: 190px; display: flex; flex-direction: column; align-items: center; justify-content: center;
   border: 1px dashed var(--line-strong); border-radius: 6px; color: var(--muted); background: var(--surface-alt); cursor: pointer;
 }
+#importDialog .file-drop {
+  min-height: 250px;
+  margin-top: 8px;
+  border-width: 2px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-alt) 82%, var(--surface));
+  transition: border-color .15s ease, background .15s ease, box-shadow .15s ease;
+}
+#importDialog .file-drop strong { margin-top: 10px; font-size: 17px; }
+#importDialog .file-drop small { margin-top: 4px; font-size: 12px; }
 .file-drop:hover { border-color: var(--blue); background: var(--blue-soft); }
 #importFileChooser.is-dragging .file-drop { border-color: var(--blue); background: var(--blue-soft); box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 16%, transparent); }
 .file-drop strong { color: var(--ink); margin-top: 8px; }
@@ -1108,15 +1143,18 @@ fieldset { margin: 0; padding: 0; border: 0; }
 .column-map select { width: 100%; margin-top: 6px; font-size: 14px; }
 .column-map-sheet { grid-column: 1 / -1; }
 .import-preview-heading {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 9px;
+  gap: 10px 16px;
+  margin-bottom: 12px;
+  padding: 2px 2px 12px;
+  border-bottom: 1px solid var(--line);
 }
 .import-preview-heading strong,
 .import-preview-heading small { display: block; }
-.import-preview-heading small { color: var(--muted); margin-top: 2px; }
+.import-preview-heading > div:first-child > strong { font-size: 16px; }
+.import-preview-heading small { color: var(--muted); margin-top: 3px; font-size: 12px; }
 .import-preview-tools { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
 .import-preview-tools .button { white-space: nowrap; }
 .count-badge {
@@ -1147,7 +1185,9 @@ fieldset { margin: 0; padding: 0; border: 0; }
 .import-preview-section {
   overflow: hidden;
   border: 1px solid var(--line);
-  border-radius: 5px;
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 1px 2px rgba(32, 46, 59, .05);
 }
 .import-group-heading {
   position: sticky;
@@ -1160,11 +1200,12 @@ fieldset { margin: 0; padding: 0; border: 0; }
   min-height: 42px;
   padding: 7px 10px;
   border-bottom: 1px solid var(--line);
-  background: var(--surface-alt);
+  background: var(--surface-muted);
 }
 .import-group-heading strong,
 .import-group-heading small { display: block; }
-.import-group-heading small { margin-top: 1px; color: var(--muted); font-size: 10px; }
+.import-group-heading strong { font-size: 13px; }
+.import-group-heading small { margin-top: 2px; color: var(--muted); font-size: 11px; }
 .import-group-actions {
   display: flex;
   gap: 9px;
@@ -1196,6 +1237,7 @@ fieldset { margin: 0; padding: 0; border: 0; }
   padding: 7px 9px;
   border-bottom: 1px solid var(--line);
 }
+.import-preview-row:not(.not-attending):not(.excluded):hover { background: var(--surface-hover); }
 .import-preview-row:last-child { border-bottom: 0; }
 .include-control { display: flex; align-items: center; gap: 5px; color: var(--subtle); font-variant-numeric: tabular-nums; }
 .include-control input { min-height: auto; }
@@ -1205,14 +1247,14 @@ fieldset { margin: 0; padding: 0; border: 0; }
 .import-duplicate-warning { color: var(--muted) !important; font-style: italic; }
 .import-preview-row strong,
 .import-preview-row small { display: block; min-width: 0; overflow-wrap: anywhere; }
-.import-preview-row small { color: var(--muted); font-size: 10px; }
-.import-preview-row .import-field-title { margin-bottom: 3px; color: var(--ink); font-size: 9px; font-weight: 750; letter-spacing: .04em; text-transform: uppercase; }
+.import-preview-row small { color: var(--muted); font-size: 11px; }
+.import-preview-row .import-field-title { margin-bottom: 4px; color: var(--subtle); font-size: 10px; font-weight: 750; letter-spacing: .055em; text-transform: uppercase; }
 .import-preview-row .import-device-allocation { margin-top: 3px; color: var(--muted); font-weight: 500; }
-.import-preview-row .import-person-name { font-size: 12px; font-weight: 700; }
-.import-preview-row .import-person-username { color: var(--muted); font-size: 11px; font-weight: 500; }
+.import-preview-row .import-person-name { font-size: 14px; font-weight: 700; }
+.import-preview-row .import-person-username { margin-top: 1px; color: var(--muted); font-size: 12px; font-weight: 500; }
 .import-return-warning { margin-top: 4px; color: var(--amber-text) !important; font-weight: 700; }
 .import-new-joiner { margin-top: 4px; color: var(--green) !important; font-weight: 700; }
-.import-preview-row select { width: 100%; min-height: 32px; font-size: 11px; }
+.import-preview-row select { width: 100%; min-height: 38px; font-size: 12px; }
 .import-status-control { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px; align-items: center; }
 .import-status-control .button { min-width: 62px; padding-right: 8px; padding-left: 8px; font-size: 11px; }
 .fixed-status { color: var(--ink); font-size: 11px; font-weight: 650; }
@@ -1574,8 +1616,9 @@ fieldset { margin: 0; padding: 0; border: 0; }
   .pairs-location-fields h3 { grid-column: auto; }
   .quick-import-row-actions { grid-template-columns: minmax(0, 1fr) 30px; }
   .quick-import-status { grid-column: 1 / -1; }
-  .import-preview-heading { flex-wrap: wrap; }
-  .import-preview-tools { width: 100%; justify-content: flex-start; }
+  .import-preview-heading { grid-template-columns: minmax(0, 1fr) auto; }
+  .import-preview-tools { grid-column: 1 / -1; width: 100%; justify-content: flex-start; }
+  #importDialog .file-drop { min-height: 190px; margin-top: 0; }
   .import-preview-row { grid-template-columns: 38px minmax(0, 1fr); }
   .import-preview-row > div:nth-child(3),
   .import-preview-row > div:nth-child(4) { grid-column: 2; }
