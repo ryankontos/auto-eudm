@@ -5726,8 +5726,14 @@ function bindEvents() {
   });
   importForm.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" || event.isComposing) return;
-    event.preventDefault();
     const target = event.target;
+    const inputType = target instanceof HTMLInputElement ? String(target.type || "text").toLowerCase() : "";
+    const allowsNativeEnter = target instanceof HTMLButtonElement
+      || target instanceof HTMLSelectElement
+      || target instanceof HTMLTextAreaElement
+      || (target instanceof HTMLInputElement && ["button", "submit", "reset", "file"].includes(inputType));
+    if (allowsNativeEnter) return;
+    event.preventDefault();
     const retry = target instanceof Element
       ? target.closest(".import-inline-edit")?.querySelector("[data-import-retry]")
       : null;
@@ -5795,8 +5801,8 @@ function bindEvents() {
     }
     importDroppedWorkbook(files[0]);
   });
-  $("#changeFileButton").addEventListener("click", resetImportDialog);
-  $("#changeMappedFileButton").addEventListener("click", resetImportDialog);
+  $("#changeFileButton").addEventListener("click", () => resetImportDialog());
+  $("#changeMappedFileButton").addEventListener("click", () => resetImportDialog());
   $("#changeColumnsButton").addEventListener("click", openImportColumnMapping);
   $("#importMapSheet").addEventListener("change", renderImportColumnMap);
   [

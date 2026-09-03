@@ -718,31 +718,36 @@ fieldset { margin: 0; padding: 0; border: 0; }
   min-height: 0;
   max-height: none;
   padding: 24px 28px 0;
-  overflow-x: hidden;
-  overflow-y: auto;
+  overflow: hidden;
 }
 #importDialog .import-stage {
   display: flex;
-  flex: 1 1 auto;
+  flex: 1 1 0;
   flex-direction: column;
   min-height: 0;
+  overflow: hidden;
 }
 #importDialog .import-stage-content {
   display: flex;
-  flex: 1 1 auto;
+  flex: 1 1 0;
   flex-direction: column;
   min-height: 0;
+  overflow: hidden;
 }
 #importDialog #importChoose:not([hidden]),
 #importDialog #importConfigure:not([hidden]) {
   width: min(1200px, 100%);
+  max-height: 100%;
   margin-inline: auto;
+  padding-right: 4px;
+  overflow-y: auto;
 }
 #importDialog #importPreview:not([hidden]) {
   display: flex;
-  flex: 1 1 auto;
+  flex: 1 1 0;
   flex-direction: column;
   min-height: 0;
+  overflow: hidden;
 }
 .modal-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
 .modal-header h2 { margin: 0; font-size: 20px; }
@@ -1125,12 +1130,19 @@ fieldset { margin: 0; padding: 0; border: 0; }
 }
 .import-preview-list {
   display: grid;
-  flex: 1 1 auto;
+  flex: 1 1 0;
   min-height: 0;
   gap: 10px;
   max-height: none;
-  overflow-y: auto;
-  padding-right: 2px;
+  align-content: start;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
+  scrollbar-gutter: stable;
+}
+.import-preview-list:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
 }
 .import-preview-section {
   overflow: hidden;
@@ -1520,9 +1532,22 @@ fieldset { margin: 0; padding: 0; border: 0; }
     overflow-y: auto;
   }
   #importDialog .import-stage,
-  #importDialog .import-stage-content { display: block; }
-  #importDialog #importPreview:not([hidden]) { display: block; }
+  #importDialog .import-stage-content {
+    display: block;
+    overflow: visible;
+  }
+  #importDialog #importChoose:not([hidden]),
+  #importDialog #importConfigure:not([hidden]) {
+    max-height: none;
+    padding-right: 0;
+    overflow: visible;
+  }
+  #importDialog #importPreview:not([hidden]) {
+    display: block;
+    overflow: visible;
+  }
   #importDialog .import-preview-list {
+    min-height: 160px;
     max-height: min(600px, calc(100vh - 250px));
   }
   #importDialog .modal-actions {
