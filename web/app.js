@@ -1622,6 +1622,11 @@ function startNewRequest() {
   setTimeout(() => focusRequestSerialInput(state.newRequest), 0);
 }
 
+function startNewBulkRequest() {
+  startNewRequest();
+  if (state.newRequest) changeRequestSize("bulk");
+}
+
 function saveNewRequest() {
   const request = state.newRequest;
   if (!request) return;
@@ -6137,6 +6142,23 @@ function bindEvents() {
     const editable = event.target instanceof Element
       && Boolean(event.target.closest("input, textarea, select, [contenteditable='true']"));
     const openDialog = $("dialog[open]");
+    if (!editable && !openDialog && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
+      if (key === "n") {
+        event.preventDefault();
+        startNewRequest();
+        return;
+      }
+      if (key === "b") {
+        event.preventDefault();
+        startNewBulkRequest();
+        return;
+      }
+      if (key === "a") {
+        event.preventDefault();
+        openAlmWorkbookImport();
+        return;
+      }
+    }
     if (!modifier || event.altKey || editable || $("#importDialog").open
       || (openDialog && !["requestCreateDialog", "pasteDialog"].includes(openDialog.id))) return;
     const redo = key === "y" || (key === "z" && event.shiftKey);
