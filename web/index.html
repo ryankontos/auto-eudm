@@ -32,25 +32,25 @@
       <div class="rail-section">
         <h2>Import</h2>
         <button id="pastePairsButton" class="tool-button" type="button">
-          <span class="tool-icon import-icon" aria-hidden="true">↓</span>
+          <span class="tool-icon import-icon" aria-hidden="true"></span>
           <span><strong>Quick import</strong><small>Add devices as you go</small></span>
         </button>
         <button id="importSheetButton" class="tool-button" type="button">
-          <span class="tool-icon import-icon" aria-hidden="true">↓</span>
+          <span class="tool-icon import-icon" aria-hidden="true"></span>
           <span><strong>Import ALM Workbook</strong><small>Import a local spreadsheet</small></span>
         </button>
         <button id="almBacklogButton" class="tool-button" type="button">
-          <span class="tool-icon import-icon" aria-hidden="true">↗</span>
+          <span class="tool-icon import-icon backlog-icon" aria-hidden="true"></span>
           <span><strong>ALM deployment backlog</strong><small>Find undeployed devices</small></span>
         </button>
         <button id="resumeLatestImportButton" class="tool-button resume-import-tool" type="button" hidden>
-          <span class="tool-icon" aria-hidden="true">↻</span>
+          <span class="tool-icon resume-icon" aria-hidden="true"></span>
           <span><strong id="resumeImportDraftTitle">Resume ALM import</strong><small id="resumeImportDraftDetail"></small></span>
         </button>
       </div>
 
       <div class="rail-bottom-action">
-        <button id="settingsButton" class="tool-button settings-tool-button" type="button"><span class="tool-icon" aria-hidden="true">⚙</span><span><strong>Settings</strong></span></button>
+        <button id="settingsButton" class="tool-button settings-tool-button" type="button"><span class="tool-icon settings-icon" aria-hidden="true"></span><span><strong>Settings</strong></span></button>
       </div>
     </aside>
 
@@ -61,12 +61,12 @@
           <p id="queueCounts">0 requests</p>
         </div>
         <div class="queue-actions">
-          <button id="newRequestButton" class="new-request-button" type="button" aria-label="Prepare a request" title="Prepare a request"><span aria-hidden="true">+</span></button>
+          <button id="newRequestButton" class="new-request-button add-icon" type="button" aria-label="Prepare a request" title="Prepare a request"></button>
         </div>
       </div>
 
       <div id="queueWorkbookDrop" class="queue-workbook-drop" aria-hidden="true" hidden>
-        <span class="tool-icon import-icon" aria-hidden="true">↓</span>
+        <span class="tool-icon import-icon" aria-hidden="true"></span>
         <strong>Import ALM Workbook</strong>
         <small>Drop an .xlsx or .xlsm file into the queue</small>
       </div>
@@ -169,7 +169,8 @@
               </div>
             </div>
             <div id="bulkSerialPrefixWarning" class="bulk-serial-prefix-warning" role="status" hidden>
-              <span>Do you want to remove the leading S from <strong id="bulkSerialPrefixCount">0</strong> MacBook serials?</span>
+              <span class="bulk-serial-warning-symbol" aria-hidden="true">!</span>
+              <span>It is <strong><u>strongly suggested</u></strong> that you remove the leading S from these MacBook serials.</span>
               <button id="removeBulkSerialPrefixesButton" class="button secondary compact" type="button">Remove</button>
             </div>
           </div>
@@ -292,7 +293,7 @@
         <div class="quick-import-add always-visible">
           <input id="pairsAddUsername" type="text" autocomplete="off" spellcheck="false" placeholder="Username (optional)" aria-label="Username">
           <input id="pairsAddSerial" type="text" autocomplete="off" spellcheck="false" placeholder="Serial number" aria-label="Serial number">
-          <button id="pairsConfirmAddButton" class="button secondary compact" type="button" aria-label="Add device">+</button>
+          <button id="pairsConfirmAddButton" class="button secondary compact add-icon" type="button" aria-label="Add device"></button>
         </div>
         <button id="pairsTextModeButton" class="text-button" type="button">Add a list instead</button>
         <div id="pairsTextMode" hidden>
@@ -369,7 +370,7 @@
             </div>
             <div id="importFileChooser">
               <label class="file-drop" for="workbookInput">
-                <span class="file-symbol" aria-hidden="true">↓</span>
+                <span class="file-symbol" aria-hidden="true"></span>
                 <strong>Import an ALM Workbook</strong>
                 <small>.xlsx or .xlsm, up to 100 MB</small>
                 <input id="workbookInput" type="file" accept=".xlsx,.xlsm">

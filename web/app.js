@@ -1317,7 +1317,6 @@ function renderBulkSerialEditor(request) {
     : "";
   const prefixCount = removableBulkSerialPrefixCount(request.serials);
   $("#bulkSerialPrefixWarning").hidden = prefixCount === 0;
-  $("#bulkSerialPrefixCount").textContent = String(prefixCount);
   renderBulkSerialList(request);
 }
 
