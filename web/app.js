@@ -5702,17 +5702,19 @@ function bindEvents() {
   });
   window.addEventListener("beforeunload", () => saveCurrentImportDraft({ immediate: true }));
   const importForm = $("#importDialog form");
+  const importDialog = $("#importDialog");
   importForm.addEventListener("submit", (event) => {
     // The dialog form uses method="dialog" for the intentional Cancel action.
     // Prevent implicit Enter submission from closing the importer and losing
     // an in-progress workbook review.
     if (event.submitter?.value !== "cancel") event.preventDefault();
   });
-  importForm.addEventListener("keydown", (event) => {
+  importDialog.addEventListener("keydown", (event) => {
     const key = String(event.key || "").toLowerCase();
     const target = event.target;
-    const editingText = target instanceof HTMLInputElement
-      || target instanceof HTMLTextAreaElement
+    const inputType = target instanceof HTMLInputElement ? String(target.type || "text").toLowerCase() : "";
+    const editingText = target instanceof HTMLTextAreaElement
+      || (target instanceof HTMLInputElement && !["checkbox", "radio", "range", "file", "button", "submit", "reset", "color"].includes(inputType))
       || target?.isContentEditable;
     if (state.importPreview && (event.metaKey || event.ctrlKey) && !event.altKey
       && !editingText && (key === "z" || key === "y")) {
@@ -5721,14 +5723,16 @@ function bindEvents() {
       else undoImportEdit();
       return;
     }
+  });
+  importForm.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" || event.isComposing) return;
     event.preventDefault();
+    const target = event.target;
     const retry = target instanceof Element
       ? target.closest(".import-inline-edit")?.querySelector("[data-import-retry]")
       : null;
     if (retry) retry.click();
   });
-  const importDialog = $("#importDialog");
   let importDropDepth = 0;
   importDialog.addEventListener("dragenter", (event) => {
     if (!state.config?.spreadsheet_import_enabled || !fileDrag(event)) return;

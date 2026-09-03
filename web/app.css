@@ -701,13 +701,49 @@ fieldset { margin: 0; padding: 0; border: 0; }
 }
 #pasteDialog { width: min(650px, calc(100vw - 24px)); }
 .modal.wide-modal { width: min(760px, calc(100vw - 24px)); }
-#importDialog.modal.wide-modal { width: min(1220px, calc(100vw - 24px)); }
+#importDialog.modal.wide-modal {
+  width: min(1800px, calc(100vw - 32px));
+  height: min(900px, calc(100vh - 32px));
+  max-height: calc(100vh - 32px);
+}
 #historyDialog { width: min(920px, calc(100vw - 24px)); }
 .modal::backdrop { background: rgba(0, 0, 0, .62); }
 .modal-card { width: 100%; min-width: 0; max-height: calc(100vh - 24px); padding: 20px; overflow-x: hidden; overflow-y: auto; background: var(--surface); }
 .modal-card.wide,
 .modal-card.extra-wide { width: 100%; max-width: none; }
-#importDialog .modal-card { min-height: 0; }
+#importDialog .modal-card {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  max-height: none;
+  padding: 24px 28px 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+#importDialog .import-stage {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+#importDialog .import-stage-content {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+#importDialog #importChoose:not([hidden]),
+#importDialog #importConfigure:not([hidden]) {
+  width: min(1200px, 100%);
+  margin-inline: auto;
+}
+#importDialog #importPreview:not([hidden]) {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
 .modal-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
 .modal-header h2 { margin: 0; font-size: 20px; }
 .modal-card > p { margin: 0 0 10px; color: var(--muted); }
@@ -1089,8 +1125,10 @@ fieldset { margin: 0; padding: 0; border: 0; }
 }
 .import-preview-list {
   display: grid;
+  flex: 1 1 auto;
+  min-height: 0;
   gap: 10px;
-  max-height: min(420px, 44vh);
+  max-height: none;
   overflow-y: auto;
   padding-right: 2px;
 }
@@ -1206,10 +1244,10 @@ fieldset { margin: 0; padding: 0; border: 0; }
 }
 .import-show-more:hover { border-color: var(--blue); background: var(--blue-soft); }
 #importDialog .modal-actions {
-  position: sticky;
-  bottom: -20px;
-  margin-bottom: -20px;
-  padding: 14px 0 20px;
+  flex: 0 0 auto;
+  position: static;
+  margin: 0;
+  padding: 14px 0 24px;
   border-top: 1px solid var(--line);
   background: var(--surface);
 }
@@ -1436,6 +1474,11 @@ fieldset { margin: 0; padding: 0; border: 0; }
 .import-check-failed { color: var(--red); }
 .import-inline-edit { display: grid; grid-template-columns: minmax(90px, 1fr) minmax(90px, 1fr) auto; gap: 5px; margin-top: 7px; }
 .import-inline-edit input { min-width: 0; padding: 5px 6px; font-size: 12px; }
+@media (min-width: 1200px) {
+  .import-preview-list { gap: 12px; }
+  .import-group-heading { min-height: 48px; padding: 9px 14px; }
+  .import-preview-row { gap: 12px; min-height: 58px; padding: 9px 13px; }
+}
 @media (max-width: 1120px) {
   .workspace { --inspector-width: 350px; grid-template-columns: 200px minmax(0, 1fr) var(--inspector-width); }
   .workspace.inspector-closed { grid-template-columns: 200px minmax(0, 1fr) 0; }
@@ -1464,6 +1507,30 @@ fieldset { margin: 0; padding: 0; border: 0; }
   .modal.wide-modal,
   .progress-modal { width: calc(100vw - 16px); }
   .modal-card { padding: 15px; }
+  #importDialog.modal.wide-modal {
+    width: calc(100vw - 16px);
+    height: auto;
+    max-height: calc(100vh - 16px);
+  }
+  #importDialog .modal-card {
+    height: auto;
+    max-height: calc(100vh - 16px);
+    padding: 15px;
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+  #importDialog .import-stage,
+  #importDialog .import-stage-content { display: block; }
+  #importDialog #importPreview:not([hidden]) { display: block; }
+  #importDialog .import-preview-list {
+    max-height: min(600px, calc(100vh - 250px));
+  }
+  #importDialog .modal-actions {
+    position: sticky;
+    bottom: -15px;
+    margin-bottom: -15px;
+    padding: 14px 0 15px;
+  }
   .two-column-form,
   .choice-cards,
   .column-map { grid-template-columns: 1fr; }
