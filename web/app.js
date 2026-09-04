@@ -24,6 +24,7 @@ const state = {
   pollStatusMessage: "",
   submissionStarting: false,
   notifiedJobs: new Set(),
+  celebratedJobs: new Set(),
   connectionHeartbeatTimer: null,
   liveOptionsLoaded: false,
   pasteLocation: null,
@@ -43,6 +44,8 @@ const state = {
   appRedoStack: [],
   appHistoryApplying: false,
   appInputHistoryTimers: new Map(),
+  commandPaletteIndex: 0,
+  queueSortable: null,
   queueDropDepth: 0,
   validationTimers: new Map(),
   backlogValidationIds: new Set(),
@@ -81,6 +84,91 @@ const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 
+function iconMarkup(name, className = "") {
+  const classes = className ? `ui-icon ${className}` : "ui-icon";
+  return `<i data-lucide="${escapeHtml(name)}" class="${classes}" aria-hidden="true"></i>`;
+}
+
+function refreshIcons(root = document) {
+  if (!root || !window.lucide?.createIcons) return;
+  try {
+    window.lucide.createIcons({ root });
+  } catch (error) {
+    // Icons are decorative. A failed enhancement should never stop the UI.
+    console.warn("Could not enhance interface symbols.", error);
+  }
+}
+
+function setButtonLabel(buttonOrSelector, text) {
+  const button = typeof buttonOrSelector === "string" ? $(buttonOrSelector) : buttonOrSelector;
+  if (!button) return;
+  const label = button.querySelector("[data-button-label]");
+  if (label) label.textContent = text;
+  else button.textContent = text;
+}
+
+function commandPaletteActions() {
+  const reviewAvailable = Boolean(elements.reviewButton && !elements.reviewButton.disabled);
+  const themeIsDark = effectiveTheme() === "dark";
+  return [
+    { label: "New request", detail: "Prepare a single-device request", icon: "plus", shortcut: "N", run: startNewRequest },
+    { label: "New bulk request", detail: "Prepare a multi-device request", icon: "layers-2", shortcut: "B", run: startNewBulkRequest },
+    { label: "Quick import", detail: "Add devices from a list", icon: "list-plus", shortcut: "I", run: openPasteDialog },
+    { label: "Import ALM Workbook", detail: "Review an ALM spreadsheet", icon: "file-spreadsheet", shortcut: "A", run: openAlmWorkbookImport },
+    ...(reviewAvailable ? [{ label: "Review & submit", detail: `Review ${state.queue.length} queued request${state.queue.length === 1 ? "" : "s"}`, icon: "send", shortcut: "⌥ Enter", run: openReview }] : []),
+    { label: "Request history", detail: "Search submitted requests", icon: "history", shortcut: "⌥ ⇧ H", run: openHistory },
+    { label: "Settings", detail: "Change app and import settings", icon: "settings-2", shortcut: "⌥ ,", run: openSettings },
+    { label: themeIsDark ? "Use light appearance" : "Use dark appearance", detail: "Change the interface theme", icon: themeIsDark ? "sun" : "moon", shortcut: "", run: toggleTheme },
+    { label: "Keyboard shortcuts", detail: "See the quick actions", icon: "keyboard", shortcut: "?", run: openShortcuts },
+  ];
+}
+
+function filteredCommandPaletteActions() {
+  const query = String($("#commandPaletteInput")?.value || "").trim().toLowerCase();
+  return commandPaletteActions().filter((action) => !query
+    || `${action.label} ${action.detail}`.toLowerCase().includes(query));
+}
+
+function renderCommandPalette() {
+  const list = $("#commandPaletteList");
+  if (!list) return;
+  const actions = filteredCommandPaletteActions();
+  if (!actions.length) {
+    state.commandPaletteIndex = 0;
+    list.innerHTML = '<div class="command-palette-empty">No matching actions</div>';
+    return;
+  }
+  state.commandPaletteIndex = Math.min(state.commandPaletteIndex, actions.length - 1);
+  list.innerHTML = actions.map((action, index) => `
+    <button class="command-item ${index === state.commandPaletteIndex ? "selected" : ""}" type="button" role="option" aria-selected="${index === state.commandPaletteIndex}" data-command-index="${index}">
+      ${iconMarkup(action.icon, "command-item-icon")}
+      <span class="command-item-copy"><strong>${escapeHtml(action.label)}</strong><small>${escapeHtml(action.detail)}</small></span>
+      ${action.shortcut ? `<kbd>${escapeHtml(action.shortcut)}</kbd>` : ""}
+    </button>`).join("");
+  list.querySelectorAll("[data-command-index]").forEach((button) => {
+    button.addEventListener("click", () => runCommandPaletteItem(Number(button.dataset.commandIndex)));
+  });
+  refreshIcons(list);
+}
+
+function runCommandPaletteItem(index) {
+  const action = filteredCommandPaletteActions()[index];
+  if (!action) return;
+  $("#commandPaletteDialog")?.close();
+  action.run();
+}
+
+function openCommandPalette() {
+  if ($("#connectionDialog")?.open) return;
+  const dialog = $("#commandPaletteDialog");
+  if (!dialog) return;
+  state.commandPaletteIndex = 0;
+  $("#commandPaletteInput").value = "";
+  renderCommandPalette();
+  if (!dialog.open) dialog.showModal();
+  requestAnimationFrame(() => $("#commandPaletteInput")?.focus());
+}
+
 const elements = {
   workspace: $(".workspace"),
   concurrency: $("#concurrencyInput"),
@@ -92,6 +180,7 @@ const elements = {
   queueValidationNotice: $("#queueValidationNotice"),
   queueValidationMessage: $("#queueValidationMessage"),
   submissionNotice: $("#submissionNotice"),
+  submissionNoticeState: $(".submission-notice-state"),
   submissionNoticeTitle: $("#submissionNoticeTitle"),
   submissionNoticeDetail: $("#submissionNoticeDetail"),
   connectionDialog: $("#connectionDialog"),
@@ -163,7 +252,7 @@ function configureConcurrency(defaultValue) {
 function requestIdDisplay(requestId, className) {
   if (!requestId) return "";
   const id = escapeHtml(requestId);
-  return `<span class="${className}"><span>Request ID</span><strong>${id}</strong><button class="copy-request-id" type="button" data-copy-request-id="${id}" aria-label="Copy request ID ${id}" title="Copy request ID">Copy</button></span>`;
+  return `<span class="${className}"><span>Request ID</span><strong>${id}</strong><button class="copy-request-id" type="button" data-copy-request-id="${id}" aria-label="Copy request ID ${id}" title="Copy request ID">${iconMarkup("copy")}<span class="copy-request-label">Copy</span></button></span>`;
 }
 
 async function copyRequestId(button) {
@@ -183,10 +272,11 @@ async function copyRequestId(button) {
       input.remove();
       if (!copied) throw new Error("Copy was not available.");
     }
-    button.textContent = "Copied";
+    const label = button.querySelector(".copy-request-label");
+    if (label) label.textContent = "Copied";
     button.classList.add("copied");
     window.setTimeout(() => {
-      button.textContent = "Copy";
+      if (label) label.textContent = "Copy";
       button.classList.remove("copied");
     }, 1200);
   } catch (_) {
@@ -217,7 +307,8 @@ function toast(message, type = "") {
   }
   const node = document.createElement("div");
   node.className = `toast ${type}`;
-  node.textContent = message;
+  const iconName = type === "success" ? "circle-check" : type === "error" ? "triangle-alert" : "info";
+  node.innerHTML = `${iconMarkup(iconName, "toast-icon")}<span>${escapeHtml(message)}</span>`;
   node.dataset.message = String(message);
   node.dataset.type = type;
   node.setAttribute("role", type === "error" ? "alert" : "status");
@@ -232,6 +323,7 @@ function toast(message, type = "") {
     if (["Enter", " ", "Escape"].includes(event.key)) dismiss();
   });
   region.append(node);
+  refreshIcons(node);
   node.toastTimer = window.setTimeout(() => node.remove(), 4300);
 }
 
@@ -559,11 +651,12 @@ function renderRequestStatusSettings() {
           <span>${escapeHtml(option.label)}<small>${kind} deployment</small></span>
         </label>
         <div class="request-status-order">
-          <button class="icon-button" type="button" data-request-status-move="up" aria-label="Move ${escapeHtml(option.label)} up" title="Move up">↑</button>
-          <button class="icon-button" type="button" data-request-status-move="down" aria-label="Move ${escapeHtml(option.label)} down" title="Move down">↓</button>
+          <button class="icon-button" type="button" data-request-status-move="up" aria-label="Move ${escapeHtml(option.label)} up" title="Move up">${iconMarkup("chevron-up")}</button>
+          <button class="icon-button" type="button" data-request-status-move="down" aria-label="Move ${escapeHtml(option.label)} down" title="Move down">${iconMarkup("chevron-down")}</button>
         </div>
       </div>`;
   }).join("");
+  refreshIcons(list);
 }
 
 function readRequestStatusSettings() {
@@ -1110,6 +1203,35 @@ function renderReturningUserInfo(request) {
   panel.innerHTML = `<strong>Selected user</strong><span>${escapeHtml(info.login || request.returning_user)}</span><small>${escapeHtml(values.join(" · "))}</small>${unknown ? "<em>Some details are unknown. Verify the user before submitting.</em>" : ""}`;
 }
 
+function syncQueueSorting() {
+  if (!elements.queueBody || !window.Sortable) return;
+  if (!state.queueSortable) {
+    state.queueSortable = new window.Sortable(elements.queueBody, {
+      animation: 180,
+      easing: "cubic-bezier(.2,.8,.2,1)",
+      handle: ".queue-drag-handle",
+      ghostClass: "queue-row-ghost",
+      chosenClass: "queue-row-chosen",
+      dragClass: "queue-row-dragging",
+      onStart: () => elements.queueBody.classList.add("is-reordering"),
+      onEnd: (event) => {
+        elements.queueBody.classList.remove("is-reordering");
+        const oldIndex = Number(event.oldIndex);
+        const newIndex = Number(event.newIndex);
+        if (!Number.isInteger(oldIndex) || !Number.isInteger(newIndex)
+          || oldIndex === newIndex || submissionBusy()) return;
+        const request = state.queue[oldIndex];
+        if (!request) return;
+        recordAppEdit();
+        state.queue.splice(oldIndex, 1);
+        state.queue.splice(newIndex, 0, request);
+        renderAll();
+      },
+    });
+  }
+  state.queueSortable.option("disabled", submissionBusy() || state.queue.length < 2);
+}
+
 function renderQueue() {
   const validations = queueValidation();
   const requestCount = state.queue.length;
@@ -1162,29 +1284,31 @@ function renderQueue() {
       ? request.result_message || "Request failed."
       : submitting ? "Request is being submitted." : errorText;
     const readinessMarkup = request.result_state === "failed"
-      ? '<span class="failed-mark" title="Request failed">!</span><span class="cell-secondary">Failed</span>'
+      ? `<span class="failed-mark" title="Request failed">${iconMarkup("circle-x")}</span><span class="cell-secondary">Failed</span>`
       : submitting
         ? `<span class="activity-spinner" ${spinnerPhaseStyle(720)} aria-hidden="true"></span><span class="cell-secondary">${request.result_state === "running" ? "Submitting" : "Waiting"}</span>`
       : errors.length
-          ? '<span class="invalid-mark">!</span>'
+          ? `<span class="invalid-mark">${iconMarkup("circle-alert")}</span>`
           : request.request_id
-            ? `<span class="ready-mark">✓</span><span class="cell-secondary">${resultState}</span>`
-            : '<span class="ready-mark">✓</span>';
+            ? `<span class="ready-mark">${iconMarkup("check")}</span><span class="cell-secondary">${resultState}</span>`
+            : `<span class="ready-mark">${iconMarkup("check")}</span>`;
     return `
       <tr data-id="${escapeHtml(request.id)}" class="${selected ? "selected" : ""} ${errors.length ? "invalid" : ""} ${submitting ? "submitting" : ""} ${request.result_state === "failed" ? "failed" : ""}" tabindex="0">
-        <td class="index-column">${index + 1}</td>
+        <td class="index-column"><span class="queue-drag-handle" title="Drag to reorder" aria-label="Drag to reorder">${iconMarkup("grip-vertical")}</span><span class="queue-index">${index + 1}</span></td>
         <td><span class="cell-primary ${request.kind === "bulk_location" ? "bulk-serial-summary" : ""}">${escapeHtml(serialDisplay)}</span>${request.device_allocation ? `<span class="cell-secondary">${escapeHtml(request.device_allocation)}</span>` : ""}${requestId}</td>
         <td><span class="cell-primary">${escapeHtml(kindLabel(request.kind))}</span>${secondary ? `<span class="cell-secondary">${escapeHtml(secondary)}</span>` : ""}</td>
         <td title="${escapeHtml(statusLabel(request))}">${escapeHtml(statusLabel(request))}</td>
         <td title="${escapeHtml(destinationLabel(request))}"><span class="cell-primary">${escapeHtml(destinationLabel(request))}</span>${request.returning ? `<span class="cell-secondary">Return from ${escapeHtml(request.returning_user || "user")}</span>` : ""}</td>
         <td class="state-column" title="${escapeHtml(stateTitle)}">${readinessMarkup}</td>
-        <td><button class="row-menu" data-remove="${escapeHtml(request.id)}" aria-label="Remove request" title="${submitting ? "This request is being submitted" : "Remove request"}" ${submitting ? "disabled" : ""}><span class="trash-icon" aria-hidden="true"></span></button></td>
+        <td><button class="row-menu" data-remove="${escapeHtml(request.id)}" aria-label="Remove request" title="${submitting ? "This request is being submitted" : "Remove request"}" ${submitting ? "disabled" : ""}>${iconMarkup("trash-2")}</button></td>
       </tr>`;
   }).join("");
+  refreshIcons(elements.queueBody);
+  syncQueueSorting();
 
   elements.queueBody.querySelectorAll("tr").forEach((row) => {
     row.addEventListener("click", (event) => {
-      if (event.target.closest("[data-remove], [data-copy-request-id]")) return;
+      if (event.target.closest("[data-remove], [data-copy-request-id], .queue-drag-handle")) return;
       // Selecting text in a row also produces a click. Re-rendering here would
       // replace the row and clear the selection before it can be copied.
       const selection = window.getSelection?.();
@@ -1275,11 +1399,18 @@ function renderBulkSerialList(request) {
   }
   list.innerHTML = request.serials.map((serial, index) => {
     const stateName = bulkSerialState(request, serial);
+    const stateIcon = stateName === "valid"
+      ? iconMarkup("check")
+      : stateName === "failed"
+        ? iconMarkup("circle-alert")
+        : stateName === "checking"
+          ? '<span class="activity-spinner" aria-hidden="true"></span>'
+          : iconMarkup("circle-dashed");
     return `<div class="bulk-serial-row">
-      <span class="bulk-serial-state ${stateName}" aria-label="${escapeHtml(bulkSerialStateText(request, serial))}">${stateName === "valid" ? "✓" : stateName === "failed" ? "!" : stateName === "checking" ? "…" : "·"}</span>
+      <span class="bulk-serial-state ${stateName}" aria-label="${escapeHtml(bulkSerialStateText(request, serial))}">${stateIcon}</span>
       <span class="bulk-serial-value">${escapeHtml(serial)}</span>
       <small class="bulk-serial-detail ${stateName}">${escapeHtml(bulkSerialStateText(request, serial))}</small>
-      <button class="row-menu" data-bulk-serial-remove="${index}" type="button" aria-label="Remove ${escapeHtml(serial)}" title="Remove serial"><span class="trash-icon" aria-hidden="true"></span></button>
+      <button class="row-menu" data-bulk-serial-remove="${index}" type="button" aria-label="Remove ${escapeHtml(serial)}" title="Remove serial">${iconMarkup("trash-2")}</button>
     </div>`;
   }).join("");
 }
@@ -1562,6 +1693,7 @@ function renderAll() {
   renderQueue();
   renderInspector();
   renderLatestImportDraft();
+  refreshIcons();
 }
 
 function changeRequestSize(size) {
@@ -2726,13 +2858,13 @@ function renderQuickImportReview() {
       entry.userCacheVerification ? "user" : "",
     ].filter(Boolean);
     const checking = validationState === "checking"
-      ? `<small class="import-checking" ${spinnerPhaseStyle(750)}>${entry.serialValidationState === "valid" ? "✓ Serial verified · Verifying the user in EUDM…" : "Verifying the serial and user in EUDM…"}</small>`
+      ? `<small class="import-checking" ${spinnerPhaseStyle(750)}>${iconMarkup("loader-circle")}<span>${entry.serialValidationState === "valid" ? "Serial verified · Verifying the user in EUDM…" : "Verifying the serial and user in EUDM…"}</span></small>`
       : validationState === "failed"
         ? `<small class="import-check-failed">${escapeHtml(entry.validationError || "Not found in EUDM")}</small>`
         : cachedFields.length
-          ? `<small class="import-checking" ${spinnerPhaseStyle(750)}>${cachedVerificationMessage(...cachedFields)}</small>`
+          ? `<small class="import-checking" ${spinnerPhaseStyle(750)}>${iconMarkup("loader-circle")}<span>${cachedVerificationMessage(...cachedFields)}</span></small>`
         : validationState === "valid"
-          ? `<small class="import-check-ok">✓ Serial verified${entry.username ? " · User verified" : ""}</small>`
+          ? `<small class="import-check-ok">${iconMarkup("circle-check")}<span>Serial verified${entry.username ? " · User verified" : ""}</span></small>`
           : "";
     const usernameError = usernameRequired
       ? `<div class="quick-import-row-error"><input data-pairs-username="${index}" type="text" autocomplete="off" spellcheck="false" placeholder="Enter username" aria-label="Username for ${escapeHtml(entry.serial)}"><small>Username required for Deploy to user</small></div>`
@@ -2741,7 +2873,7 @@ function renderQuickImportReview() {
       <div><strong>${escapeHtml(entry.serial)}</strong><small>${username}</small>${usernameError}${checking}</div>
       <div class="quick-import-row-actions">
         ${deploymentStatus}
-        <button class="row-menu" type="button" data-pairs-remove="${index}" aria-label="Remove ${escapeHtml(entry.serial)}" title="Remove device"><span class="trash-icon" aria-hidden="true"></span></button>
+        <button class="row-menu" type="button" data-pairs-remove="${index}" aria-label="Remove ${escapeHtml(entry.serial)}" title="Remove device">${iconMarkup("trash-2")}</button>
       </div>
     </div>`;
   }).join("");
@@ -2784,11 +2916,12 @@ function renderQuickImportReview() {
   const completed = state.pasteEntries.filter((entry) => ["valid", "failed"].includes(entry.validationState)).length;
   const addButton = $("#addPairsButton");
   addButton.disabled = state.pasteEntries.length === 0 || missingUser || missingLocation || checking || failed;
-  addButton.textContent = checking
+  setButtonLabel(addButton, checking
     ? `Verifying ${completed}/${state.pasteEntries.length}…`
     : failed ? "Fix validation errors"
-      : state.pasteEntries.length ? `Add ${state.pasteEntries.length} to queue` : "Add to queue";
+      : state.pasteEntries.length ? `Add ${state.pasteEntries.length} to queue` : "Add to queue");
   if (locationNeeded) renderPasteLocationFields();
+  refreshIcons($("#pasteDialog"));
 }
 
 function scheduleQuickImportReview() {
@@ -3091,7 +3224,7 @@ function resetImportDialog(mode = state.importMode || "deploy") {
   $("#importDateGroupsHelp").textContent = "";
   $("#backImportButton").hidden = true;
   $("#prepareImportButton").disabled = true;
-  $("#prepareImportButton").textContent = "Review import";
+  setButtonLabel("#prepareImportButton", "Review import");
   $("#importError").hidden = true;
   updateImportHistoryControls();
   renderImportModeOptions();
@@ -3111,7 +3244,7 @@ function renderImportModeOptions() {
   $("#importDatePicker").hidden = backlog;
   $("#importDateSummary").hidden = !backlog;
   if (backlog) $("#importDateGroups").hidden = true;
-  $("#prepareImportButton").textContent = backlog ? "Find undeployed devices" : "Review import";
+  setButtonLabel("#prepareImportButton", backlog ? "Find undeployed devices" : "Review import");
   updateBacklogDaysLabel();
 }
 
@@ -3287,6 +3420,7 @@ function applyImportDateSelection() {
   state.importSelectedDates = selected;
   updateImportDateSummary();
   updateImportCounts();
+  refreshIcons($("#importDialog"));
   saveCurrentImportDraft();
   $("#importDatesDialog").close();
 }
@@ -3490,7 +3624,7 @@ function openImportColumnMapping() {
   )).join("");
   renderImportColumnMap();
   $("#backImportButton").hidden = true;
-  $("#prepareImportButton").textContent = "Use columns";
+  setButtonLabel("#prepareImportButton", "Use columns");
   setImportStep(1);
 }
 
@@ -3524,7 +3658,7 @@ async function showImportedWorkbook(workbook) {
   $("#importFileChooser").hidden = false;
   setImportStage("options");
   $("#backImportButton").hidden = true;
-  $("#prepareImportButton").textContent = "Review import";
+  setButtonLabel("#prepareImportButton", "Review import");
   renderImportModeOptions();
   setImportStep(2);
   $("#importFilename").textContent = workbook.filename;
@@ -3815,11 +3949,12 @@ function renderImportDrafts() {
     return `<div class="import-draft">
       <div><strong>${escapeHtml(draft.filename || "ALM Workbook")}</strong><small>${escapeHtml(importDraftPhaseLabel(draft.phase))} · ${escapeHtml(saved)}</small></div>
       <div class="import-draft-actions">
-        <button class="button secondary compact" type="button" data-import-resume="${escapeHtml(draft.id)}">Resume</button>
-        <button class="text-button" type="button" data-import-delete="${escapeHtml(draft.id)}">Delete</button>
+        <button class="button secondary compact" type="button" data-import-resume="${escapeHtml(draft.id)}">${iconMarkup("rotate-ccw")}<span>Resume</span></button>
+        <button class="text-button" type="button" data-import-delete="${escapeHtml(draft.id)}">${iconMarkup("trash-2")}<span>Delete</span></button>
       </div>
     </div>`;
   }).join("");
+  refreshIcons(list);
   list.querySelectorAll("[data-import-resume]").forEach((button) => button.addEventListener("click", () => resumeImportDraft(button.dataset.importResume)));
   list.querySelectorAll("[data-import-delete]").forEach((button) => button.addEventListener("click", () => {
     const draft = readImportDrafts().find((item) => item.id === button.dataset.importDelete);
@@ -3978,16 +4113,16 @@ function importFailedFields(request) {
 function importValidationStatus(request) {
   const cachedFields = importCachedVerificationFields(request);
   if (request.import_validation === "checking") {
-    return `<small class="import-checking" ${spinnerPhaseStyle(750)}>Verifying serial in EUDM…</small>`;
+    return `<small class="import-checking" ${spinnerPhaseStyle(750)}>${iconMarkup("loader-circle")}<span>Verifying serial in EUDM…</span></small>`;
   }
   if (request.import_validation === "failed") {
     return `<small class="import-check-failed">${escapeHtml(request.import_error || "Could not verify this row")}</small>`;
   }
   if (cachedFields.includes("serial")) {
-    return `<small class="import-checking" ${spinnerPhaseStyle(750)}>${cachedVerificationMessage("serial")}</small>`;
+    return `<small class="import-checking" ${spinnerPhaseStyle(750)}>${iconMarkup("loader-circle")}<span>${cachedVerificationMessage("serial")}</span></small>`;
   }
   return request.import_validation === "valid"
-    ? '<small class="import-check-ok">✓ Serial verified</small>'
+    ? `<small class="import-check-ok">${iconMarkup("circle-check")}<span>Serial verified</span></small>`
     : "";
 }
 
@@ -4240,7 +4375,7 @@ function renderBacklogPreview(payload) {
       </label>
       <div><small class="import-field-title">Deployment serial</small><strong>${escapeHtml(request.serial)}</strong><small class="import-device-allocation">${escapeHtml(request.date)}${request.device_allocation ? ` · ${escapeHtml(request.device_allocation)}` : ""}</small></div>
       ${importPersonMarkup(request).replace("</div>", `<small class="import-device-allocation">Current: ${escapeHtml(request.current_status)}</small>${occurrenceLabel ? `<small class="import-duplicate-warning">${escapeHtml(occurrenceLabel)}</small>` : ""}${notAttending ? '<small class="import-attendance-warning">Did not attend</small>' : ""}</div>`)}
-      <div>${statusControl}${includedRow ? validation : `<small class="${notAttending ? "import-attendance-warning" : ""}">${escapeHtml(exclusionLabel)}</small>`}<div class="backlog-row-actions"><button class="text-button" type="button" data-backlog-ignore="${escapeHtml(request.id)}">Ignore in future</button></div></div>
+      <div>${statusControl}${includedRow ? validation : `<small class="${notAttending ? "import-attendance-warning" : ""}">${escapeHtml(exclusionLabel)}</small>`}<div class="backlog-row-actions"><button class="text-button" type="button" data-backlog-ignore="${escapeHtml(request.id)}">${iconMarkup("eye-off")}<span>Ignore in future</span></button></div></div>
     </div>`;
   }).join("");
   const counts = payload.counts || {};
@@ -4251,7 +4386,7 @@ function renderBacklogPreview(payload) {
       : "No undeployed devices were found in this range.";
   const allIncluded = requests.length > 0 && included.length === requests.length;
   $("#importPreviewList").innerHTML = rows
-    ? `<section class="import-preview-section"><div class="import-group-heading"><div><strong>Undeployed devices</strong><small>${included.length} of ${requests.length} selected</small></div><div class="import-group-actions"><button class="text-button" type="button" data-backlog-toggle>${allIncluded ? "Deselect all deployments" : "Select all deployments"}</button></div></div>${rows}</section>`
+    ? `<section class="import-preview-section"><div class="import-group-heading"><div><strong>Undeployed devices</strong><small>${included.length} of ${requests.length} selected</small></div><div class="import-group-actions"><button class="text-button" type="button" data-backlog-toggle>${iconMarkup(allIncluded ? "square-minus" : "list-checks")}<span>${allIncluded ? "Deselect all deployments" : "Select all deployments"}</span></button></div></div>${rows}</section>`
     : `<div class="import-empty">${escapeHtml(emptyMessage)}</div>`;
   $("#importPreviewList").querySelectorAll("[data-backlog-status]").forEach((select) => select.addEventListener("change", () => {
     const request = requests.find((item) => item.id === select.dataset.backlogStatus);
@@ -4337,6 +4472,7 @@ function renderBacklogPreview(payload) {
     saveCurrentImportDraft();
     if (toValidate.length) void validateBacklogPreview(payload, toValidate);
   }));
+  refreshIcons($("#importPreviewList"));
   saveCurrentImportDraft();
 }
 
@@ -4402,7 +4538,7 @@ function renderImportPreview() {
       const editable = request.import_validation === "failed" && failedFields.length ? `<div class="import-inline-edit">
         ${failedFields.includes("serial") ? `<input data-import-serial="${escapeHtml(request.id)}" value="${escapeHtml(request.serials[0])}" aria-label="Serial number" placeholder="Correct serial">` : ""}
         ${failedFields.includes("username") ? `<input data-import-user="${escapeHtml(request.id)}" value="${escapeHtml(request.user)}" aria-label="Username" placeholder="Correct username">` : ""}
-        <button class="text-button" data-import-retry="${escapeHtml(request.id)}" type="button">Retry</button>
+        <button class="text-button" data-import-retry="${escapeHtml(request.id)}" type="button">${iconMarkup("rotate-ccw")}<span>Retry</span></button>
       </div>` : "";
       const destination = locationDisplay(state.importLocation) || "Location stock";
       const missingReturnWarning = isDeployment
@@ -4436,7 +4572,7 @@ function renderImportPreview() {
         </select>`
       : "";
     const groupActions = requests.length
-      ? `${bulkStatusControl}<button class="text-button" type="button" data-import-group-toggle="${escapeHtml(group.key)}">${selectedCount === requests.length ? "Deselect" : "Select"} all ${group.key === "Deployments" ? "deployments" : group.key === "Returned devices" ? "returned devices" : "pending returns"}</button>`
+      ? `${bulkStatusControl}<button class="text-button" type="button" data-import-group-toggle="${escapeHtml(group.key)}">${iconMarkup(selectedCount === requests.length ? "square-minus" : "list-checks")}<span>${selectedCount === requests.length ? "Deselect" : "Select"} all ${group.key === "Deployments" ? "deployments" : group.key === "Returned devices" ? "returned devices" : "pending returns"}</span></button>`
       : "";
     return `<section class="import-preview-section">
       <div class="import-group-heading">
@@ -4445,7 +4581,7 @@ function renderImportPreview() {
       </div>
       ${missingUsernameWarning}
       ${rows}
-      ${visibleRequests.length < requests.length ? `<button class="import-show-more" type="button" data-import-expand="${escapeHtml(group.key)}">Show ${requests.length - visibleRequests.length} more</button>` : ""}
+      ${visibleRequests.length < requests.length ? `<button class="import-show-more" type="button" data-import-expand="${escapeHtml(group.key)}">${iconMarkup("chevron-down")}<span>Show ${requests.length - visibleRequests.length} more</span></button>` : ""}
     </section>`;
   }).join("");
   $("#importPreviewList").querySelectorAll("[data-import-status]").forEach((select) => {
@@ -4551,6 +4687,7 @@ function renderImportPreview() {
     request.returning_user_info = null;
     void validateImportPreview([request]);
   }));
+  refreshIcons($("#importPreviewList"));
   saveCurrentImportDraft();
 }
 
@@ -4901,7 +5038,7 @@ function backToImportSelection() {
   updateImportHistoryControls();
   setImportStage("options");
   $("#backImportButton").hidden = true;
-  $("#prepareImportButton").textContent = "Review import";
+  setButtonLabel("#prepareImportButton", "Review import");
   $("#prepareImportButton").disabled = false;
   $("#importError").hidden = true;
   renderImportModeOptions();
@@ -5116,7 +5253,7 @@ async function openReview() {
       const secondary = request.source
         || (request.group && request.group !== kindLabel(request.kind) ? request.group : "");
       return `<div class="review-row">
-        <span class="review-state ${errors.length ? "invalid-mark" : "ready-mark"}" aria-label="${errors.length ? "Needs attention" : "Ready"}">${errors.length ? "!" : "✓"}</span>
+        <span class="review-state ${errors.length ? "invalid-mark" : "ready-mark"}" aria-label="${errors.length ? "Needs attention" : "Ready"}">${errors.length ? iconMarkup("circle-alert") : iconMarkup("check")}</span>
         <div class="review-field review-request">
           <small class="review-label">Device</small>
           <strong>${escapeHtml(request.serials.join(", ") || "No serial")}</strong>
@@ -5138,16 +5275,17 @@ async function openReview() {
               : ""}
         </div>
       </div>`;
-    }).join("")}`;
+  }).join("")}`;
   $("#submitQueueButton").disabled = invalid.length > 0;
   $("#reviewDialog").showModal();
+  refreshIcons($("#reviewDialog"));
 }
 
 function progressStateSymbol(entry) {
-  if (entry.state === "succeeded") return "✓";
-  if (entry.state === "failed") return "!";
-  if (entry.state === "running") return "…";
-  return "·";
+  if (entry.state === "succeeded") return iconMarkup("check");
+  if (entry.state === "failed") return iconMarkup("circle-alert");
+  if (entry.state === "running") return '<span class="activity-spinner" aria-hidden="true"></span>';
+  return iconMarkup("circle-dashed");
 }
 
 function progressStateLabel(entry) {
@@ -5173,6 +5311,25 @@ function formatElapsed(seconds) {
   return `${hours}h ${minutes % 60}m`;
 }
 
+function jobCompletedSuccessfully(job) {
+  const counts = job?.counts || {};
+  return job?.state === "finished"
+    && Number(counts.total || 0) > 0
+    && Number(counts.failed || 0) === 0
+    && Number(counts.succeeded || 0) === Number(counts.total || 0);
+}
+
+function celebrateSubmission(job) {
+  if (!jobCompletedSuccessfully(job) || state.celebratedJobs.has(job.job_id)) return;
+  state.celebratedJobs.add(job.job_id);
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  const burst = window.confetti;
+  if (typeof burst !== "function") return;
+  const colors = ["#f48234", "#24724a", "#f9c56d", "#ffffff"];
+  burst({ particleCount: 54, spread: 62, startVelocity: 28, gravity: .9, origin: { x: .18, y: .58 }, colors });
+  window.setTimeout(() => burst({ particleCount: 38, spread: 54, startVelocity: 24, gravity: .95, origin: { x: .82, y: .56 }, colors }), 150);
+}
+
 function renderSubmissionNotice(job = state.currentJob) {
   if (!elements.submissionNotice) return;
   const visible = state.submissionStarting || Boolean(job);
@@ -5185,9 +5342,13 @@ function renderSubmissionNotice(job = state.currentJob) {
   const failures = Number(counts.failed || 0);
   elements.submissionNotice.classList.toggle("finished", finished);
   elements.submissionNotice.classList.toggle("has-failures", finished && failures > 0);
+  elements.submissionNoticeState.innerHTML = finished
+    ? iconMarkup(failures ? "circle-alert" : "circle-check")
+    : '<span class="activity-spinner" aria-hidden="true"></span>';
+  refreshIcons(elements.submissionNoticeState);
   elements.submissionNoticeTitle.textContent = state.submissionStarting
     ? "Starting submission"
-    : finished ? "Submission finished" : "Submitting requests";
+    : finished && !failures ? "All requests submitted" : finished ? "Submission finished" : "Submitting requests";
   elements.submissionNoticeDetail.textContent = state.pollStatusMessage
     || (state.submissionStarting
       ? "Preparing the request run…"
@@ -5196,7 +5357,9 @@ function renderSubmissionNotice(job = state.currentJob) {
           ? `${counts.succeeded || 0} submitted · ${failures} failed`
           : `${counts.succeeded || 0} submitted successfully`
         : `${done} of ${total} complete${counts.running ? ` · ${counts.running} active` : ""}`);
-  $("#viewSubmissionButton").textContent = finished ? "View results" : "View progress";
+  const viewButton = $("#viewSubmissionButton");
+  const viewLabel = viewButton?.querySelector("span");
+  if (viewLabel) viewLabel.textContent = finished ? "View results" : "View progress";
 }
 
 function resetProgressView() {
@@ -5206,6 +5369,7 @@ function resetProgressView() {
   $("#progressCounts").textContent = "Starting…";
   $("#progressList").replaceChildren();
   $("#progressActions").hidden = true;
+  $("#progressCelebration").hidden = true;
   $("#progressHeading").textContent = "Starting submission";
   $("#closeProgressButton").title = "Continue in the background";
   requestAnimationFrame(() => { bar.style.transition = ""; });
@@ -5278,6 +5442,12 @@ function renderProgress(job) {
   }).join("");
   progressList.scrollTop = previousScrollTop;
   const finished = job.state === "finished";
+  const fullySuccessful = jobCompletedSuccessfully(job);
+  const celebration = $("#progressCelebration");
+  celebration.hidden = !fullySuccessful;
+  if (fullySuccessful) {
+    $("#progressCelebrationDetail").textContent = `All ${job.counts.total} request${job.counts.total === 1 ? "" : "s"} were submitted successfully.`;
+  }
   $("#progressHeading").textContent = finished
     ? `${job.counts.succeeded} submitted, ${job.counts.failed} failed`
     : "Submitting requests";
@@ -5285,6 +5455,7 @@ function renderProgress(job) {
   $("#closeProgressButton").title = finished ? "Close results" : "Continue in the background";
   $("#downloadResultsLink").href = `/api/jobs/${job.job_id}/results.txt`;
   renderSubmissionNotice(job);
+  refreshIcons($("#progressDialog"));
 }
 
 function formatHistoryDate(value) {
@@ -5367,7 +5538,7 @@ function renderHistory(runs) {
         <div class="history-device"><div class="history-device-serials">${serialMarkup}</div><span>${escapeHtml(entry.status || kindLabel(entry.kind))}</span></div>
         <div class="history-person"><small>${escapeHtml(person.role)}</small><strong>${escapeHtml(person.name)}</strong>${person.login ? `<button class="history-filter-link" type="button" data-history-filter="${escapeHtml(person.login)}" title="Show requests for ${escapeHtml(person.login)}">${escapeHtml(person.login)}</button>` : ""}</div>
         <div class="history-result"><span class="history-result-state ${entry.state === "failed" ? "failed" : ""}">${escapeHtml(entry.state === "succeeded" ? "Submitted" : entry.state)}</span>${requestLink}<small>${escapeHtml(entry.message || "")}</small></div>
-        <div class="history-entry-actions"><button class="button secondary compact" type="button" data-history-readd="${escapeHtml(entry.id)}">Re-add to queue</button></div>
+        <div class="history-entry-actions"><button class="button secondary compact" type="button" data-history-readd="${escapeHtml(entry.id)}">${iconMarkup("rotate-ccw")}<span>Re-add to queue</span></button></div>
       </div>`;
     }).join("");
     return `<section class="history-run">
@@ -5378,6 +5549,7 @@ function renderHistory(runs) {
       <div class="history-entries">${entries}</div>
     </section>`;
   }).join("");
+  refreshIcons(elements.historyList);
   elements.historyList.querySelectorAll("[data-history-readd]").forEach((button) => {
     button.addEventListener("click", () => {
       const run = runs.find((item) => (item.entries || []).some((entry) => entry.id === button.dataset.historyReadd));
@@ -5531,10 +5703,16 @@ async function pollJob(jobId) {
     }
     stopJobPolling();
     void refreshConnection();
+    celebrateSubmission(job);
     if (!state.notifiedJobs.has(job.job_id)) {
       state.notifiedJobs.add(job.job_id);
       const type = job.counts.failed ? "error" : "success";
-      toast(`${job.counts.succeeded} request${job.counts.succeeded === 1 ? "" : "s"} submitted; ${job.counts.failed} failed.`, type);
+      toast(
+        jobCompletedSuccessfully(job)
+          ? `All ${job.counts.succeeded} request${job.counts.succeeded === 1 ? "" : "s"} submitted successfully.`
+          : `${job.counts.succeeded} request${job.counts.succeeded === 1 ? "" : "s"} submitted; ${job.counts.failed} failed.`,
+        type,
+      );
     }
   } catch (error) {
     if (state.currentJob && state.currentJob.job_id !== jobId) return;
@@ -5618,6 +5796,30 @@ function bindEvents() {
     copyRequestId(button);
   });
   $("#themeToggle").addEventListener("click", toggleTheme);
+  $("#commandPaletteButton").addEventListener("click", openCommandPalette);
+  $("#closeCommandPaletteButton").addEventListener("click", () => $("#commandPaletteDialog").close());
+  $("#commandPaletteDialog").addEventListener("click", (event) => {
+    if (event.target === event.currentTarget) event.currentTarget.close();
+  });
+  $("#commandPaletteInput").addEventListener("input", () => {
+    state.commandPaletteIndex = 0;
+    renderCommandPalette();
+  });
+  $("#commandPaletteInput").addEventListener("keydown", (event) => {
+    const actions = filteredCommandPaletteActions();
+    if (event.key === "ArrowDown" && actions.length) {
+      event.preventDefault();
+      state.commandPaletteIndex = (state.commandPaletteIndex + 1) % actions.length;
+      renderCommandPalette();
+    } else if (event.key === "ArrowUp" && actions.length) {
+      event.preventDefault();
+      state.commandPaletteIndex = (state.commandPaletteIndex - 1 + actions.length) % actions.length;
+      renderCommandPalette();
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      runCommandPaletteItem(state.commandPaletteIndex);
+    }
+  });
   $("#newRequestButton").addEventListener("click", startNewRequest);
   $("#saveNewRequestButton").addEventListener("click", saveNewRequest);
   $("#discardNewRequestButton").addEventListener("click", discardNewRequest);
@@ -6144,6 +6346,13 @@ function bindEvents() {
     const editable = event.target instanceof Element
       && Boolean(event.target.closest("input, textarea, select, [contenteditable='true']"));
     const openDialog = $("dialog[open]");
+    if (modifier && key === "k" && !event.altKey && !event.shiftKey
+      && (!openDialog || openDialog.id === "commandPaletteDialog")) {
+      event.preventDefault();
+      if (openDialog?.id === "commandPaletteDialog") $("#commandPaletteInput")?.focus();
+      else openCommandPalette();
+      return;
+    }
     if (!editable && !openDialog && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
       if (key === "n") {
         event.preventDefault();

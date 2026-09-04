@@ -23,7 +23,8 @@
         <span class="connection-status-dot" aria-hidden="true"></span>
         <span>Connected</span>
       </div>
-      <button id="historyButton" class="button secondary compact" type="button">Request history</button>
+      <button id="commandPaletteButton" class="button secondary compact" type="button" aria-label="Open command palette" title="Open command palette (⌘K or Ctrl+K)"><i data-lucide="command"></i><span>Commands</span></button>
+      <button id="historyButton" class="button secondary compact" type="button"><i data-lucide="history"></i><span>Request history</span></button>
     </div>
   </header>
 
@@ -32,25 +33,25 @@
       <div class="rail-section">
         <h2>Import</h2>
         <button id="pastePairsButton" class="tool-button" type="button">
-          <span class="tool-icon import-icon" aria-hidden="true"></span>
+          <span class="tool-icon import-icon" aria-hidden="true"><i data-lucide="list-plus"></i></span>
           <span><strong>Quick import</strong><small>Add devices as you go</small></span>
         </button>
         <button id="importSheetButton" class="tool-button" type="button">
-          <span class="tool-icon import-icon" aria-hidden="true"></span>
+          <span class="tool-icon import-icon" aria-hidden="true"><i data-lucide="file-up"></i></span>
           <span><strong>Import ALM Workbook</strong><small>Import a local spreadsheet</small></span>
         </button>
         <button id="almBacklogButton" class="tool-button" type="button">
-          <span class="tool-icon import-icon backlog-icon" aria-hidden="true"></span>
+          <span class="tool-icon import-icon backlog-icon" aria-hidden="true"><i data-lucide="search-check"></i></span>
           <span><strong>ALM deployment backlog</strong><small>Find undeployed devices</small></span>
         </button>
         <button id="resumeLatestImportButton" class="tool-button resume-import-tool" type="button" hidden>
-          <span class="tool-icon resume-icon" aria-hidden="true"></span>
+          <span class="tool-icon resume-icon" aria-hidden="true"><i data-lucide="rotate-ccw"></i></span>
           <span><strong id="resumeImportDraftTitle">Resume ALM import</strong><small id="resumeImportDraftDetail"></small></span>
         </button>
       </div>
 
       <div class="rail-bottom-action">
-        <button id="settingsButton" class="tool-button settings-tool-button" type="button"><span class="tool-icon settings-icon" aria-hidden="true"></span><span><strong>Settings</strong></span></button>
+        <button id="settingsButton" class="tool-button settings-tool-button" type="button"><span class="tool-icon settings-icon" aria-hidden="true"><i data-lucide="settings-2"></i></span><span><strong>Settings</strong></span></button>
       </div>
     </aside>
 
@@ -61,28 +62,29 @@
           <p id="queueCounts">0 requests</p>
         </div>
         <div class="queue-actions">
-          <button id="newRequestButton" class="new-request-button add-icon" type="button" aria-label="Prepare a request" title="Prepare a request"></button>
+          <button id="newRequestButton" class="new-request-button" type="button" aria-label="Prepare a request" title="Prepare a request"><i data-lucide="plus"></i></button>
         </div>
       </div>
 
       <div id="queueWorkbookDrop" class="queue-workbook-drop" aria-hidden="true" hidden>
-        <span class="tool-icon import-icon" aria-hidden="true"></span>
+        <span class="tool-icon import-icon" aria-hidden="true"><i data-lucide="file-up"></i></span>
         <strong>Import ALM Workbook</strong>
         <small>Drop an .xlsx or .xlsm file into the queue</small>
       </div>
 
       <div id="queueValidationNotice" class="queue-validation-notice queue-alert" role="alert" hidden>
-        <div class="queue-validation-icon queue-alert-icon" aria-hidden="true">!</div>
+        <div class="queue-validation-icon queue-alert-icon" aria-hidden="true"><i data-lucide="triangle-alert"></i></div>
         <strong id="queueValidationMessage"></strong>
       </div>
 
       <div id="submissionNotice" class="submission-notice" role="status" aria-live="polite" hidden>
         <span class="submission-notice-state" aria-hidden="true"></span>
         <span class="submission-notice-copy"><strong id="submissionNoticeTitle">Submitting requests</strong><small id="submissionNoticeDetail"></small></span>
-        <button id="viewSubmissionButton" class="button secondary compact" type="button">View progress</button>
+        <button id="viewSubmissionButton" class="button secondary compact" type="button"><i data-lucide="activity"></i><span data-button-label>View progress</span></button>
       </div>
 
       <div id="queueEmpty" class="empty-state">
+        <div class="empty-state-icon" aria-hidden="true"><i data-lucide="inbox"></i></div>
         <h2>Build a request queue</h2>
         <p>Add a request, import serial/user pairs, or import an ALM Workbook.</p>
       </div>
@@ -104,8 +106,8 @@
         </table>
       </div>
       <div class="queue-toolbar">
-        <button id="clearQueueButton" class="button quiet compact" type="button">Clear</button>
-        <button id="reviewButton" class="button primary" type="button" disabled>Review &amp; submit</button>
+        <button id="clearQueueButton" class="button quiet compact" type="button"><i data-lucide="trash-2"></i><span>Clear</span></button>
+        <button id="reviewButton" class="button primary" type="button" disabled><i data-lucide="send"></i><span>Review &amp; submit</span></button>
       </div>
     </section>
 
@@ -117,11 +119,11 @@
         </div>
         <div id="inspectorEditorHost">
         <div id="inspectorContent" hidden>
-          <div class="inspector-header">
+            <div class="inspector-header">
             <h2 id="inspectorHeading">Request details</h2>
             <div class="inspector-header-actions">
-              <button id="duplicateButton" class="button quiet compact" type="button">Duplicate</button>
-              <button id="closeInspectorButton" class="icon-button inspector-close-button" type="button" aria-label="Close request editor" title="Close request editor">×</button>
+              <button id="duplicateButton" class="button quiet compact" type="button"><i data-lucide="copy"></i><span>Duplicate</span></button>
+              <button id="closeInspectorButton" class="icon-button inspector-close-button" type="button" aria-label="Close request editor" title="Close request editor"><i data-lucide="x"></i></button>
             </div>
           </div>
 
@@ -143,7 +145,7 @@
             <button id="searchSerialButton" class="button secondary compact lookup-button" type="button" disabled>Search</button>
           </div>
           <div id="serialConfirmed" class="lookup-confirmed" hidden>
-            <span class="lookup-confirmed-mark" aria-hidden="true">✓</span>
+            <span class="lookup-confirmed-mark" aria-hidden="true"><i data-lucide="circle-check"></i></span>
             <span><strong id="serialConfirmedValue"></strong></span>
             <button id="resetSerialSelection" class="text-button" type="button">Change</button>
           </div>
@@ -169,9 +171,9 @@
               </div>
             </div>
             <div id="bulkSerialPrefixWarning" class="bulk-serial-prefix-warning" role="status" hidden>
-              <span class="bulk-serial-warning-symbol" aria-hidden="true">!</span>
+              <span class="bulk-serial-warning-symbol" aria-hidden="true"><i data-lucide="triangle-alert"></i></span>
               <span>It is <strong><u>strongly suggested</u></strong> that you remove the leading S from these MacBook serials.</span>
-              <button id="removeBulkSerialPrefixesButton" class="button secondary compact" type="button">Remove</button>
+              <button id="removeBulkSerialPrefixesButton" class="button secondary compact" type="button"><i data-lucide="wand-sparkles"></i><span>Remove</span></button>
             </div>
           </div>
           <div id="serialLookupStatus" class="lookup-status" role="status" aria-live="polite" hidden></div>
@@ -197,7 +199,7 @@
               <button id="searchUserButton" class="button secondary compact lookup-button" type="button" disabled>Search</button>
             </div>
             <div id="userConfirmed" class="lookup-confirmed" hidden>
-              <span class="lookup-confirmed-mark" aria-hidden="true">✓</span>
+              <span class="lookup-confirmed-mark" aria-hidden="true"><i data-lucide="circle-check"></i></span>
               <span><strong id="userConfirmedValue"></strong><small id="userConfirmedUsername"></small></span>
               <button id="resetUserSelection" class="text-button" type="button">Change</button>
             </div>
@@ -234,7 +236,7 @@
                 <button id="searchReturningButton" class="button secondary compact lookup-button" type="button" disabled>Search</button>
               </div>
               <div id="returningConfirmed" class="lookup-confirmed" hidden>
-                <span class="lookup-confirmed-mark" aria-hidden="true">✓</span>
+                <span class="lookup-confirmed-mark" aria-hidden="true"><i data-lucide="circle-check"></i></span>
                 <span><strong id="returningConfirmedValue"></strong><small id="returningConfirmedUsername"></small></span>
                 <button id="resetReturningSelection" class="text-button" type="button">Change</button>
               </div>
@@ -283,17 +285,33 @@
     </section>
   </dialog>
 
+  <dialog id="commandPaletteDialog" class="modal command-palette-dialog" aria-labelledby="commandPaletteTitle">
+    <section class="modal-card command-palette-card">
+      <div class="modal-header">
+        <h2 id="commandPaletteTitle">Command palette</h2>
+        <button id="closeCommandPaletteButton" class="icon-button" type="button" aria-label="Close command palette"><i data-lucide="x"></i></button>
+      </div>
+      <label class="command-palette-search" for="commandPaletteInput">
+        <i data-lucide="search" aria-hidden="true"></i>
+        <input id="commandPaletteInput" type="search" autocomplete="off" spellcheck="false" placeholder="Search actions…" aria-label="Search actions">
+        <kbd>⌘K</kbd>
+      </label>
+      <div id="commandPaletteList" class="command-palette-list" role="listbox" aria-label="Available actions"></div>
+      <p class="command-palette-hint"><kbd>↑</kbd><kbd>↓</kbd> to move <span>·</span> <kbd>Enter</kbd> to run <span>·</span> <kbd>Esc</kbd> to close</p>
+    </section>
+  </dialog>
+
   <dialog id="pasteDialog" class="modal">
     <form method="dialog" class="modal-card">
       <div class="modal-header">
         <h2>Quick import</h2>
-        <button class="icon-button" value="cancel" aria-label="Close">×</button>
+        <button class="icon-button" value="cancel" aria-label="Close"><i data-lucide="x"></i></button>
       </div>
       <div id="pairsEntry">
         <div class="quick-import-add always-visible">
           <input id="pairsAddUsername" type="text" autocomplete="off" spellcheck="false" placeholder="Username (optional)" aria-label="Username">
           <input id="pairsAddSerial" type="text" autocomplete="off" spellcheck="false" placeholder="Serial number" aria-label="Serial number">
-          <button id="pairsConfirmAddButton" class="button secondary compact add-icon" type="button" aria-label="Add device"></button>
+          <button id="pairsConfirmAddButton" class="button secondary compact" type="button" aria-label="Add device"><i data-lucide="plus"></i></button>
         </div>
         <button id="pairsTextModeButton" class="text-button" type="button">Add a list instead</button>
         <div id="pairsTextMode" hidden>
@@ -332,7 +350,7 @@
       <div id="pairsError" class="inline-error" hidden></div>
       <div class="modal-actions">
         <button class="button secondary" value="cancel">Cancel</button>
-        <button id="addPairsButton" class="button primary" value="default" type="button">Add to queue</button>
+        <button id="addPairsButton" class="button primary" value="default" type="button"><i data-lucide="plus"></i><span data-button-label>Add to queue</span></button>
       </div>
     </form>
   </dialog>
@@ -341,7 +359,7 @@
     <form method="dialog" class="modal-card wide">
       <div class="modal-header">
         <h2 id="importDialogTitle">ALM Workbook</h2>
-        <button class="icon-button" value="cancel" aria-label="Close">×</button>
+        <button class="icon-button" value="cancel" aria-label="Close"><i data-lucide="x"></i></button>
       </div>
       <ol class="wizard-steps" aria-label="Import progress">
         <li id="importStep1" class="active"><span>1</span>Workbook</li>
@@ -370,7 +388,7 @@
             </div>
             <div id="importFileChooser">
               <label class="file-drop" for="workbookInput">
-                <span class="file-symbol" aria-hidden="true"></span>
+                <span class="file-symbol" aria-hidden="true"><i data-lucide="file-spreadsheet"></i></span>
                 <strong>Import an ALM Workbook</strong>
                 <small>.xlsx or .xlsm, up to 100 MB</small>
                 <input id="workbookInput" type="file" accept=".xlsx,.xlsm">
@@ -413,7 +431,7 @@
                 <strong>Deployment dates</strong>
                 <button id="openImportDatesButton" class="import-date-trigger" type="button" aria-haspopup="dialog" aria-controls="importDatesDialog">
                   <span id="importDateSelectionLabel">Choose dates</span>
-                  <span class="import-date-trigger-chevron" aria-hidden="true">⌄</span>
+                  <span class="import-date-trigger-chevron" aria-hidden="true"><i data-lucide="chevron-down"></i></span>
                 </button>
                 <small id="importDateSelectionDetail">Choose one or more dates</small>
               </div>
@@ -461,9 +479,9 @@
               </div>
               <span id="importPreviewCount" class="count-badge"></span>
               <div class="import-preview-tools">
-                <button id="undoImportButton" class="button quiet compact" type="button" aria-keyshortcuts="Meta+Z Control+Z" title="Undo the last review change (⌘Z or Ctrl+Z)" disabled>Undo</button>
-                <button id="redoImportButton" class="button quiet compact" type="button" aria-keyshortcuts="Meta+Shift+Z Meta+Y Control+Y Control+Shift+Z" title="Redo the last review change (⇧⌘Z, ⌘Y, Ctrl+Y, or Ctrl+Shift+Z)" disabled>Redo</button>
-                <button id="clearImportStatusesButton" class="button secondary compact" type="button">Clear all statuses</button>
+                <button id="undoImportButton" class="button quiet compact" type="button" aria-keyshortcuts="Meta+Z Control+Z" title="Undo the last review change (⌘Z or Ctrl+Z)" disabled><i data-lucide="undo-2"></i><span>Undo</span></button>
+                <button id="redoImportButton" class="button quiet compact" type="button" aria-keyshortcuts="Meta+Shift+Z Meta+Y Control+Y Control+Shift+Z" title="Redo the last review change (⇧⌘Z, ⌘Y, Ctrl+Y, or Ctrl+Shift+Z)" disabled><i data-lucide="redo-2"></i><span>Redo</span></button>
+                <button id="clearImportStatusesButton" class="button secondary compact" type="button"><i data-lucide="rotate-ccw"></i><span>Clear all statuses</span></button>
               </div>
             </div>
             <div id="importPreviewList" class="import-preview-list" role="region" aria-label="ALM import review" tabindex="0"></div>
@@ -473,8 +491,8 @@
       <div id="importError" class="inline-error" hidden></div>
       <div class="modal-actions">
         <button class="button secondary" value="cancel">Cancel</button>
-        <button id="backImportButton" class="button quiet" type="button" hidden>Back</button>
-        <button id="prepareImportButton" class="button primary" value="default" type="button" disabled>Review import</button>
+        <button id="backImportButton" class="button quiet" type="button" hidden><i data-lucide="arrow-left"></i><span data-button-label>Back</span></button>
+        <button id="prepareImportButton" class="button primary" value="default" type="button" disabled><span data-button-label>Review import</span><i data-lucide="arrow-right"></i></button>
       </div>
     </form>
   </dialog>
@@ -483,7 +501,7 @@
     <form method="dialog" class="modal-card">
       <div class="modal-header">
         <h2>Choose deployment dates</h2>
-        <button class="icon-button" value="cancel" aria-label="Close">×</button>
+        <button class="icon-button" value="cancel" aria-label="Close"><i data-lucide="x"></i></button>
       </div>
       <p class="import-date-dialog-intro">Select one or more days from this workbook.</p>
       <div id="importDateDialogList" class="import-date-list" role="group" aria-label="Deployment dates"></div>
@@ -496,7 +514,7 @@
 
   <dialog id="settingsDialog" class="modal">
     <form method="dialog" class="modal-card settings-card">
-      <div class="modal-header"><h2>Settings</h2><button class="icon-button" value="cancel" aria-label="Close">×</button></div>
+      <div class="modal-header"><h2>Settings</h2><button class="icon-button" value="cancel" aria-label="Close"><i data-lucide="x"></i></button></div>
       <div class="settings-tabs" role="tablist">
         <button class="settings-tab active" data-settings-tab="run" type="button">General</button>
         <button class="settings-tab" data-settings-tab="validation" type="button">Validation</button>
@@ -548,7 +566,7 @@
 
   <dialog id="shortcutsDialog" class="modal">
     <form method="dialog" class="modal-card shortcuts-card">
-      <div class="modal-header"><h2>Keyboard shortcuts</h2><button class="icon-button" value="cancel" aria-label="Close">×</button></div>
+      <div class="modal-header"><h2>Keyboard shortcuts</h2><button class="icon-button" value="cancel" aria-label="Close"><i data-lucide="x"></i></button></div>
       <p class="shortcuts-note"><span class="shortcut-mac">Option</span> on Mac, <span class="shortcut-windows">Ctrl</span> on Windows and Linux.</p>
       <div class="shortcut-list">
         <div><span>Undo app change</span><kbd>⌘ / Ctrl</kbd><kbd>Z</kbd></div>
@@ -562,6 +580,7 @@
         <div><span>Settings</span><kbd>⌥ / Ctrl</kbd><kbd>,</kbd></div>
         <div><span>Focus selected serial number</span><kbd>/</kbd></div>
         <div><span>Show these shortcuts</span><kbd>?</kbd></div>
+        <div><span>Command palette</span><kbd>⌘ / Ctrl</kbd><kbd>K</kbd></div>
         <div><span>Close a dialog</span><kbd>Esc</kbd></div>
       </div>
     </form>
@@ -571,12 +590,12 @@
     <form method="dialog" class="modal-card wide review-card">
       <div class="modal-header">
         <h2>Submit request queue</h2>
-        <button class="icon-button" value="cancel" aria-label="Close">×</button>
+        <button class="icon-button" value="cancel" aria-label="Close"><i data-lucide="x"></i></button>
       </div>
       <div id="reviewList" class="review-list"></div>
       <div class="modal-actions">
         <button class="button secondary" value="cancel">Back to queue</button>
-        <button id="submitQueueButton" class="button primary" value="default" type="submit">Submit requests</button>
+        <button id="submitQueueButton" class="button primary" value="default" type="submit"><i data-lucide="send"></i><span>Submit requests</span></button>
       </div>
     </form>
   </dialog>
@@ -585,7 +604,11 @@
     <div class="modal-card extra-wide progress-card">
       <div class="modal-header">
         <h2 id="progressHeading">Submitting requests</h2>
-        <button id="closeProgressButton" class="icon-button" type="button" aria-label="Close progress" title="Continue in the background">×</button>
+        <button id="closeProgressButton" class="icon-button" type="button" aria-label="Close progress" title="Continue in the background"><i data-lucide="x"></i></button>
+      </div>
+      <div id="progressCelebration" class="progress-celebration" role="status" aria-live="polite" hidden>
+        <div class="progress-celebration-icon" aria-hidden="true"><i data-lucide="sparkles"></i></div>
+        <div><strong>Queue complete</strong><span id="progressCelebrationDetail">All requests were submitted successfully.</span></div>
       </div>
       <div class="progress-overview">
         <div class="progress-track"><span id="progressBar"></span></div>
@@ -593,8 +616,8 @@
       </div>
       <div id="progressList" class="progress-list"></div>
       <div id="progressActions" class="modal-actions" hidden>
-        <a id="downloadResultsLink" class="button secondary" href="#">Download summary</a>
-        <button id="doneButton" class="button primary" type="button">Done</button>
+        <a id="downloadResultsLink" class="button secondary" href="#"><i data-lucide="download"></i><span>Download summary</span></a>
+        <button id="doneButton" class="button primary" type="button"><i data-lucide="check"></i><span>Done</span></button>
       </div>
     </div>
   </dialog>
@@ -603,7 +626,7 @@
     <form method="dialog" class="modal-card wide">
       <div class="modal-header">
         <h2>Request history</h2>
-        <button class="icon-button" value="cancel" aria-label="Close">×</button>
+        <button class="icon-button" value="cancel" aria-label="Close"><i data-lucide="x"></i></button>
       </div>
       <div class="history-toolbar">
         <label class="history-search" for="historySearchInput">
@@ -628,6 +651,9 @@
   </dialog>
 
   <div id="toastRegion" class="toast-region" aria-live="polite"></div>
+  <script src="/vendor/lucide.min.js" defer></script>
+  <script src="/vendor/canvas-confetti.js" defer></script>
+  <script src="/vendor/sortable.min.js" defer></script>
   <script src="/app.js" defer></script>
 </body>
 </html>

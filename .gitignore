@@ -9,6 +9,7 @@ cookie*.txt
 work/
 .venv/
 venv/
+node_modules/
 logs/
 results/
 

@@ -1,0 +1,11 @@
+{
+  "name": "autoeudm-web",
+  "private": true,
+  "version": "1.0.0",
+  "description": "The AutoEUDM browser interface",
+  "dependencies": {
+    "canvas-confetti": "^1.9.4",
+    "lucide": "^1.40.0",
+    "sortablejs": "^1.15.7"
+  }
+}
