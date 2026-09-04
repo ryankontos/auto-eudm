@@ -5981,7 +5981,7 @@ function renderProgress(job) {
     ? `${iconMarkup(fullySuccessful ? "circle-check" : "circle-alert")}<span>${escapeHtml(progressHeading)}</span>`
     : `<span>${escapeHtml(progressHeading)}</span>`;
   $("#progressActions").hidden = !finished;
-  $("#closeProgressButton").title = finished ? "Close results" : "Continue in the background";
+  $("#closeProgressButton").title = finished ? "Hide results" : "Continue in the background";
   $("#downloadResultsLink").href = `/api/jobs/${job.job_id}/results.txt`;
   renderSubmissionNotice(job);
   refreshIcons($("#progressDialog"));
@@ -6945,12 +6945,14 @@ function bindEvents() {
   document.addEventListener("pointerdown", (event) => {
     if (!event.target.closest(".search-control, .search-results")) hideSearchResults();
   });
-  $("#doneButton").addEventListener("click", () => $("#progressDialog").close());
+  $("#doneButton").addEventListener("click", () => {
+    $("#progressDialog").close();
+    finalizeCurrentSubmission();
+  });
   $("#closeProgressButton").addEventListener("click", () => $("#progressDialog").close());
   $("#viewSubmissionButton").addEventListener("click", showProgressDialog);
   $("#progressDialog").addEventListener("close", () => {
-    if (state.currentJob?.state === "finished") finalizeCurrentSubmission();
-    else renderSubmissionNotice();
+    renderSubmissionNotice();
   });
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden && state.currentJob && state.currentJob.state !== "finished") {
