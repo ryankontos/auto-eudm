@@ -2744,10 +2744,11 @@ function renderConnectionSheet(status = state.connection) {
     ? "Authenticated with Helix"
     : "Helix Authentication Required";
   elements.connectionLoading.hidden = !["checking", "connecting"].includes(stateName);
-  elements.connectionAuthenticateButton.disabled = stateName === "connecting";
+  const showingSuccess = ready && elements.connectionDialog.open && !state.connectionSheetManual;
+  elements.connectionAuthenticateButton.disabled = stateName === "connecting" || showingSuccess;
   elements.connectionAuthenticateButton.textContent = stateName === "connecting"
     ? "Authenticating…"
-    : ready ? "Reauthenticate" : "Authenticate in Helix";
+    : showingSuccess ? "Authenticated" : ready ? "Reauthenticate" : "Authenticate in Helix";
   elements.connectionDialog.dataset.state = visualState;
   elements.connectionVisual.dataset.state = visualState;
   elements.connectionVisual.setAttribute(
