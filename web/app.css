@@ -225,6 +225,36 @@ textarea:focus-visible {
   border-top: 1px solid var(--line);
 }
 
+.rail-status-card {
+  display: grid;
+  gap: 12px;
+  margin: auto 2px 10px;
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--surface) 82%, var(--blue-soft));
+  box-shadow: 0 5px 16px rgba(32, 46, 59, .06);
+  transition: border-color .18s ease, background-color .18s ease, box-shadow .18s ease;
+}
+.rail-status-card[data-state="active"] { border-color: color-mix(in srgb, var(--blue) 44%, var(--line)); background: color-mix(in srgb, var(--blue-soft) 70%, var(--surface)); }
+.rail-status-card[data-state="attention"] { border-color: color-mix(in srgb, var(--amber-border) 55%, var(--line)); background: color-mix(in srgb, var(--amber-surface) 78%, var(--surface)); }
+.rail-status-card[data-state="complete"] { border-color: color-mix(in srgb, var(--green) 46%, var(--line)); background: color-mix(in srgb, var(--green-soft) 72%, var(--surface)); }
+.rail-status-heading { display: grid; grid-template-columns: 29px minmax(0, 1fr); gap: 8px; align-items: center; }
+.rail-status-icon { display: grid; width: 29px; height: 29px; place-items: center; border-radius: 8px; color: var(--blue); background: color-mix(in srgb, var(--blue) 13%, var(--surface)); }
+.rail-status-card[data-state="active"] .rail-status-icon { animation: status-breathe 1.6s ease-in-out infinite; }
+.rail-status-card[data-state="attention"] .rail-status-icon { color: var(--amber); background: color-mix(in srgb, var(--amber) 15%, var(--surface)); }
+.rail-status-card[data-state="complete"] .rail-status-icon { color: var(--green); background: color-mix(in srgb, var(--green) 14%, var(--surface)); }
+.rail-status-icon .lucide { width: 16px; height: 16px; stroke-width: 1.9; }
+.rail-status-heading strong,
+.rail-status-heading small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-status-heading strong { font-size: 12px; }
+.rail-status-heading small { margin-top: 1px; color: var(--muted); font-size: 10px; }
+.rail-status-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; padding-top: 9px; border-top: 1px solid color-mix(in srgb, var(--line) 76%, transparent); }
+.rail-status-metrics span { display: grid; gap: 1px; min-width: 0; text-align: center; }
+.rail-status-metrics strong { font-size: 16px; font-variant-numeric: tabular-nums; }
+.rail-status-metrics small { color: var(--muted); font-size: 9px; text-transform: uppercase; letter-spacing: .04em; }
+@keyframes status-breathe { 50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--blue) 10%, transparent); } }
+
 .rail-section { padding-bottom: 19px; margin-bottom: 18px; border-bottom: 1px solid var(--line); }
 .rail-section:last-child { border-bottom: 0; }
 .rail-section h2 {
@@ -1631,8 +1661,9 @@ fieldset { margin: 0; padding: 0; border: 0; }
   text-align: center;
 }
 .settings-tabs { display: flex; flex-wrap: wrap; gap: 0 18px; border-bottom: 1px solid var(--line); margin: 0 0 18px; }
-.settings-tab { appearance: none; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); padding: 8px 1px; font-size: 13px; font-weight: 650; cursor: pointer; }
+.settings-tab { appearance: none; display: inline-flex; align-items: center; gap: 6px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); padding: 8px 1px; font-size: 13px; font-weight: 650; cursor: pointer; }
 .settings-tab.active { color: var(--ink); border-bottom-color: var(--blue); }
+.settings-tab .lucide { width: 14px; height: 14px; stroke-width: 1.8; }
 .settings-card section { display: grid; gap: 16px; min-height: 112px; }
 .settings-help { margin: 0; color: var(--muted); line-height: 1.45; font-size: 13px; }
 .settings-card label { display: grid; gap: 7px; color: var(--ink); font-size: 13px; font-weight: 650; }
@@ -1689,6 +1720,9 @@ fieldset { margin: 0; padding: 0; border: 0; }
   body { overflow: auto; }
   .workspace { display: block; height: auto; }
   .tool-rail { display: grid; grid-template-columns: 1fr 1fr; border-right: 0; border-bottom: 1px solid var(--line); }
+  .rail-status-card,
+  .rail-bottom-action { grid-column: 1 / -1; }
+  .rail-status-card { margin: 0 0 10px; }
   .queue-panel { min-height: 420px; }
   .inspector-shell { max-height: calc(100vh - 58px); overflow: hidden; transition: max-height .22s ease; }
   .workspace.inspector-closed .inspector-shell { max-height: 0; }

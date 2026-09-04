@@ -50,6 +50,18 @@
         </button>
       </div>
 
+      <section id="railStatusCard" class="rail-status-card" aria-label="Queue summary">
+        <div class="rail-status-heading">
+          <span id="railStatusIcon" class="rail-status-icon" aria-hidden="true"><i data-lucide="activity"></i></span>
+          <span><strong>Workspace</strong><small id="railStatusDetail" aria-live="polite">Ready when you are</small></span>
+        </div>
+        <div class="rail-status-metrics">
+          <span><strong id="railQueuedCount">0</strong><small>queued</small></span>
+          <span><strong id="railReadyCount">0</strong><small>ready</small></span>
+          <span><strong id="railAttentionCount">0</strong><small>attention</small></span>
+        </div>
+      </section>
+
       <div class="rail-bottom-action">
         <button id="settingsButton" class="tool-button settings-tool-button" type="button"><span class="tool-icon settings-icon" aria-hidden="true"><i data-lucide="settings-2"></i></span><span><strong>Settings</strong></span></button>
       </div>
@@ -531,10 +543,10 @@
     <form method="dialog" class="modal-card settings-card">
       <div class="modal-header"><h2>Settings</h2><button class="icon-button" value="cancel" aria-label="Close"><i data-lucide="x"></i></button></div>
       <div class="settings-tabs" role="tablist">
-        <button class="settings-tab active" data-settings-tab="run" type="button">General</button>
-        <button class="settings-tab" data-settings-tab="validation" type="button">Validation</button>
-        <button class="settings-tab" data-settings-tab="spreadsheet" type="button">ALM Workbook</button>
-        <button class="settings-tab" data-settings-tab="statuses" type="button">Request statuses</button>
+        <button class="settings-tab active" data-settings-tab="run" type="button"><i data-lucide="sliders-horizontal"></i><span>General</span></button>
+        <button class="settings-tab" data-settings-tab="validation" type="button"><i data-lucide="shield-check"></i><span>Validation</span></button>
+        <button class="settings-tab" data-settings-tab="spreadsheet" type="button"><i data-lucide="file-spreadsheet"></i><span>ALM Workbook</span></button>
+        <button class="settings-tab" data-settings-tab="statuses" type="button"><i data-lucide="list-ordered"></i><span>Request statuses</span></button>
       </div>
       <section data-settings-panel="run">
         <label>Appearance

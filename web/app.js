@@ -196,6 +196,12 @@ const elements = {
   queueCounts: $("#queueCounts"),
   queueSearch: $("#queueSearchInput"),
   queueFilterEmpty: $("#queueFilterEmpty"),
+  railStatusCard: $("#railStatusCard"),
+  railStatusIcon: $("#railStatusIcon"),
+  railStatusDetail: $("#railStatusDetail"),
+  railQueuedCount: $("#railQueuedCount"),
+  railReadyCount: $("#railReadyCount"),
+  railAttentionCount: $("#railAttentionCount"),
   connectionStatus: $("#connectionStatus"),
   queueValidationNotice: $("#queueValidationNotice"),
   queueValidationMessage: $("#queueValidationMessage"),
@@ -1298,6 +1304,40 @@ function syncQueueSorting() {
   state.queueSortable.option("disabled", submissionBusy() || state.queue.length < 2 || Boolean(state.queueSearch.trim()));
 }
 
+function renderRailStatus(validations) {
+  if (!elements.railStatusCard) return;
+  const requests = state.queue;
+  const failedIds = new Set(requests.filter((request) => request.result_state === "failed").map((request) => request.id));
+  const attentionCount = new Set([
+    ...requests.filter((request) => (validations.get(request.id) || []).length).map((request) => request.id),
+    ...failedIds,
+  ]).size;
+  const readyCount = requests.filter((request) => !(validations.get(request.id) || []).length
+    && !["succeeded", "failed"].includes(request.result_state)).length;
+  const liveSubmission = state.submissionStarting
+    || (state.currentJob && state.currentJob.state !== "finished");
+  const finishedSubmission = state.currentJob?.state === "finished";
+  const successfulSubmission = finishedSubmission
+    && !Number(state.currentJob?.counts?.failed || 0)
+    && readyCount === 0;
+  const tone = liveSubmission ? "active"
+    : attentionCount ? "attention"
+      : successfulSubmission ? "complete" : "idle";
+  const icon = liveSubmission ? "activity"
+    : attentionCount ? "circle-alert"
+      : successfulSubmission ? "circle-check" : requests.length ? "check" : "inbox";
+  const detail = liveSubmission ? "Submission in progress"
+    : attentionCount ? `${attentionCount} item${attentionCount === 1 ? " needs" : "s need"} attention`
+      : successfulSubmission ? "Last run completed" : requests.length ? "Ready to review" : "Ready when you are";
+  elements.railStatusCard.dataset.state = tone;
+  elements.railStatusIcon.innerHTML = iconMarkup(icon);
+  elements.railStatusDetail.textContent = detail;
+  elements.railQueuedCount.textContent = String(requests.length);
+  elements.railReadyCount.textContent = String(readyCount);
+  elements.railAttentionCount.textContent = String(attentionCount);
+  refreshIcons(elements.railStatusIcon);
+}
+
 function renderQueue() {
   const validations = queueValidation();
   const requestCount = state.queue.length;
@@ -1310,6 +1350,7 @@ function renderQueue() {
     : state.queue;
   const visibleCount = visibleRequests.length;
   const currentJobIds = new Set((state.currentJob?.entries || []).map((entry) => entry.id));
+  renderRailStatus(validations);
   const requestCountLabel = `${requestCount} request${requestCount === 1 ? "" : "s"}`;
   elements.queueCounts.textContent = query ? `${visibleCount} of ${requestCountLabel}` : requestCountLabel;
   elements.queueValidationNotice.hidden = invalidCount === 0;
