@@ -2627,7 +2627,7 @@ function connectionIsReady(status = state.connection) {
 function renderConnectionSheet(status = state.connection) {
   const ready = connectionIsReady(status);
   const stateName = status?.state || "checking";
-  const visualState = ready ? "connected" : ["checking", "connecting"].includes(stateName) ? "connecting" : "disconnected";
+  const visualState = ready ? "connected" : stateName === "connecting" ? "connecting" : "disconnected";
   if (state.connectionDismissTimer) {
     window.clearTimeout(state.connectionDismissTimer);
     state.connectionDismissTimer = null;
@@ -2640,7 +2640,11 @@ function renderConnectionSheet(status = state.connection) {
   elements.connectionVisual.dataset.state = visualState;
   elements.connectionVisual.setAttribute(
     "aria-label",
-    ready ? "AutoEUDM is connected to Helix" : "Connection from AutoEUDM to Helix is unavailable",
+    ready
+      ? "AutoEUDM is connected to Helix"
+      : visualState === "connecting"
+        ? "AutoEUDM is connecting to Helix"
+        : "AutoEUDM is waiting for Helix authentication",
   );
   const linkIcon = visualState === "connected" ? "link-2" : "link-2-off";
   if (elements.connectionLinkIcon.dataset.icon !== linkIcon) {
