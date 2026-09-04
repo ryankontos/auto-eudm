@@ -797,22 +797,22 @@ input:hover, select:hover, textarea:hover { border-color: #99a8b5; }
   display: inline-flex;
   align-items: center;
   max-width: 100%;
-  min-height: 0;
-  padding: 0;
+  min-height: 26px;
+  padding: 4px 8px;
   overflow: hidden;
-  border: 0;
-  border-radius: 0;
+  border: 1px solid var(--line);
+  border-radius: 999px;
   color: var(--muted);
-  background: transparent;
+  background: var(--surface-alt);
   font-size: 11px;
   font-weight: 650;
   line-height: 1.2;
   vertical-align: middle;
 }
 .status-chip > span:last-child { display: -webkit-box; min-width: 0; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow-wrap: anywhere; line-height: 1.15; }
-.status-chip.success { color: var(--green); }
-.status-chip.pending { color: var(--amber); }
-.status-chip.stock { color: var(--blue); }
+.status-chip.success { color: var(--green); border-color: color-mix(in srgb, var(--green) 34%, var(--line)); background: var(--green-soft); }
+.status-chip.pending { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 34%, var(--line)); background: var(--amber-soft); }
+.status-chip.stock { color: var(--blue); border-color: color-mix(in srgb, var(--blue) 28%, var(--line)); background: var(--blue-soft); }
 .status-chip.neutral { color: var(--muted); }
 .ready-mark, .invalid-mark {
   display: inline-grid; width: 22px; height: 22px; place-items: center; border-radius: 50%; font-size: 12px; font-weight: 800;
@@ -1024,6 +1024,18 @@ textarea { min-height: 88px; }
 input:hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var(--blue) 36%, var(--line-strong)); }
 .queue-search input { height: auto; min-height: 29px; }
 .history-search input { height: auto; min-height: 30px; }
+/* Composite controls own their border and background. The high-specificity
+   global field rule above must not paint an opaque, rounded input over the
+   middle of that border, which leaves only the two ends visible. */
+:is(.queue-search, .history-search, .command-palette-search, .search-control)
+  > input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+:is(.queue-search, .history-search, .command-palette-search, .search-control)
+  > select {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
 
 .validation-panel { margin: 12px 0; padding: 11px 12px; border: 1px solid var(--amber-border); border-left-width: 3px; border-radius: 9px; color: var(--amber-text); background: var(--amber-surface); font-size: 12px; }
 .validation-panel-heading,
