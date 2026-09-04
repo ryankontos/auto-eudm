@@ -9,6 +9,7 @@ const state = {
   selectedId: null,
   connection: null,
   connectionSheetEventsBound: false,
+  connectionDismissTimer: null,
   workbook: null,
   workbookInspection: null,
   importPreview: null,
@@ -92,13 +93,48 @@ function iconMarkup(name, className = "") {
 }
 
 function refreshIcons(root = document) {
-  if (!root || !window.lucide?.createIcons) return;
-  try {
-    window.lucide.createIcons({ root });
-  } catch (error) {
-    // Icons are decorative. A failed enhancement should never stop the UI.
-    console.warn("Could not enhance interface symbols.", error);
+  if (!root) return;
+  if (window.lucide?.createIcons) {
+    try {
+      window.lucide.createIcons({ root });
+    } catch (error) {
+      // Icons are decorative. A failed enhancement should never stop the UI.
+      console.warn("Could not enhance interface symbols.", error);
+    }
   }
+  refreshTooltips(root);
+}
+
+function refreshTooltips(root = document) {
+  if (typeof window.tippy !== "function" || !root?.querySelectorAll) return;
+  const selector = "button[title], button[aria-label], [role='button'][title], [role='button'][aria-label], .queue-drag-handle[title], [data-tooltip]";
+  const targets = [
+    ...(root.matches?.(selector) ? [root] : []),
+    ...root.querySelectorAll(selector),
+  ].filter((target) => !target.disabled);
+  if (!targets.length) return;
+  const options = {
+    theme: "autoeudm",
+    animation: "shift-away",
+    arrow: false,
+    delay: [420, 0],
+    duration: [130, 100],
+    placement: "top",
+    maxWidth: 250,
+    appendTo: () => document.body,
+  };
+  targets.forEach((target) => {
+    const title = target.getAttribute("title") || target.dataset.tooltip || target.getAttribute("aria-label");
+    if (!title) return;
+    // Keep a copy because Tippy removes the native title after enhancement.
+    // This also lets dynamic disabled/error labels stay accurate on rerender.
+    target.dataset.tooltip = title;
+    if (target._tippy) {
+      target._tippy.setContent(title);
+      return;
+    }
+    window.tippy(target, { ...options, content: title });
+  });
 }
 
 function setButtonLabel(buttonOrSelector, text) {
@@ -112,11 +148,10 @@ function setButtonLabel(buttonOrSelector, text) {
 function commandPaletteActions() {
   const reviewAvailable = Boolean(elements.reviewButton && !elements.reviewButton.disabled);
   const themeIsDark = effectiveTheme() === "dark";
-  return [
+  const actions = [
     { label: "New request", detail: "Prepare a single-device request", icon: "plus", shortcut: "N", run: startNewRequest },
     { label: "New bulk request", detail: "Prepare a multi-device request", icon: "layers-2", shortcut: "B", run: startNewBulkRequest },
     { label: "Quick import", detail: "Add devices from a list", icon: "list-plus", shortcut: "I", run: openPasteDialog },
-    { label: "Import ALM Workbook", detail: "Review an ALM spreadsheet", icon: "file-spreadsheet", shortcut: "A", run: openAlmWorkbookImport },
     ...(reviewAvailable ? [{ label: "Review & submit", detail: `Review ${state.queue.length} queued request${state.queue.length === 1 ? "" : "s"}`, icon: "send", shortcut: "⌥ Enter", run: openReview }] : []),
     { label: "Filter request queue", detail: "Find a serial, user, status, or location", icon: "search", shortcut: "", run: focusQueueSearch },
     { label: "Request history", detail: "Search submitted requests", icon: "history", shortcut: "⌥ ⇧ H", run: openHistory },
@@ -124,6 +159,10 @@ function commandPaletteActions() {
     { label: themeIsDark ? "Use light appearance" : "Use dark appearance", detail: "Change the interface theme", icon: themeIsDark ? "sun" : "moon", shortcut: "", run: toggleTheme },
     { label: "Keyboard shortcuts", detail: "See the quick actions", icon: "keyboard", shortcut: "?", run: openShortcuts },
   ];
+  if (state.config?.spreadsheet_import_enabled) {
+    actions.splice(3, 0, { label: "Import ALM Workbook", detail: "Review an ALM spreadsheet", icon: "file-spreadsheet", shortcut: "A", run: openAlmWorkbookImport });
+  }
+  return actions;
 }
 
 function filteredCommandPaletteActions() {
@@ -175,7 +214,7 @@ function openCommandPalette() {
 function setupOptionalListAnimation() {
   if (typeof window.autoAnimate !== "function"
     || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-  ["#commandPaletteList", "#pairsReviewList", "#bulkSerialList", "#importDraftList"].forEach((selector) => {
+  ["#commandPaletteList", "#pairsReviewList", "#bulkSerialList", "#importDraftList", "#historyList", "#toastRegion"].forEach((selector) => {
     const target = $(selector);
     if (!target || target.dataset.autoAnimateReady) return;
     try {
@@ -196,12 +235,6 @@ const elements = {
   queueCounts: $("#queueCounts"),
   queueSearch: $("#queueSearchInput"),
   queueFilterEmpty: $("#queueFilterEmpty"),
-  railStatusCard: $("#railStatusCard"),
-  railStatusIcon: $("#railStatusIcon"),
-  railStatusDetail: $("#railStatusDetail"),
-  railQueuedCount: $("#railQueuedCount"),
-  railReadyCount: $("#railReadyCount"),
-  railAttentionCount: $("#railAttentionCount"),
   connectionStatus: $("#connectionStatus"),
   queueValidationNotice: $("#queueValidationNotice"),
   queueValidationMessage: $("#queueValidationMessage"),
@@ -211,6 +244,8 @@ const elements = {
   submissionNoticeDetail: $("#submissionNoticeDetail"),
   connectionDialog: $("#connectionDialog"),
   connectionSheetTitle: $("#connectionSheetTitle"),
+  connectionVisual: $("#connectionVisual"),
+  connectionLinkIcon: $("#connectionLinkIcon"),
   connectionLoading: $("#connectionLoading"),
   connectionAuthenticateButton: $("#connectionAuthenticateButton"),
   historyButton: $("#historyButton"),
@@ -1304,40 +1339,6 @@ function syncQueueSorting() {
   state.queueSortable.option("disabled", submissionBusy() || state.queue.length < 2 || Boolean(state.queueSearch.trim()));
 }
 
-function renderRailStatus(validations) {
-  if (!elements.railStatusCard) return;
-  const requests = state.queue;
-  const failedIds = new Set(requests.filter((request) => request.result_state === "failed").map((request) => request.id));
-  const attentionCount = new Set([
-    ...requests.filter((request) => (validations.get(request.id) || []).length).map((request) => request.id),
-    ...failedIds,
-  ]).size;
-  const readyCount = requests.filter((request) => !(validations.get(request.id) || []).length
-    && !["succeeded", "failed"].includes(request.result_state)).length;
-  const liveSubmission = state.submissionStarting
-    || (state.currentJob && state.currentJob.state !== "finished");
-  const finishedSubmission = state.currentJob?.state === "finished";
-  const successfulSubmission = finishedSubmission
-    && !Number(state.currentJob?.counts?.failed || 0)
-    && readyCount === 0;
-  const tone = liveSubmission ? "active"
-    : attentionCount ? "attention"
-      : successfulSubmission ? "complete" : "idle";
-  const icon = liveSubmission ? "activity"
-    : attentionCount ? "circle-alert"
-      : successfulSubmission ? "circle-check" : requests.length ? "check" : "inbox";
-  const detail = liveSubmission ? "Submission in progress"
-    : attentionCount ? `${attentionCount} item${attentionCount === 1 ? " needs" : "s need"} attention`
-      : successfulSubmission ? "Last run completed" : requests.length ? "Ready to review" : "Ready when you are";
-  elements.railStatusCard.dataset.state = tone;
-  elements.railStatusIcon.innerHTML = iconMarkup(icon);
-  elements.railStatusDetail.textContent = detail;
-  elements.railQueuedCount.textContent = String(requests.length);
-  elements.railReadyCount.textContent = String(readyCount);
-  elements.railAttentionCount.textContent = String(attentionCount);
-  refreshIcons(elements.railStatusIcon);
-}
-
 function renderQueue() {
   const validations = queueValidation();
   const requestCount = state.queue.length;
@@ -1350,7 +1351,6 @@ function renderQueue() {
     : state.queue;
   const visibleCount = visibleRequests.length;
   const currentJobIds = new Set((state.currentJob?.entries || []).map((entry) => entry.id));
-  renderRailStatus(validations);
   const requestCountLabel = `${requestCount} request${requestCount === 1 ? "" : "s"}`;
   elements.queueCounts.textContent = query ? `${visibleCount} of ${requestCountLabel}` : requestCountLabel;
   elements.queueValidationNotice.hidden = invalidCount === 0;
@@ -1463,7 +1463,7 @@ function refreshSelectedValidation() {
   ];
   elements.validationPanel.hidden = !visibleErrors.length;
   elements.validationPanel.innerHTML = visibleErrors.length
-    ? `<ul>${visibleErrors.map((error) => `<li>${escapeHtml(error)}</li>`).join("")}</ul>`
+    ? `<div class="validation-panel-heading">${iconMarkup("triangle-alert")}<strong>Check before submitting</strong></div><ul>${visibleErrors.map((error) => `<li>${escapeHtml(error)}</li>`).join("")}</ul>`
     : "";
   const saveButton = $("#saveNewRequestButton");
   if (saveButton) saveButton.disabled = state.newRequest === request && errors.length > 0;
@@ -1800,7 +1800,7 @@ function refreshBulkValidationButton(request = selectedRequest()) {
   const missing = request.bulk_validation_missing || [];
   alert.hidden = !bulk || request.bulk_validation !== "failed" || !missing.length;
   alert.innerHTML = missing.length
-    ? `<strong>Could not verify</strong><ul>${missing.map((serial) => `<li>${escapeHtml(serial)}</li>`).join("")}</ul>`
+    ? `<div class="validation-panel-heading">${iconMarkup("triangle-alert")}<strong>Could not verify</strong></div><ul>${missing.map((serial) => `<li>${escapeHtml(serial)}</li>`).join("")}</ul>`
     : "";
 }
 
@@ -2627,12 +2627,34 @@ function connectionIsReady(status = state.connection) {
 function renderConnectionSheet(status = state.connection) {
   const ready = connectionIsReady(status);
   const stateName = status?.state || "checking";
+  const visualState = ready ? "connected" : ["checking", "connecting"].includes(stateName) ? "connecting" : "disconnected";
+  if (state.connectionDismissTimer) {
+    window.clearTimeout(state.connectionDismissTimer);
+    state.connectionDismissTimer = null;
+  }
   elements.connectionStatus.hidden = stateName !== "connected";
   elements.connectionSheetTitle.textContent = "EUDM authentication required";
   elements.connectionLoading.hidden = !["checking", "connecting"].includes(stateName);
   elements.connectionAuthenticateButton.textContent = "Authenticate in EUDM";
+  elements.connectionDialog.dataset.state = visualState;
+  elements.connectionVisual.dataset.state = visualState;
+  elements.connectionVisual.setAttribute(
+    "aria-label",
+    ready ? "AutoEUDM is connected to EUDM" : "Connection from AutoEUDM to EUDM is unavailable",
+  );
+  const linkIcon = visualState === "connected" ? "link-2" : "link-2-off";
+  if (elements.connectionLinkIcon.dataset.icon !== linkIcon) {
+    elements.connectionLinkIcon.dataset.icon = linkIcon;
+    elements.connectionLinkIcon.innerHTML = iconMarkup(linkIcon);
+  }
+  refreshIcons(elements.connectionVisual);
   if (ready) {
-    if (elements.connectionDialog.open) elements.connectionDialog.close();
+    if (elements.connectionDialog.open) {
+      state.connectionDismissTimer = window.setTimeout(() => {
+        state.connectionDismissTimer = null;
+        if (connectionIsReady() && elements.connectionDialog.open) elements.connectionDialog.close();
+      }, 420);
+    }
     return;
   }
   if (!elements.connectionDialog.open) elements.connectionDialog.showModal();
@@ -4502,7 +4524,7 @@ function renderBacklogPreview(payload) {
   const allIncluded = requests.length > 0 && included.length === requests.length;
   $("#importPreviewList").innerHTML = rows
     ? `<section class="import-preview-section"><div class="import-group-heading"><div><strong>Undeployed devices</strong><small>${included.length} of ${requests.length} selected</small></div><div class="import-group-actions"><button class="text-button" type="button" data-backlog-toggle>${iconMarkup(allIncluded ? "square-minus" : "list-checks")}<span>${allIncluded ? "Deselect all deployments" : "Select all deployments"}</span></button></div></div>${rows}</section>`
-    : `<div class="import-empty">${escapeHtml(emptyMessage)}</div>`;
+    : `<div class="import-empty">${iconMarkup("search-x")}<strong>${escapeHtml(emptyMessage)}</strong><small>Try a wider date range or include today.</small></div>`;
   $("#importPreviewList").querySelectorAll("[data-backlog-status]").forEach((select) => select.addEventListener("change", () => {
     const request = requests.find((item) => item.id === select.dataset.backlogStatus);
     if (request && request.status !== select.value) {
@@ -4677,7 +4699,7 @@ function renderImportPreview() {
       </div>`;
     }).join("");
     const missingUsernameWarning = missingUsernameWarnings.length
-      ? `<div class="import-data-warning" role="status"><strong>Deployment serial${missingUsernameWarnings.length === 1 ? "" : "s"} without a username</strong><small>These rows have no username in the Username column.</small><ul>${missingUsernameWarnings.map((warning) => `<li>${escapeHtml(warning.serial)} · row ${escapeHtml(warning.row_number)} · ${escapeHtml(warning.date)}</li>`).join("")}</ul></div>`
+      ? `<div class="import-data-warning" role="status"><div class="import-data-warning-heading">${iconMarkup("user-round-x")}<strong>Deployment serial${missingUsernameWarnings.length === 1 ? "" : "s"} without a username</strong></div><small>These rows have no username in the Username column.</small><ul>${missingUsernameWarnings.map((warning) => `<li>${escapeHtml(warning.serial)} · row ${escapeHtml(warning.row_number)} · ${escapeHtml(warning.date)}</li>`).join("")}</ul></div>`
       : "";
     const bulkStatusOptions = ALM_IMPORT_STATUS_OPTIONS[group.key] || [];
     const bulkStatusControl = bulkStatusOptions.length
@@ -6300,6 +6322,11 @@ function bindEvents() {
     }
   });
   bindConnectionSheetEvents();
+  elements.connectionStatus.addEventListener("click", () => {
+    // Keep the successful state compact, but make it the reconnect control the
+    // moment the user needs to refresh a stale EUDM session.
+    void connect();
+  });
   elements.historyButton.addEventListener("click", openHistory);
   $("#historySearchInput").addEventListener("input", () => renderHistory(state.historyRuns));
   $("#historyStateFilter").addEventListener("change", () => renderHistory(state.historyRuns));
@@ -6492,7 +6519,7 @@ function bindEvents() {
         startNewBulkRequest();
         return;
       }
-      if (key === "a") {
+      if (key === "a" && state.config?.spreadsheet_import_enabled) {
         event.preventDefault();
         openAlmWorkbookImport();
         return;
@@ -6558,7 +6585,7 @@ function bindEvents() {
     } else if (code === "KeyI") {
       event.preventDefault();
       openPasteDialog();
-    } else if (code === "KeyO") {
+    } else if (code === "KeyO" && state.config?.spreadsheet_import_enabled) {
       event.preventDefault();
       openAlmWorkbookImport();
     } else if (code === "Comma") {

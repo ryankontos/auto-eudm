@@ -14,17 +14,18 @@
     } catch (_) {}
   </script>
   <link rel="stylesheet" href="/app.css">
+  <link rel="stylesheet" href="/vendor/tippy.css">
 </head>
 <body>
   <header class="app-header">
     <div class="product-name">AutoEUDM</div>
     <div class="header-actions">
-      <div id="connectionStatus" class="connection-status" role="status" hidden>
+      <button id="connectionStatus" class="connection-status" type="button" aria-label="Refresh EUDM connection" title="Refresh EUDM connection" hidden>
         <span class="connection-status-dot" aria-hidden="true"></span>
         <span>Connected</span>
-      </div>
+      </button>
       <button id="commandPaletteButton" class="button secondary compact" type="button" aria-label="Open command palette" title="Open command palette (⌘K or Ctrl+K)"><i data-lucide="command"></i><span>Commands</span></button>
-      <button id="historyButton" class="button secondary compact" type="button"><i data-lucide="history"></i><span>Request history</span></button>
+      <button id="historyButton" class="button secondary compact" type="button" aria-keyshortcuts="Alt+Shift+H Control+Shift+H" title="Open request history"><i data-lucide="history"></i><span>Request history</span></button>
     </div>
   </header>
 
@@ -32,38 +33,28 @@
     <aside class="tool-rail" aria-label="Request preparation tools">
       <div class="rail-section">
         <h2>Import</h2>
-        <button id="pastePairsButton" class="tool-button" type="button">
+        <button id="pastePairsButton" class="tool-button" type="button" aria-keyshortcuts="Alt+I Control+I">
           <span class="tool-icon import-icon" aria-hidden="true"><i data-lucide="list-plus"></i></span>
-          <span><strong>Quick import</strong><small>Add devices as you go</small></span>
+          <span class="tool-copy"><strong>Quick import</strong><small>Add devices as you go</small></span>
+          <kbd class="tool-shortcut" aria-hidden="true">I</kbd>
         </button>
-        <button id="importSheetButton" class="tool-button" type="button">
+        <button id="importSheetButton" class="tool-button" type="button" aria-keyshortcuts="A">
           <span class="tool-icon import-icon" aria-hidden="true"><i data-lucide="file-up"></i></span>
-          <span><strong>Import ALM Workbook</strong><small>Import a local spreadsheet</small></span>
+          <span class="tool-copy"><strong>Import ALM Workbook</strong><small>Import a local spreadsheet</small></span>
+          <kbd class="tool-shortcut" aria-hidden="true">A</kbd>
         </button>
         <button id="almBacklogButton" class="tool-button" type="button">
           <span class="tool-icon import-icon backlog-icon" aria-hidden="true"><i data-lucide="search-check"></i></span>
-          <span><strong>ALM deployment backlog</strong><small>Find undeployed devices</small></span>
+          <span class="tool-copy"><strong>ALM backlog</strong><small>Find undeployed devices</small></span>
         </button>
         <button id="resumeLatestImportButton" class="tool-button resume-import-tool" type="button" hidden>
           <span class="tool-icon resume-icon" aria-hidden="true"><i data-lucide="rotate-ccw"></i></span>
-          <span><strong id="resumeImportDraftTitle">Resume ALM import</strong><small id="resumeImportDraftDetail"></small></span>
+          <span class="tool-copy"><strong id="resumeImportDraftTitle">Resume ALM import</strong><small id="resumeImportDraftDetail"></small></span>
         </button>
       </div>
 
-      <section id="railStatusCard" class="rail-status-card" aria-label="Queue summary">
-        <div class="rail-status-heading">
-          <span id="railStatusIcon" class="rail-status-icon" aria-hidden="true"><i data-lucide="activity"></i></span>
-          <span><strong>Workspace</strong><small id="railStatusDetail" aria-live="polite">Ready when you are</small></span>
-        </div>
-        <div class="rail-status-metrics">
-          <span><strong id="railQueuedCount">0</strong><small>queued</small></span>
-          <span><strong id="railReadyCount">0</strong><small>ready</small></span>
-          <span><strong id="railAttentionCount">0</strong><small>attention</small></span>
-        </div>
-      </section>
-
       <div class="rail-bottom-action">
-        <button id="settingsButton" class="tool-button settings-tool-button" type="button"><span class="tool-icon settings-icon" aria-hidden="true"><i data-lucide="settings-2"></i></span><span><strong>Settings</strong></span></button>
+        <button id="settingsButton" class="tool-button settings-tool-button" type="button" aria-keyshortcuts="Alt+, Control+," title="Open settings"><span class="tool-icon settings-icon" aria-hidden="true"><i data-lucide="settings-2"></i></span><span class="tool-copy"><strong>Settings</strong></span></button>
       </div>
     </aside>
 
@@ -78,7 +69,7 @@
             <i data-lucide="search" aria-hidden="true"></i>
             <input id="queueSearchInput" type="search" autocomplete="off" spellcheck="false" placeholder="Filter queue" aria-label="Filter request queue">
           </label>
-          <button id="newRequestButton" class="new-request-button" type="button" aria-label="Prepare a request" title="Prepare a request"><i data-lucide="plus"></i></button>
+          <button id="newRequestButton" class="new-request-button" type="button" aria-label="Prepare a request" aria-keyshortcuts="N" title="Prepare a request (N)"><i data-lucide="plus"></i></button>
         </div>
       </div>
 
@@ -133,8 +124,8 @@
         </table>
       </div>
       <div class="queue-toolbar">
-        <button id="clearQueueButton" class="button quiet compact" type="button"><i data-lucide="trash-2"></i><span>Clear</span></button>
-        <button id="reviewButton" class="button primary" type="button" disabled><i data-lucide="send"></i><span>Review &amp; submit</span></button>
+        <button id="clearQueueButton" class="button quiet compact" type="button" title="Remove every request from the queue"><i data-lucide="trash-2"></i><span>Clear</span></button>
+        <button id="reviewButton" class="button primary" type="button" disabled title="Review every request before submitting"><i data-lucide="send"></i><span>Review &amp; submit</span></button>
       </div>
     </section>
 
@@ -305,6 +296,21 @@
   <dialog id="connectionDialog" class="connection-dialog">
     <section class="connection-sheet-card" aria-labelledby="connectionSheetTitle">
       <h1 id="connectionSheetTitle">EUDM authentication required</h1>
+      <div id="connectionVisual" class="connection-visual" data-state="disconnected" role="img" aria-label="Connection from AutoEUDM to EUDM is unavailable">
+        <div class="connection-node">
+          <span class="connection-node-icon"><i data-lucide="laptop-minimal"></i></span>
+          <span class="connection-node-label">AutoEUDM</span>
+        </div>
+        <div class="connection-path" aria-hidden="true">
+          <span class="connection-path-line"></span>
+          <span id="connectionLinkIcon" class="connection-link-icon"><i data-lucide="link-2-off"></i></span>
+          <span class="connection-path-line"></span>
+        </div>
+        <div class="connection-node">
+          <span class="connection-node-icon"><i data-lucide="server"></i></span>
+          <span class="connection-node-label">EUDM</span>
+        </div>
+      </div>
       <div id="connectionLoading" class="connection-loading" role="status" aria-label="Checking EUDM authentication" hidden></div>
       <div class="connection-sheet-actions">
         <button id="connectionAuthenticateButton" class="button primary" type="button">Authenticate in EUDM</button>
@@ -338,7 +344,7 @@
         <div class="quick-import-add always-visible">
           <input id="pairsAddUsername" type="text" autocomplete="off" spellcheck="false" placeholder="Username (optional)" aria-label="Username">
           <input id="pairsAddSerial" type="text" autocomplete="off" spellcheck="false" placeholder="Serial number" aria-label="Serial number">
-          <button id="pairsConfirmAddButton" class="button secondary compact" type="button" aria-label="Add device"><i data-lucide="plus"></i></button>
+          <button id="pairsConfirmAddButton" class="button secondary compact" type="button" aria-label="Add device" title="Add device"><i data-lucide="plus"></i></button>
         </div>
         <button id="pairsTextModeButton" class="text-button" type="button">Add a list instead</button>
         <div id="pairsTextMode" hidden>
@@ -394,7 +400,7 @@
         <li id="importStep3"><span>3</span>Review</li>
       </ol>
       <div id="importVerificationWarnings" class="import-verification-warning" role="status" aria-live="polite" hidden>
-        <strong>Verification needs attention</strong>
+        <div class="import-verification-warning-heading"><i data-lucide="shield-alert" aria-hidden="true"></i><strong>Verification needs attention</strong></div>
         <ul id="importVerificationWarningList"></ul>
       </div>
       <div id="importStage" class="import-stage">
@@ -657,6 +663,7 @@
       </div>
       <div class="history-toolbar">
         <label class="history-search" for="historySearchInput">
+          <i data-lucide="search" aria-hidden="true"></i>
           <span class="visually-hidden">Search request history</span>
           <input id="historySearchInput" type="search" placeholder="Search serial, person, status or request ID">
         </label>
@@ -682,6 +689,7 @@
   <script src="/vendor/canvas-confetti.js" defer></script>
   <script src="/vendor/sortable.min.js" defer></script>
   <script src="/vendor/auto-animate-loader.js" defer></script>
+  <script src="/vendor/tippy-bundle.umd.min.js" defer></script>
   <script src="/app.js" defer></script>
 </body>
 </html>

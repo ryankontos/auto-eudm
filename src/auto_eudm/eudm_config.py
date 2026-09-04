@@ -107,5 +107,8 @@ class AppConfig:
             logging=env_bool("EUDM_LOGGING"),
             concurrency=int(raw_concurrency),
             manual_review=env_bool("EUDM_MANUAL_REVIEW"),
-            spreadsheet_import_enabled=env_bool("EUDM_ENABLE_SPREADSHEET_IMPORT"),
+            # Workbook importing is a core web workflow. Keep it available for
+            # direct starts as well as the generated .env template, while still
+            # allowing an explicit false value to disable it.
+            spreadsheet_import_enabled=env_bool("EUDM_ENABLE_SPREADSHEET_IMPORT", True),
         )
