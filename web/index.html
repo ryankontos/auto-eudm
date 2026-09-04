@@ -20,9 +20,9 @@
   <header class="app-header">
     <div class="product-name">AutoEUDM</div>
     <div class="header-actions">
-      <button id="connectionStatus" class="connection-status" type="button" aria-label="Refresh Helix connection" title="Refresh Helix connection" hidden>
+      <button id="connectionStatus" class="button secondary compact connection-status" type="button" aria-label="Helix authentication" title="Open Helix authentication" hidden>
         <span class="connection-status-dot" aria-hidden="true"></span>
-        <span>Connected</span>
+        <span>Authenticated with Helix</span>
       </button>
       <button id="commandPaletteButton" class="button secondary compact" type="button" aria-label="Open command palette" title="Open command palette (⌘K or Ctrl+K)"><i data-lucide="command"></i><span>Commands</span></button>
       <button id="historyButton" class="button secondary compact" type="button" aria-keyshortcuts="Alt+Shift+H Control+Shift+H" title="Open request history"><i data-lucide="history"></i><span>Request history</span></button>
@@ -51,12 +51,14 @@
           <span class="tool-icon resume-icon" aria-hidden="true"><i data-lucide="rotate-ccw"></i></span>
           <span class="tool-copy"><strong id="resumeImportDraftTitle">Resume ALM import</strong><small id="resumeImportDraftDetail"></small></span>
         </button>
+        <button id="clearLatestImportButton" class="text-button clear-resume-import" type="button" hidden><i data-lucide="x"></i><span>Clear saved import</span></button>
       </div>
 
       <div class="rail-bottom-action">
         <button id="settingsButton" class="tool-button settings-tool-button" type="button" aria-keyshortcuts="Alt+, Control+," title="Open settings"><span class="tool-icon settings-icon" aria-hidden="true"><i data-lucide="settings-2"></i></span><span class="tool-copy"><strong>Settings</strong></span></button>
       </div>
     </aside>
+    <div id="railResizeHandle" class="sidebar-resize-handle rail-resize-handle" role="separator" aria-label="Resize sidebar" aria-orientation="vertical"></div>
 
     <section class="queue-panel" aria-labelledby="queueHeading">
       <div class="queue-header">
@@ -129,6 +131,7 @@
     </section>
 
     <div id="inspectorShell" class="inspector-shell">
+      <div id="inspectorResizeHandle" class="sidebar-resize-handle inspector-resize-handle" role="separator" aria-label="Resize request editor" aria-orientation="vertical"></div>
       <aside id="inspector" class="inspector is-closed" aria-labelledby="inspectorHeading" aria-hidden="true">
         <div id="inspectorEmpty" class="inspector-empty">
           <h2>Request details</h2>
@@ -310,7 +313,6 @@
           <span class="connection-node-label">Helix</span>
         </div>
       </div>
-      <p class="connection-sheet-copy">Opens Helix in a new window so AutoEUDM can capture your authenticated session.</p>
       <div id="connectionLoading" class="connection-loading" role="status" aria-label="Checking Helix authentication" hidden></div>
       <div class="connection-sheet-actions">
         <button id="connectionAuthenticateButton" class="button primary" type="button">Authenticate in Helix</button>
@@ -415,10 +417,6 @@
         </div>
         <div id="importStageContent" class="import-stage-content">
           <div id="importChoose">
-            <div id="importDrafts" class="import-drafts" hidden>
-              <div class="import-drafts-heading"><strong>Saved ALM imports</strong><small>Resume an import or delete it when it is no longer needed.</small></div>
-              <div id="importDraftList"></div>
-            </div>
             <div id="importFileChooser">
               <label class="file-drop" for="workbookInput">
                 <span class="file-symbol" aria-hidden="true"><i data-lucide="file-spreadsheet"></i></span>
@@ -635,6 +633,7 @@
 
   <dialog id="progressDialog" class="modal progress-modal">
     <div class="modal-card extra-wide progress-card">
+      <canvas id="progressConfettiCanvas" class="progress-confetti-canvas" aria-hidden="true"></canvas>
       <div class="modal-header">
         <h2 id="progressHeading">Submitting requests</h2>
         <button id="closeProgressButton" class="icon-button" type="button" aria-label="Close progress" title="Continue in the background"><i data-lucide="x"></i></button>

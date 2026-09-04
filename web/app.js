@@ -10,6 +10,7 @@ const state = {
   connection: null,
   connectionSheetEventsBound: false,
   connectionDismissTimer: null,
+  connectionSheetManual: false,
   workbook: null,
   workbookInspection: null,
   importPreview: null,
@@ -38,6 +39,7 @@ const state = {
   locationLoading: new Map(),
   locationRetryCities: new Set(),
   locationRetryTimer: null,
+  lookupCache: { serial: [], user: [] },
   recordedLocationJobs: new Set(),
   newRequest: null,
   importUndoStack: [],
@@ -62,6 +64,9 @@ const state = {
 
 const THEME_STORAGE_KEY = "auto-eudm-theme";
 const RECENT_LOCATIONS_STORAGE_KEY = "auto-eudm-recent-locations";
+const LOCATION_RESULTS_STORAGE_KEY = "auto-eudm-location-results";
+const RAIL_WIDTH_STORAGE_KEY = "auto-eudm-rail-width";
+const INSPECTOR_WIDTH_STORAGE_KEY = "auto-eudm-inspector-width";
 const CONCURRENCY_STORAGE_KEY = "auto-eudm-concurrency";
 const IMPORT_COLUMNS_STORAGE_KEY = "auto-eudm-import-columns";
 const IMPORT_LOCATION_STORAGE_KEY = "auto-eudm-import-location";
@@ -215,7 +220,7 @@ function openCommandPalette() {
 function setupOptionalListAnimation() {
   if (typeof window.autoAnimate !== "function"
     || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-  ["#commandPaletteList", "#pairsReviewList", "#bulkSerialList", "#importDraftList", "#historyList", "#toastRegion"].forEach((selector) => {
+  ["#commandPaletteList", "#pairsReviewList", "#bulkSerialList", "#toastRegion"].forEach((selector) => {
     const target = $(selector);
     if (!target || target.dataset.autoAnimateReady) return;
     try {
@@ -249,6 +254,8 @@ const elements = {
   connectionLinkIcon: $("#connectionLinkIcon"),
   connectionLoading: $("#connectionLoading"),
   connectionAuthenticateButton: $("#connectionAuthenticateButton"),
+  railResizeHandle: $("#railResizeHandle"),
+  inspectorResizeHandle: $("#inspectorResizeHandle"),
   historyButton: $("#historyButton"),
   historyList: $("#historyList"),
   reviewButton: $("#reviewButton"),
@@ -660,6 +667,45 @@ function verifyCachedValueInBackground(kind, query, returning, onResult, onError
       // The cached verification remains usable when the background refresh
       // cannot reach Helix. A later foreground verification can retry it.
     });
+}
+
+function rememberLookupResults(kind, results) {
+  const cache = state.lookupCache[kind];
+  if (!Array.isArray(cache)) return;
+  for (const result of results || []) {
+    const key = kind === "serial" ? bestSerial(result) : bestLogin(result);
+    if (!key) continue;
+    const existing = cache.findIndex((item) => (kind === "serial" ? bestSerial(item) : bestLogin(item)) === key);
+    if (existing >= 0) cache.splice(existing, 1);
+    cache.unshift(result);
+  }
+  cache.splice(80);
+}
+
+function applyCachedSerialSelection(request, value) {
+  const result = state.lookupCache.serial.find((item) => serialResultMatches(item, value));
+  if (!result) return false;
+  request.serials = [bestSerial(result, value)];
+  request.serial_selected = true;
+  request.serial_validation = "valid";
+  request.serial_validation_error = "";
+  request.cached_serial_verification = true;
+  return true;
+}
+
+function applyCachedUserSelection(request, value, returning) {
+  const field = returning ? "returning_user" : "user";
+  const result = state.lookupCache.user.find((item) => userResultMatches(item, value));
+  if (!result) return false;
+  const login = bestLogin(result, value);
+  request[field] = login;
+  request[`${field}_selected`] = true;
+  request[`${field}_info`] = { login, columns: (result.columns || [result.value]).map(String).filter(Boolean) };
+  request[`${field}_validation`] = "valid";
+  request[`${field}_validation_error`] = "";
+  if (returning) request.returning_user_loading = false;
+  request.cached_user_verification = true;
+  return true;
 }
 
 function emptyLocation() {
@@ -1284,8 +1330,7 @@ function statusMarkup(request) {
 
 function requestKindSymbol(kind) {
   if (kind === "user") return "user-round";
-  if (kind === "bulk_location") return "layers-2";
-  return "map-pin";
+  return "building-2";
 }
 
 function requestKindTone(kind) {
@@ -1300,7 +1345,7 @@ function requestKindMarkup(kind) {
 
 function destinationMarkup(request) {
   const isUser = request?.kind === "user";
-  return `<span class="kind-icon ${isUser ? "user" : "location"}" aria-hidden="true">${iconMarkup(isUser ? "user-round" : "map-pin")}</span>`;
+  return `<span class="kind-icon ${isUser ? "user" : "location"}" aria-hidden="true">${iconMarkup(isUser ? "user-round" : "building-2")}</span>`;
 }
 
 function kindLabel(kind) {
@@ -1498,18 +1543,10 @@ function refreshSelectedValidation() {
   const errors = state.newRequest === request
     ? newRequestValidationErrors(request)
     : queueValidation().get(request.id) || [];
-  const visibleErrors = [
-    ...(request.result_state === "failed" && request.result_message
-      ? [`Last submission failed: ${request.result_message}`]
-      : []),
-    ...errors.filter((error) =>
-    !error.startsWith("__field_") && !/^Verifying .+ Please wait\.$/.test(error)
-    ),
-  ];
-  elements.validationPanel.hidden = !visibleErrors.length;
-  elements.validationPanel.innerHTML = visibleErrors.length
-    ? `<div class="validation-panel-heading">${iconMarkup("triangle-alert")}<strong>Check before submitting</strong></div><ul>${visibleErrors.map((error) => `<li>${escapeHtml(error)}</li>`).join("")}</ul>`
-    : "";
+  // Field-level lookup states already explain what needs attention. Repeating
+  // them in a large warning panel makes the request form feel less direct.
+  elements.validationPanel.hidden = true;
+  elements.validationPanel.replaceChildren();
   const saveButton = $("#saveNewRequestButton");
   if (saveButton) saveButton.disabled = state.newRequest === request && errors.length > 0;
 }
@@ -2014,11 +2051,28 @@ function renderSearchResults(container, results, onSelect, primaryIndex = 0) {
 }
 
 function locationResults(city) {
-  return state.locationCache.get(city) || [];
+  if (state.locationCache.has(city)) return state.locationCache.get(city) || [];
+  try {
+    const stored = JSON.parse(localStorage.getItem(LOCATION_RESULTS_STORAGE_KEY) || "{}");
+    const results = Array.isArray(stored?.[city]) ? stored[city] : [];
+    if (results.length) state.locationCache.set(city, results);
+    return results;
+  } catch (_) {
+    return [];
+  }
 }
 
 function hasLoadedLocations(city) {
-  return Boolean(city) && state.locationCache.has(city);
+  return Boolean(city) && (state.locationCache.has(city) || locationResults(city).length > 0);
+}
+
+function rememberLocationResults(city, results) {
+  state.locationCache.set(city, results);
+  try {
+    const stored = JSON.parse(localStorage.getItem(LOCATION_RESULTS_STORAGE_KEY) || "{}");
+    stored[city] = results;
+    localStorage.setItem(LOCATION_RESULTS_STORAGE_KEY, JSON.stringify(stored));
+  } catch (_) {}
 }
 
 function locationEmptyText(city) {
@@ -2041,11 +2095,13 @@ function fetchLocationResults(city, { force = false } = {}) {
     body: JSON.stringify({ city }),
   }).then((payload) => {
     const results = payload.results || [];
-    state.locationCache.set(city, results);
+    rememberLocationResults(city, results);
     state.locationRetryCities.delete(city);
     return results;
   }).catch((error) => {
     scheduleLocationRetry(city);
+    const cached = locationResults(city);
+    if (cached.length) return cached;
     throw error;
   }).finally(() => {
     state.locationLoading.delete(city);
@@ -2306,6 +2362,7 @@ async function loadSerialSuggestions(request, query, { requireSelection = true }
     });
     if (!validationStillCurrent(request, "serial", epoch, value)) return;
     const results = payload.results || [];
+    rememberLookupResults("serial", results);
     const exactAsset = results.find((item) => serialResultMatches(item, value));
     const cachedExact = Boolean(payload.cached && exactAsset);
     // A serial is unique. If Helix also returns fuzzy matches, an exact serial
@@ -2405,6 +2462,7 @@ async function validateUserAfterPause(request, returning = false) {
     });
     if (!validationStillCurrent(request, field, epoch, value)) return;
     const results = payload.results || [];
+    rememberLookupResults("user", results);
     const cachedResult = payload.cached
       ? results.find((item) => userResultMatches(item, value))
       : null;
@@ -2677,14 +2735,19 @@ function renderConnectionSheet(status = state.connection) {
   const ready = connectionIsReady(status);
   const stateName = status?.state || "checking";
   const visualState = ready ? "connected" : stateName === "connecting" ? "connecting" : "disconnected";
-  if (state.connectionDismissTimer) {
+  if (!ready && state.connectionDismissTimer) {
     window.clearTimeout(state.connectionDismissTimer);
     state.connectionDismissTimer = null;
   }
-  elements.connectionStatus.hidden = stateName !== "connected";
-  elements.connectionSheetTitle.textContent = "Helix Authentication Required";
+  elements.connectionStatus.hidden = !ready;
+  elements.connectionSheetTitle.textContent = ready
+    ? "Authenticated with Helix"
+    : "Helix Authentication Required";
   elements.connectionLoading.hidden = !["checking", "connecting"].includes(stateName);
-  elements.connectionAuthenticateButton.textContent = "Authenticate in Helix";
+  elements.connectionAuthenticateButton.disabled = stateName === "connecting";
+  elements.connectionAuthenticateButton.textContent = stateName === "connecting"
+    ? "Authenticating…"
+    : ready ? "Reauthenticate" : "Authenticate in Helix";
   elements.connectionDialog.dataset.state = visualState;
   elements.connectionVisual.dataset.state = visualState;
   elements.connectionVisual.setAttribute(
@@ -2702,26 +2765,24 @@ function renderConnectionSheet(status = state.connection) {
   }
   refreshIcons(elements.connectionVisual);
   if (ready) {
-    if (elements.connectionDialog.open) {
+    if (elements.connectionDialog.open && !state.connectionSheetManual && !state.connectionDismissTimer) {
       state.connectionDismissTimer = window.setTimeout(() => {
         state.connectionDismissTimer = null;
-        if (connectionIsReady() && elements.connectionDialog.open) elements.connectionDialog.close();
-      }, 420);
+        if (connectionIsReady() && elements.connectionDialog.open && !state.connectionSheetManual) elements.connectionDialog.close();
+      }, 1400);
     }
     return;
   }
+  state.connectionSheetManual = false;
   if (!elements.connectionDialog.open) elements.connectionDialog.showModal();
 }
 
 function updateConnection(status) {
   const previousState = state.connection?.state;
   state.connection = status;
-  if (status.state === "connected" && previousState && previousState !== "connected") {
-    // Results from an expired session are not trustworthy. Reload them after
-    // a successful reconnection rather than retaining stale choices.
-    state.locationCache.clear();
-    state.locationLoading.clear();
-  }
+  // Location choices are safe to reuse and are especially useful when Helix
+  // will not load the location table until a serial has been entered.
+  if (status.state === "connected" && previousState && previousState !== "connected") state.locationLoading.clear();
   renderConnectionSheet(status);
   if (status.state === "connected" && !state.liveOptionsLoaded) {
     refreshFormOptions();
@@ -2790,6 +2851,52 @@ function bindConnectionSheetEvents() {
   state.connectionSheetEventsBound = true;
   elements.connectionAuthenticateButton.addEventListener("click", connect);
   elements.connectionDialog.addEventListener("cancel", (event) => event.preventDefault());
+}
+
+function openConnectionSheet() {
+  state.connectionSheetManual = true;
+  if (!elements.connectionDialog.open) elements.connectionDialog.showModal();
+  renderConnectionSheet();
+}
+
+function restoreSidebarWidths() {
+  try {
+    const rail = Number(localStorage.getItem(RAIL_WIDTH_STORAGE_KEY));
+    const inspector = Number(localStorage.getItem(INSPECTOR_WIDTH_STORAGE_KEY));
+    if (rail >= 180 && rail <= 360) elements.workspace.style.setProperty("--rail-width", `${rail}px`);
+    if (inspector >= 320 && inspector <= 700) elements.workspace.style.setProperty("--inspector-width", `${inspector}px`);
+  } catch (_) {}
+}
+
+function bindSidebarResize(handle, side) {
+  if (!handle) return;
+  handle.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || window.matchMedia("(max-width: 900px)").matches) return;
+    event.preventDefault();
+    const startX = event.clientX;
+    const current = Number.parseFloat(getComputedStyle(elements.workspace).getPropertyValue(side === "rail" ? "--rail-width" : "--inspector-width"))
+      || (side === "rail" ? 224 : 400);
+    document.body.classList.add("is-resizing-sidebar");
+    handle.setPointerCapture?.(event.pointerId);
+    const move = (moveEvent) => {
+      const delta = moveEvent.clientX - startX;
+      const next = side === "rail" ? current + delta : current - delta;
+      const width = Math.max(side === "rail" ? 180 : 320, Math.min(side === "rail" ? 360 : 700, next));
+      elements.workspace.style.setProperty(side === "rail" ? "--rail-width" : "--inspector-width", `${width}px`);
+    };
+    const stop = () => {
+      document.body.classList.remove("is-resizing-sidebar");
+      const property = side === "rail" ? "--rail-width" : "--inspector-width";
+      const width = Math.round(Number.parseFloat(getComputedStyle(elements.workspace).getPropertyValue(property)));
+      try { localStorage.setItem(side === "rail" ? RAIL_WIDTH_STORAGE_KEY : INSPECTOR_WIDTH_STORAGE_KEY, String(width)); } catch (_) {}
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop, { once: true });
+    window.addEventListener("pointercancel", stop, { once: true });
+  });
 }
 
 function openPasteDialog() {
@@ -4146,7 +4253,10 @@ function deleteImportDraft(id) {
 function renderImportDrafts() {
   const wrapper = $("#importDrafts");
   const list = $("#importDraftList");
-  if (!wrapper || !list) return;
+  if (!wrapper || !list) {
+    renderLatestImportDraft();
+    return;
+  }
   const drafts = readImportDrafts();
   wrapper.hidden = !drafts.length;
   list.innerHTML = drafts.map((draft) => {
@@ -4171,10 +4281,12 @@ function renderImportDrafts() {
 
 function renderLatestImportDraft() {
   const button = $("#resumeLatestImportButton");
+  const clearButton = $("#clearLatestImportButton");
   if (!button) return;
   const latest = readImportDrafts()[0];
   const visible = state.preferences.save_alm_import_drafts !== false && Boolean(latest);
   button.hidden = !visible;
+  if (clearButton) clearButton.hidden = !visible;
   if (!visible) return;
   $("#resumeImportDraftTitle").textContent = `Resume ${latest.filename || "ALM import"}`;
   const timestamp = new Date(latest.saved_at || "");
@@ -4183,6 +4295,9 @@ function renderLatestImportDraft() {
   button.onclick = () => {
     $("#importDialog").showModal();
     resumeImportDraft(latest.id);
+  };
+  if (clearButton) clearButton.onclick = () => {
+    if (confirm(`Clear the saved ALM import “${latest.filename || "ALM Workbook"}”?`)) void deleteImportDraft(latest.id);
   };
 }
 
@@ -5703,7 +5818,10 @@ function celebrateSubmission(job) {
     window.setTimeout(() => celebration.classList.remove("is-celebrating"), 1800);
   }
   if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-  const burst = window.confetti;
+  const canvas = $("#progressConfettiCanvas");
+  const burst = canvas && typeof window.confetti?.create === "function"
+    ? window.confetti.create(canvas, { resize: true, useWorker: true })
+    : window.confetti;
   if (typeof burst !== "function") return;
   const colors = ["#f48234", "#24724a", "#f9c56d", "#ffffff"];
   try {
@@ -6562,10 +6680,12 @@ function bindEvents() {
   });
   bindConnectionSheetEvents();
   elements.connectionStatus.addEventListener("click", () => {
-    // Keep the successful state compact, but make it the reconnect control the
-    // moment the user needs to refresh a stale Helix session.
-    void connect();
+    // Opening this sheet is deliberately passive. Reauthentication starts
+    // only when the user chooses it from the sheet.
+    openConnectionSheet();
   });
+  bindSidebarResize(elements.railResizeHandle, "rail");
+  bindSidebarResize(elements.inspectorResizeHandle, "inspector");
   elements.historyButton.addEventListener("click", openHistory);
   $("#historySearchInput").addEventListener("input", () => renderHistory(state.historyRuns));
   $("#historyStateFilter").addEventListener("change", () => renderHistory(state.historyRuns));
@@ -6611,7 +6731,16 @@ function bindEvents() {
     request.serial_validation_error = "";
     request.cached_serial_verification = false;
     if (value) setLookupInputStatus("serial", value);
-    if (request.serials.length) scheduleValidation(request, "serial", () => loadSerialSuggestions(request, value, { requireSelection: true }));
+    if (value && applyCachedSerialSelection(request, value)) {
+      const epoch = request.serial_validation_epoch;
+      verifyCachedValueInBackground("serial", value, false, () => {
+        if (validationStillCurrent(request, "serial", epoch, value) && selectedRequest() === request) setLookupStatus("serial", "");
+      });
+      renderInspector();
+      setLookupStatus("serial", cachedVerificationMessage("serial"), true);
+    } else if (request.serials.length) {
+      scheduleValidation(request, "serial", () => loadSerialSuggestions(request, value, { requireSelection: true }));
+    }
     refreshSelectedValidation();
     updateLookupControlStates(request);
     renderQueue();
@@ -6655,7 +6784,16 @@ function bindEvents() {
     request.user_validation_error = "";
     request.cached_user_verification = false;
     if (request.user) setLookupInputStatus("user", request.user);
-    if (request.user) scheduleValidation(request, "user", () => validateUserAfterPause(request, false));
+    if (request.user && applyCachedUserSelection(request, request.user, false)) {
+      const epoch = request.user_validation_epoch;
+      verifyCachedValueInBackground("username", request.user, false, () => {
+        if (validationStillCurrent(request, "user", epoch, request.user) && selectedRequest() === request) setLookupStatus("user", "");
+      });
+      renderInspector();
+      setLookupStatus("user", cachedVerificationMessage("user"), true);
+    } else if (request.user) {
+      scheduleValidation(request, "user", () => validateUserAfterPause(request, false));
+    }
     refreshSelectedValidation();
     updateLookupControlStates(request);
     renderQueue();
@@ -6713,7 +6851,16 @@ function bindEvents() {
     request.cached_user_verification = false;
     request.returning_user_loading = Boolean(request.returning_user);
     if (request.returning_user) setLookupInputStatus("returning", request.returning_user);
-    if (request.returning_user) scheduleValidation(request, "returning_user", () => validateUserAfterPause(request, true));
+    if (request.returning_user && applyCachedUserSelection(request, request.returning_user, true)) {
+      const epoch = request.returning_user_validation_epoch;
+      verifyCachedValueInBackground("username", request.returning_user, true, () => {
+        if (validationStillCurrent(request, "returning_user", epoch, request.returning_user) && selectedRequest() === request) setLookupStatus("returning", "");
+      });
+      renderInspector();
+      setLookupStatus("returning", cachedVerificationMessage("user"), true);
+    } else if (request.returning_user) {
+      scheduleValidation(request, "returning_user", () => validateUserAfterPause(request, true));
+    }
     renderReturningUserInfo(request);
     refreshSelectedValidation();
     updateLookupControlStates(request);
@@ -6844,6 +6991,7 @@ function bindEvents() {
 
 async function init() {
   bindConnectionSheetEvents();
+  restoreSidebarWidths();
   renderConnectionSheet();
   try {
     updateThemeButton();
