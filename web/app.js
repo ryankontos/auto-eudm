@@ -1259,6 +1259,29 @@ function statusLabel(request) {
   return options.find((option) => option.value === request.status)?.label || request.status || "Not selected";
 }
 
+function statusTone(request) {
+  const label = statusLabel(request).toLocaleLowerCase();
+  if (label === "not selected") return "neutral";
+  if (label.includes("pending")) return "pending";
+  if (label.includes("deployed")) return "success";
+  if (label.includes("stock")) return "stock";
+  return "neutral";
+}
+
+function statusSymbol(request) {
+  const label = statusLabel(request).toLocaleLowerCase();
+  if (label === "not selected") return "circle-dashed";
+  if (label.includes("pending")) return "activity";
+  if (label.includes("deployed")) return "circle-check";
+  if (label.includes("stock")) return "check";
+  return "circle-dashed";
+}
+
+function statusMarkup(request) {
+  const label = statusLabel(request);
+  return `<span class="status-chip ${statusTone(request)}" data-tooltip="${escapeHtml(label)}">${iconMarkup(statusSymbol(request))}<span>${escapeHtml(label)}</span></span>`;
+}
+
 function kindLabel(kind) {
   return ({ user: "Deploy to user", location: "Add to location stock", bulk_location: "Bulk add to location stock" })[kind] || "Unknown";
 }
@@ -1413,7 +1436,7 @@ function renderQueue() {
         <td class="index-column"><span class="queue-drag-handle" title="Drag to reorder" aria-label="Drag to reorder">${iconMarkup("grip-vertical")}</span><span class="queue-index">${index + 1}</span></td>
         <td><span class="cell-primary ${request.kind === "bulk_location" ? "bulk-serial-summary" : ""}">${escapeHtml(serialDisplay)}</span>${request.device_allocation ? `<span class="cell-secondary">${escapeHtml(request.device_allocation)}</span>` : ""}${requestId}</td>
         <td><span class="cell-primary">${escapeHtml(kindLabel(request.kind))}</span>${secondary ? `<span class="cell-secondary">${escapeHtml(secondary)}</span>` : ""}</td>
-        <td title="${escapeHtml(statusLabel(request))}">${escapeHtml(statusLabel(request))}</td>
+        <td title="${escapeHtml(statusLabel(request))}">${statusMarkup(request)}</td>
         <td title="${escapeHtml(destinationLabel(request))}"><span class="cell-primary">${escapeHtml(destinationLabel(request))}</span>${request.returning ? `<span class="cell-secondary">Return from ${escapeHtml(request.returning_user || "user")}</span>` : ""}</td>
         <td class="state-column" title="${escapeHtml(stateTitle)}">${readinessMarkup}</td>
         <td><button class="row-menu" data-remove="${escapeHtml(request.id)}" aria-label="Remove request" title="${submitting ? "This request is being submitted" : "Remove request"}" ${submitting ? "disabled" : ""}>${iconMarkup("trash-2")}</button></td>
@@ -5502,7 +5525,7 @@ async function openReview() {
         </div>
         <div class="review-field review-status">
           <small class="review-label">Status</small>
-          <strong>${escapeHtml(statusLabel(request))}</strong>
+          <div class="review-status-value">${statusMarkup(request)}</div>
           ${secondary ? `<small class="review-meta">${escapeHtml(secondary)}</small>` : ""}
         </div>
         <div class="review-field review-destination">
@@ -5533,6 +5556,90 @@ function progressStateLabel(entry) {
   if (entry.state === "failed") return "Failed";
   if (entry.state === "running") return "Submitting";
   return "Pending";
+}
+
+function normalizedProgressState(entry) {
+  return ["queued", "running", "succeeded", "failed"].includes(entry?.state)
+    ? entry.state
+    : "queued";
+}
+
+function progressRequestMarkup(entry) {
+  return entry.request_id && entry.state !== "running"
+    ? requestIdDisplay(entry.request_id, "progress-request-id")
+    : `<span class="progress-pending-id">${entry.state === "failed" ? "No request ID" : "Request ID pending"}</span>`;
+}
+
+function progressEntryMarkup(entry) {
+  const state = normalizedProgressState(entry);
+  const elapsed = entry.elapsed_seconds == null ? "" : formatElapsed(entry.elapsed_seconds);
+  const progressMessage = state === "queued"
+    ? entry.message
+    : `Step ${entry.step || 1} of ${entry.step_count || 1} · ${entry.message}`;
+  const serials = Array.isArray(entry.serials) ? entry.serials : [];
+  return `
+    <div class="progress-row ${state}" data-progress-entry-id="${escapeHtml(entry.id)}">
+      <span class="progress-state" data-progress-state="${state}" aria-label="${escapeHtml(progressStateLabel(entry))}">${state === "running" ? `<span class="activity-spinner" aria-hidden="true"></span>` : progressStateSymbol(entry)}</span>
+      <div class="progress-device">
+        <small class="progress-field-label">Device</small>
+        <strong data-progress-serials>${escapeHtml(serials.join(", "))}</strong>
+        <small class="progress-destination" data-progress-destination>${escapeHtml(progressDestinationLine(entry))}</small>
+      </div>
+      <div class="progress-message">
+        <small class="progress-field-label">Progress</small>
+        <strong data-progress-message>${escapeHtml(progressMessage)}${elapsed ? ` · ${escapeHtml(elapsed)}` : ""}</strong>
+      </div>
+      <div class="progress-request-cell" data-progress-request-cell data-request-key="${escapeHtml(`${entry.request_id || ""}|${state}`)}">${progressRequestMarkup(entry)}</div>
+    </div>`;
+}
+
+function patchProgressEntryRow(row, entry) {
+  const state = normalizedProgressState(entry);
+  const previousState = row.dataset.progressState || row.querySelector("[data-progress-state]")?.dataset.progressState;
+  row.className = `progress-row ${state}`;
+  row.dataset.progressEntryId = entry.id;
+  const stateNode = row.querySelector("[data-progress-state]");
+  if (stateNode) {
+    stateNode.setAttribute("aria-label", progressStateLabel(entry));
+    if (previousState !== state) {
+      stateNode.dataset.progressState = state;
+      stateNode.innerHTML = state === "running"
+        ? '<span class="activity-spinner" aria-hidden="true"></span>'
+        : progressStateSymbol(entry);
+      refreshIcons(stateNode);
+    }
+  }
+  row.dataset.progressState = state;
+  const serialNode = row.querySelector("[data-progress-serials]");
+  if (serialNode) serialNode.textContent = (Array.isArray(entry.serials) ? entry.serials : []).join(", ");
+  const destinationNode = row.querySelector("[data-progress-destination]");
+  if (destinationNode) destinationNode.textContent = progressDestinationLine(entry);
+  const elapsed = entry.elapsed_seconds == null ? "" : formatElapsed(entry.elapsed_seconds);
+  const progressMessage = state === "queued"
+    ? entry.message
+    : `Step ${entry.step || 1} of ${entry.step_count || 1} · ${entry.message}`;
+  const messageNode = row.querySelector("[data-progress-message]");
+  if (messageNode) messageNode.textContent = `${progressMessage}${elapsed ? ` · ${elapsed}` : ""}`;
+  const requestCell = row.querySelector("[data-progress-request-cell]");
+  const requestKey = `${entry.request_id || ""}|${state}`;
+  if (requestCell && requestCell.dataset.requestKey !== requestKey) {
+    requestCell.dataset.requestKey = requestKey;
+    requestCell.innerHTML = progressRequestMarkup(entry);
+    refreshIcons(requestCell);
+  }
+}
+
+function renderProgressEntries(job, progressList) {
+  const entries = Array.isArray(job.entries) ? job.entries : [];
+  const existingRows = [...progressList.querySelectorAll("[data-progress-entry-id]")];
+  const canPatch = existingRows.length === entries.length
+    && entries.every((entry, index) => existingRows[index]?.dataset.progressEntryId === String(entry.id));
+  if (!canPatch) {
+    progressList.innerHTML = entries.map(progressEntryMarkup).join("");
+    refreshIcons(progressList);
+    return;
+  }
+  entries.forEach((entry, index) => patchProgressEntryRow(existingRows[index], entry));
 }
 
 function progressDestinationLine(entry) {
@@ -5628,7 +5735,9 @@ function resetProgressView() {
   $("#progressList").replaceChildren();
   $("#progressActions").hidden = true;
   $("#progressCelebration").hidden = true;
-  $("#progressHeading").textContent = "Starting submission";
+  $("#progressDialog").dataset.progressState = "starting";
+  $("#progressHeading").innerHTML = `${iconMarkup("send")}<span>Starting submission</span>`;
+  refreshIcons($("#progressHeading"));
   $("#closeProgressButton").title = "Continue in the background";
   requestAnimationFrame(() => { bar.style.transition = ""; });
 }
@@ -5673,42 +5782,27 @@ function renderProgress(job) {
   $("#progressBar").style.width = `${percentage}%`;
   $("#progressCounts").textContent = state.pollStatusMessage
     || `${done} of ${job.counts.total} complete${job.counts.running ? ` · ${job.counts.running} active` : ""}`;
-  const spinnerDelay = -(performance.now() % 720);
   const progressList = $("#progressList");
   const previousScrollTop = progressList.scrollTop;
-  $("#progressList").innerHTML = job.entries.map((entry) => {
-    const elapsed = entry.elapsed_seconds == null ? "" : formatElapsed(entry.elapsed_seconds);
-    const progressMessage = entry.state === "queued"
-      ? entry.message
-      : `Step ${entry.step || 1} of ${entry.step_count || 1} · ${entry.message}`;
-    return `
-    <div class="progress-row ${entry.state}">
-      <span class="progress-state" aria-label="${progressStateLabel(entry)}">${entry.state === "running" ? `<i class="activity-spinner" style="animation-delay:${spinnerDelay}ms"></i>` : progressStateSymbol(entry)}</span>
-      <div class="progress-device">
-        <small class="progress-field-label">Device</small>
-        <strong>${escapeHtml(entry.serials.join(", "))}</strong>
-        <small class="progress-destination">${escapeHtml(progressDestinationLine(entry))}</small>
-      </div>
-      <div class="progress-message">
-        <small class="progress-field-label">Progress</small>
-        <strong>${escapeHtml(progressMessage)}${elapsed ? ` · ${escapeHtml(elapsed)}` : ""}</strong>
-      </div>
-      <div class="progress-request-cell">${entry.request_id && entry.state !== "running"
-        ? requestIdDisplay(entry.request_id, "progress-request-id")
-        : `<span class="progress-pending-id">${entry.state === "failed" ? "No request ID" : "Request ID pending"}</span>`}</div>
-    </div>`;
-  }).join("");
+  renderProgressEntries(job, progressList);
   progressList.scrollTop = previousScrollTop;
   const finished = job.state === "finished";
   const fullySuccessful = jobCompletedSuccessfully(job);
+  $("#progressDialog").dataset.progressState = finished ? (fullySuccessful ? "success" : "failed") : "running";
   const celebration = $("#progressCelebration");
   celebration.hidden = !fullySuccessful;
   if (fullySuccessful) {
     $("#progressCelebrationDetail").textContent = `All ${job.counts.total} request${job.counts.total === 1 ? "" : "s"} were submitted successfully.`;
   }
-  $("#progressHeading").textContent = finished
-    ? `${job.counts.succeeded} submitted, ${job.counts.failed} failed`
+  const progressHeading = finished
+    ? fullySuccessful
+      ? "All requests submitted"
+      : `${job.counts.succeeded} submitted, ${job.counts.failed} failed`
     : "Submitting requests";
+  const progressHeadingIcon = finished
+    ? fullySuccessful ? "circle-check" : "circle-alert"
+    : "send";
+  $("#progressHeading").innerHTML = `${iconMarkup(progressHeadingIcon)}<span>${escapeHtml(progressHeading)}</span>`;
   $("#progressActions").hidden = !finished;
   $("#closeProgressButton").title = finished ? "Close results" : "Continue in the background";
   $("#downloadResultsLink").href = `/api/jobs/${job.job_id}/results.txt`;
@@ -5793,7 +5887,7 @@ function renderHistory(runs) {
         ? serials.map((serial) => `<button class="history-filter-link" type="button" data-history-filter="${escapeHtml(serial)}" title="Show requests containing ${escapeHtml(serial)}">${escapeHtml(serial)}</button>`).join("")
         : "No serial";
       return `<div class="history-entry ${entry.state === "failed" ? "failed" : ""}">
-        <div class="history-device"><div class="history-device-serials">${serialMarkup}</div><span>${escapeHtml(entry.status || kindLabel(entry.kind))}</span></div>
+        <div class="history-device"><div class="history-device-serials">${serialMarkup}</div>${statusMarkup(entry)}</div>
         <div class="history-person"><small>${escapeHtml(person.role)}</small><strong>${escapeHtml(person.name)}</strong>${person.login ? `<button class="history-filter-link" type="button" data-history-filter="${escapeHtml(person.login)}" title="Show requests for ${escapeHtml(person.login)}">${escapeHtml(person.login)}</button>` : ""}</div>
         <div class="history-result"><span class="history-result-state ${entry.state === "failed" ? "failed" : ""}">${escapeHtml(entry.state === "succeeded" ? "Submitted" : entry.state)}</span>${requestLink}<small>${escapeHtml(entry.message || "")}</small></div>
         <div class="history-entry-actions"><button class="button secondary compact" type="button" data-history-readd="${escapeHtml(entry.id)}">${iconMarkup("rotate-ccw")}<span>Re-add to queue</span></button></div>
