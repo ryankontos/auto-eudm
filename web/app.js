@@ -1282,6 +1282,27 @@ function statusMarkup(request) {
   return `<span class="status-chip ${statusTone(request)}" data-tooltip="${escapeHtml(label)}">${iconMarkup(statusSymbol(request))}<span>${escapeHtml(label)}</span></span>`;
 }
 
+function requestKindSymbol(kind) {
+  if (kind === "user") return "user-round";
+  if (kind === "bulk_location") return "layers-2";
+  return "map-pin";
+}
+
+function requestKindTone(kind) {
+  if (kind === "user") return "user";
+  if (kind === "bulk_location") return "bulk";
+  return "location";
+}
+
+function requestKindMarkup(kind) {
+  return `<span class="kind-icon ${requestKindTone(kind)}" aria-hidden="true">${iconMarkup(requestKindSymbol(kind))}</span>`;
+}
+
+function destinationMarkup(request) {
+  const isUser = request?.kind === "user";
+  return `<span class="kind-icon ${isUser ? "user" : "location"}" aria-hidden="true">${iconMarkup(isUser ? "user-round" : "map-pin")}</span>`;
+}
+
 function kindLabel(kind) {
   return ({ user: "Deploy to user", location: "Add to location stock", bulk_location: "Bulk add to location stock" })[kind] || "Unknown";
 }
@@ -1435,9 +1456,9 @@ function renderQueue() {
       <tr data-id="${escapeHtml(request.id)}" class="${selected ? "selected" : ""} ${errors.length ? "invalid" : ""} ${submitting ? "submitting" : ""} ${request.result_state === "failed" ? "failed" : ""}" tabindex="0">
         <td class="index-column"><span class="queue-drag-handle" title="Drag to reorder" aria-label="Drag to reorder">${iconMarkup("grip-vertical")}</span><span class="queue-index">${index + 1}</span></td>
         <td><span class="cell-primary ${request.kind === "bulk_location" ? "bulk-serial-summary" : ""}">${escapeHtml(serialDisplay)}</span>${request.device_allocation ? `<span class="cell-secondary">${escapeHtml(request.device_allocation)}</span>` : ""}${requestId}</td>
-        <td><span class="cell-primary">${escapeHtml(kindLabel(request.kind))}</span>${secondary ? `<span class="cell-secondary">${escapeHtml(secondary)}</span>` : ""}</td>
+        <td><span class="cell-primary queue-context">${requestKindMarkup(request.kind)}<span>${escapeHtml(kindLabel(request.kind))}</span></span>${secondary ? `<span class="cell-secondary">${escapeHtml(secondary)}</span>` : ""}</td>
         <td title="${escapeHtml(statusLabel(request))}">${statusMarkup(request)}</td>
-        <td title="${escapeHtml(destinationLabel(request))}"><span class="cell-primary">${escapeHtml(destinationLabel(request))}</span>${request.returning ? `<span class="cell-secondary">Return from ${escapeHtml(request.returning_user || "user")}</span>` : ""}</td>
+        <td title="${escapeHtml(destinationLabel(request))}"><span class="cell-primary queue-context">${destinationMarkup(request)}<span>${escapeHtml(destinationLabel(request))}</span></span>${request.returning ? `<span class="cell-secondary">Return from ${escapeHtml(request.returning_user || "user")}</span>` : ""}</td>
         <td class="state-column" title="${escapeHtml(stateTitle)}">${readinessMarkup}</td>
         <td><button class="row-menu" data-remove="${escapeHtml(request.id)}" aria-label="Remove request" title="${submitting ? "This request is being submitted" : "Remove request"}" ${submitting ? "disabled" : ""}>${iconMarkup("trash-2")}</button></td>
       </tr>`;
@@ -5520,7 +5541,7 @@ async function openReview() {
         <div class="review-field review-request">
           <small class="review-label">Device</small>
           <strong>${escapeHtml(request.serials.join(", ") || "No serial")}</strong>
-          <small class="review-meta">${escapeHtml(kindLabel(request.kind))}${request.kind === "bulk_location" ? ` · ${request.serials.length} devices` : ""}</small>
+          <small class="review-meta review-kind"><span class="queue-context">${requestKindMarkup(request.kind)}<span>${escapeHtml(kindLabel(request.kind))}${request.kind === "bulk_location" ? ` · ${request.serials.length} devices` : ""}</span></span></small>
           ${request.device_allocation ? `<small class="review-meta">${escapeHtml(request.device_allocation)}</small>` : ""}
         </div>
         <div class="review-field review-status">
