@@ -1749,7 +1749,7 @@ function renderInspector() {
   elements.inspector.setAttribute("aria-hidden", String(!sidebarOpen));
   elements.inspectorEmpty.hidden = sidebarOpen;
   elements.inspectorContent.hidden = !open;
-  $("#inspectorHeading").textContent = newRequest ? "New request" : "Request details";
+  $("#inspectorHeadingText").textContent = newRequest ? "New request" : "Request details";
   $("#duplicateButton").hidden = newRequest;
   $("#removeButton").hidden = newRequest;
   $("#discardNewRequestButton").hidden = !newRequest;
@@ -1774,7 +1774,7 @@ function renderInspector() {
   const bulkValidateButton = $("#validateBulkSerialButton");
   bulkValidateButton.hidden = !bulk;
   bulkValidateButton.disabled = !request.serials.length || request.bulk_validation === "checking";
-  bulkValidateButton.textContent = request.bulk_validation === "checking" ? "Verifying…" : "Verify";
+  setButtonLabel(bulkValidateButton, request.bulk_validation === "checking" ? "Verifying…" : "Verify");
   elements.serialLabel.textContent = bulk ? "Serial numbers" : "Serial number";
   elements.serialInput.value = bulk ? "" : (request.serials[0] || "");
   elements.serialsInput.value = bulk ? request.serials.join("\n") : "";
@@ -1835,7 +1835,7 @@ function refreshBulkValidationButton(request = selectedRequest()) {
   const bulk = request.kind === "bulk_location";
   button.hidden = !bulk || bulkSerialMode(request) !== "text";
   button.disabled = !request.serials.length || request.bulk_validation === "checking";
-  button.textContent = request.bulk_validation === "checking" ? "Verifying…" : "Verify list";
+  setButtonLabel(button, request.bulk_validation === "checking" ? "Verifying…" : "Verify list");
   const status = $("#bulkValidationStatus");
   const alert = $("#bulkValidationAlert");
   status.hidden = !bulk || request.bulk_validation !== "valid";
@@ -1990,13 +1990,17 @@ function hideSearchResults() {
 
 function renderSearchResults(container, results, onSelect, primaryIndex = 0) {
   if (!results.length) {
-    container.innerHTML = '<div class="search-empty">No matches returned</div>';
+    container.innerHTML = `<div class="search-empty">${iconMarkup("search-x")}<span>No matches returned</span></div>`;
   } else {
+    const resultIcon = primaryIndex === 1 ? "laptop-minimal" : "user-round";
     container.innerHTML = results.map((result, index) => {
       const columns = result.columns || [];
       const primary = columns[primaryIndex] || columns[0] || result.value;
       const secondary = columns.filter((_, columnIndex) => columnIndex !== primaryIndex).join(" · ");
-      return `<button class="search-result" type="button" data-index="${index}"><strong>${escapeHtml(primary)}</strong><small>${escapeHtml(secondary)}</small></button>`;
+      return `<button class="search-result" type="button" data-index="${index}">
+        ${iconMarkup(resultIcon, "search-result-icon")}
+        <span class="search-result-copy"><strong>${escapeHtml(primary)}</strong><small>${escapeHtml(secondary)}</small></span>
+      </button>`;
     }).join("");
     container.querySelectorAll("[data-index]").forEach((button) => {
       button.addEventListener("click", () => {
@@ -2800,7 +2804,7 @@ function openPasteDialog() {
   $("#pairsEntry .quick-import-add").hidden = false;
   $("#pairsReview").hidden = false;
   $("#pairsTextMode").hidden = true;
-  $("#pairsTextModeButton").textContent = "Add a list instead";
+  setButtonLabel("#pairsTextModeButton", "Add a list instead");
   $("#pasteDialog").showModal();
   renderQuickImportReview();
   setTimeout(() => $("#pairsAddUsername").focus(), 0);
@@ -3425,7 +3429,7 @@ function resetImportDialog(mode = state.importMode || "deploy") {
 
 function renderImportModeOptions() {
   const backlog = state.importMode === "backlog";
-  $("#importDialogTitle").textContent = backlog ? "ALM deployment backlog" : "ALM Workbook";
+  $("#importDialogTitleText").textContent = backlog ? "ALM deployment backlog" : "ALM Workbook";
   $("#almDeployOptions").hidden = backlog;
   $("#almBacklogOptions").hidden = !backlog;
   $("#importDatePicker").hidden = backlog;
@@ -3666,7 +3670,7 @@ function updateImportCounts() {
     $("#importLocationFields").hidden = true;
     const prepareButton = $("#prepareImportButton");
     prepareButton.disabled = !state.workbook?.import_id;
-    prepareButton.textContent = "Find undeployed devices";
+    setButtonLabel(prepareButton, "Find undeployed devices");
     return;
   }
   updateImportGroupChoices();
@@ -3697,9 +3701,9 @@ function updateImportCounts() {
   if (needsLocation) renderImportLocationFields();
   const prepareButton = $("#prepareImportButton");
   prepareButton.disabled = !selectedDates.length || selectedCount === 0 || missingLocation || groupRequired;
-  prepareButton.textContent = groupRequired
+  setButtonLabel(prepareButton, groupRequired
     ? "Choose a date section"
-    : missingLocation ? "Choose a destination" : "Review import";
+    : missingLocation ? "Choose a destination" : "Review import");
 }
 
 function renderImportLocationFields() {
@@ -6224,7 +6228,7 @@ function bindEvents() {
     const visible = !$("#pairsTextMode").hidden;
     $("#pairsTextMode").hidden = visible;
     $("#pairsEntry .quick-import-add").hidden = !visible;
-    $("#pairsTextModeButton").textContent = visible ? "Add a list instead" : "Use one-at-a-time entry";
+    setButtonLabel("#pairsTextModeButton", visible ? "Add a list instead" : "Use one-at-a-time entry");
     if (!visible) $("#pairsInput").focus();
   });
   $("#pairsAddUsername").addEventListener("keydown", (event) => {

@@ -61,7 +61,7 @@
     <section class="queue-panel" aria-labelledby="queueHeading">
       <div class="queue-header">
         <div>
-          <h1 id="queueHeading">Request queue</h1>
+          <h1 id="queueHeading"><span class="heading-icon" aria-hidden="true"><i data-lucide="inbox"></i></span><span>Request queue</span></h1>
           <p id="queueCounts">0 requests</p>
         </div>
         <div class="queue-actions">
@@ -137,7 +137,7 @@
         <div id="inspectorEditorHost">
         <div id="inspectorContent" hidden>
             <div class="inspector-header">
-            <h2 id="inspectorHeading">Request details</h2>
+            <h2 id="inspectorHeading"><span class="heading-icon" aria-hidden="true"><i data-lucide="file-pen-line"></i></span><span id="inspectorHeadingText">Request details</span></h2>
             <div class="inspector-header-actions">
               <button id="duplicateButton" class="button quiet compact" type="button"><i data-lucide="copy"></i><span>Duplicate</span></button>
               <button id="closeInspectorButton" class="icon-button inspector-close-button" type="button" aria-label="Close request editor" title="Close request editor"><i data-lucide="x"></i></button>
@@ -159,7 +159,7 @@
           <label for="serialInput"><span id="serialLabel">Serial number</span><em>Required</em></label>
           <div id="serialSearchControl" class="search-control lookup-control">
             <input id="serialInput" type="text" autocomplete="off" spellcheck="false" placeholder="Type at least 2 characters">
-            <button id="searchSerialButton" class="button secondary compact lookup-button" type="button" disabled>Search</button>
+            <button id="searchSerialButton" class="button secondary compact lookup-button" type="button" disabled><i data-lucide="search"></i><span>Search</span></button>
           </div>
           <div id="serialConfirmed" class="lookup-confirmed" hidden>
             <span class="lookup-confirmed-mark" aria-hidden="true"><i data-lucide="circle-check"></i></span>
@@ -174,7 +174,7 @@
             <div id="bulkSerialEntryMode">
               <div class="bulk-serial-add-row">
                 <input id="bulkSerialAddInput" type="text" autocomplete="off" spellcheck="false" placeholder="Enter a serial number" aria-label="Serial number to add">
-                <button id="addBulkSerialButton" class="button secondary compact" type="button">Add</button>
+                <button id="addBulkSerialButton" class="button secondary compact" type="button"><i data-lucide="plus"></i><span>Add</span></button>
               </div>
               <small class="bulk-serial-help">Press Enter or Add to verify each serial.</small>
               <div id="bulkSerialEntryError" class="bulk-serial-error" role="alert" hidden></div>
@@ -196,7 +196,7 @@
           <div id="serialLookupStatus" class="lookup-status" role="status" aria-live="polite" hidden></div>
           <div class="field-actions">
             <span id="serialHint" class="hint"></span>
-            <button id="validateBulkSerialButton" class="text-button" type="button" hidden>Validate</button>
+            <button id="validateBulkSerialButton" class="text-button" type="button" hidden><i data-lucide="shield-check"></i><span data-button-label>Verify list</span></button>
           </div>
           <div id="bulkValidationStatus" class="bulk-validation-status" hidden></div>
           <div id="bulkValidationAlert" class="bulk-validation-alert" hidden></div>
@@ -213,7 +213,7 @@
             <label for="userInput">Deployed to user <em>Required</em></label>
             <div id="userSearchControl" class="search-control lookup-control">
               <input id="userInput" type="text" autocomplete="off" spellcheck="false" placeholder="Type at least 2 characters">
-              <button id="searchUserButton" class="button secondary compact lookup-button" type="button" disabled>Search</button>
+              <button id="searchUserButton" class="button secondary compact lookup-button" type="button" disabled><i data-lucide="search"></i><span>Search</span></button>
             </div>
             <div id="userConfirmed" class="lookup-confirmed" hidden>
               <span class="lookup-confirmed-mark" aria-hidden="true"><i data-lucide="circle-check"></i></span>
@@ -230,7 +230,7 @@
             <label for="cityInput">City <em>Required</em></label>
             <div class="search-control">
               <select id="cityInput"></select>
-              <button id="loadLocationsButton" class="button secondary compact" type="button">Refresh</button>
+              <button id="loadLocationsButton" class="button secondary compact" type="button"><i data-lucide="refresh-cw"></i><span>Refresh</span></button>
             </div>
           </div>
           <div class="form-field">
@@ -250,7 +250,7 @@
               <label for="returningUserInput">Returning user</label>
               <div id="returningSearchControl" class="search-control lookup-control">
                 <input id="returningUserInput" type="text" autocomplete="off" spellcheck="false" placeholder="Type at least 2 characters">
-                <button id="searchReturningButton" class="button secondary compact lookup-button" type="button" disabled>Search</button>
+                <button id="searchReturningButton" class="button secondary compact lookup-button" type="button" disabled><i data-lucide="search"></i><span>Search</span></button>
               </div>
               <div id="returningConfirmed" class="lookup-confirmed" hidden>
                 <span class="lookup-confirmed-mark" aria-hidden="true"><i data-lucide="circle-check"></i></span>
@@ -276,8 +276,8 @@
           <div id="validationPanel" class="validation-panel" hidden></div>
           <div id="inspectorActions" class="inspector-actions">
             <button id="discardNewRequestButton" class="button secondary" type="button" hidden>Cancel</button>
-            <button id="removeButton" class="button danger" type="button">Remove request</button>
-            <button id="saveNewRequestButton" class="button primary" type="button" disabled hidden>Add to queue</button>
+            <button id="removeButton" class="button danger" type="button"><i data-lucide="trash-2"></i><span>Remove request</span></button>
+            <button id="saveNewRequestButton" class="button primary" type="button" disabled hidden><i data-lucide="plus"></i><span>Add to queue</span></button>
           </div>
         </fieldset>
         </div>
@@ -337,7 +337,7 @@
   <dialog id="pasteDialog" class="modal">
     <form method="dialog" class="modal-card">
       <div class="modal-header">
-        <h2>Quick import</h2>
+        <h2><span class="modal-title-icon" aria-hidden="true"><i data-lucide="list-plus"></i></span><span>Quick import</span></h2>
         <button class="icon-button" value="cancel" aria-label="Close"><i data-lucide="x"></i></button>
       </div>
       <div id="pairsEntry">
@@ -346,11 +346,11 @@
           <input id="pairsAddSerial" type="text" autocomplete="off" spellcheck="false" placeholder="Serial number" aria-label="Serial number">
           <button id="pairsConfirmAddButton" class="button secondary compact" type="button" aria-label="Add device" title="Add device"><i data-lucide="plus"></i></button>
         </div>
-        <button id="pairsTextModeButton" class="text-button" type="button">Add a list instead</button>
+        <button id="pairsTextModeButton" class="text-button" type="button"><i data-lucide="list"></i><span data-button-label>Add a list instead</span></button>
         <div id="pairsTextMode" hidden>
           <p id="pairsHelp">One device per line: <code>SERIAL</code> or <code>SERIAL USERNAME</code></p>
           <textarea id="pairsInput" rows="6" spellcheck="false" aria-describedby="pairsHelp" placeholder="8P15FH4 hjames3&#10;66BFFB4&#10;DP7R126TW9A cma21"></textarea>
-          <button id="pairsAddListButton" class="button secondary compact" type="button">Add list</button>
+          <button id="pairsAddListButton" class="button secondary compact" type="button"><i data-lucide="list-plus"></i><span>Add list</span></button>
         </div>
       </div>
       <div id="pairsReview" hidden>
@@ -371,7 +371,7 @@
           <label for="pairsCityInput">City</label>
           <div class="search-control">
             <select id="pairsCityInput"></select>
-            <button id="pairsFindLocationsButton" class="button secondary compact" type="button">Refresh</button>
+            <button id="pairsFindLocationsButton" class="button secondary compact" type="button"><i data-lucide="refresh-cw"></i><span>Refresh</span></button>
           </div>
         </div>
         <div class="form-field">
@@ -391,7 +391,7 @@
   <dialog id="importDialog" class="modal wide-modal">
     <form method="dialog" class="modal-card wide">
       <div class="modal-header">
-        <h2 id="importDialogTitle">ALM Workbook</h2>
+        <h2 id="importDialogTitle"><span class="modal-title-icon" aria-hidden="true"><i data-lucide="file-spreadsheet"></i></span><span id="importDialogTitleText">ALM Workbook</span></h2>
         <button class="icon-button" value="cancel" aria-label="Close"><i data-lucide="x"></i></button>
       </div>
       <ol class="wizard-steps" aria-label="Import progress">
@@ -533,21 +533,21 @@
   <dialog id="importDatesDialog" class="modal import-date-dialog">
     <form method="dialog" class="modal-card">
       <div class="modal-header">
-        <h2>Choose deployment dates</h2>
+        <h2><span class="modal-title-icon" aria-hidden="true"><i data-lucide="calendar-days"></i></span><span>Choose deployment dates</span></h2>
         <button class="icon-button" value="cancel" aria-label="Close"><i data-lucide="x"></i></button>
       </div>
       <p class="import-date-dialog-intro">Select one or more days from this workbook.</p>
       <div id="importDateDialogList" class="import-date-list" role="group" aria-label="Deployment dates"></div>
       <div class="modal-actions">
         <button class="button secondary" value="cancel">Cancel</button>
-        <button id="applyImportDatesButton" class="button primary" type="button">Apply dates</button>
+        <button id="applyImportDatesButton" class="button primary" type="button"><i data-lucide="calendar-check"></i><span>Apply dates</span></button>
       </div>
     </form>
   </dialog>
 
   <dialog id="settingsDialog" class="modal">
     <form method="dialog" class="modal-card settings-card">
-      <div class="modal-header"><h2>Settings</h2><button class="icon-button" value="cancel" aria-label="Close"><i data-lucide="x"></i></button></div>
+      <div class="modal-header"><h2><span class="modal-title-icon" aria-hidden="true"><i data-lucide="sliders-horizontal"></i></span><span>Settings</span></h2><button class="icon-button" value="cancel" aria-label="Close"><i data-lucide="x"></i></button></div>
       <div class="settings-tabs" role="tablist">
         <button class="settings-tab active" data-settings-tab="run" type="button"><i data-lucide="sliders-horizontal"></i><span>General</span></button>
         <button class="settings-tab" data-settings-tab="validation" type="button"><i data-lucide="shield-check"></i><span>Validation</span></button>
@@ -593,13 +593,13 @@
           <div id="requestStatuses" class="request-status-list" data-request-status-list></div>
         </div>
       </section>
-      <div class="modal-actions"><button class="button secondary" value="cancel">Cancel</button><button id="saveSettingsButton" class="button primary" value="default" type="button">Save settings</button></div>
+      <div class="modal-actions"><button class="button secondary" value="cancel">Cancel</button><button id="saveSettingsButton" class="button primary" value="default" type="button"><i data-lucide="check"></i><span>Save settings</span></button></div>
     </form>
   </dialog>
 
   <dialog id="shortcutsDialog" class="modal">
     <form method="dialog" class="modal-card shortcuts-card">
-      <div class="modal-header"><h2>Keyboard shortcuts</h2><button class="icon-button" value="cancel" aria-label="Close"><i data-lucide="x"></i></button></div>
+      <div class="modal-header"><h2><span class="modal-title-icon" aria-hidden="true"><i data-lucide="keyboard"></i></span><span>Keyboard shortcuts</span></h2><button class="icon-button" value="cancel" aria-label="Close"><i data-lucide="x"></i></button></div>
       <p class="shortcuts-note"><span class="shortcut-mac">Option</span> on Mac, <span class="shortcut-windows">Ctrl</span> on Windows and Linux.</p>
       <div class="shortcut-list">
         <div><span>Undo app change</span><kbd>⌘ / Ctrl</kbd><kbd>Z</kbd></div>
@@ -622,12 +622,12 @@
   <dialog id="reviewDialog" class="modal wide-modal">
     <form method="dialog" class="modal-card wide review-card">
       <div class="modal-header">
-        <h2>Submit request queue</h2>
+        <h2><span class="modal-title-icon" aria-hidden="true"><i data-lucide="send"></i></span><span>Submit request queue</span></h2>
         <button class="icon-button" value="cancel" aria-label="Close"><i data-lucide="x"></i></button>
       </div>
       <div id="reviewList" class="review-list"></div>
       <div class="modal-actions">
-        <button class="button secondary" value="cancel">Back to queue</button>
+        <button class="button secondary" value="cancel"><i data-lucide="arrow-left"></i><span>Back to queue</span></button>
         <button id="submitQueueButton" class="button primary" value="default" type="submit"><i data-lucide="send"></i><span>Submit requests</span></button>
       </div>
     </form>
@@ -658,7 +658,7 @@
   <dialog id="historyDialog" class="modal wide-modal">
     <form method="dialog" class="modal-card wide">
       <div class="modal-header">
-        <h2>Request history</h2>
+        <h2><span class="modal-title-icon" aria-hidden="true"><i data-lucide="history"></i></span><span>Request history</span></h2>
         <button class="icon-button" value="cancel" aria-label="Close"><i data-lucide="x"></i></button>
       </div>
       <div class="history-toolbar">

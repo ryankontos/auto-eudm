@@ -440,7 +440,25 @@ input:hover, select:hover, textarea:hover { border-color: #99a8b5; }
 }
 
 .queue-header > div:first-child { min-width: 0; }
-.queue-header h1 { margin: 0; font-size: 22px; letter-spacing: -.02em; }
+.queue-header h1 { display: flex; align-items: center; gap: 9px; margin: 0; font-size: 22px; letter-spacing: -.02em; }
+.heading-icon,
+.modal-title-icon {
+  display: inline-grid;
+  flex: 0 0 auto;
+  width: 27px;
+  height: 27px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--blue) 30%, var(--line));
+  border-radius: 9px;
+  color: var(--blue);
+  background: color-mix(in srgb, var(--blue-soft) 72%, var(--surface));
+  line-height: 1;
+}
+.heading-icon .lucide,
+.modal-title-icon .lucide { width: 15px; height: 15px; stroke-width: 2; }
+.modal-header h2 { display: flex; align-items: center; gap: 9px; }
+.modal-title-icon { width: 25px; height: 25px; border-radius: 8px; }
+.modal-title-icon .lucide { width: 14px; height: 14px; }
 .queue-header p { display: inline-flex; align-items: center; min-height: 20px; margin: 5px 0 0; padding: 2px 7px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); background: var(--surface); font-size: 11px; font-variant-numeric: tabular-nums; }
 .queue-actions { display: flex; gap: 9px; align-items: center; min-width: 0; }
 .queue-search {
@@ -850,7 +868,7 @@ input:hover, select:hover, textarea:hover { border-color: #99a8b5; }
 .inspector-empty h2 { margin: 0 0 3px; color: var(--ink); font-size: 17px; }
 .inspector-empty p { margin: 0; }
 .inspector-header { position: sticky; top: -18px; z-index: 3; display: flex; align-items: center; justify-content: space-between; margin: -18px -17px 17px; padding: 15px 17px 12px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--surface-raised) 93%, var(--blue-soft)); }
-.inspector-header h2 { margin: 0; font-size: 18px; letter-spacing: -.015em; }
+.inspector-header h2 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 18px; letter-spacing: -.015em; }
 .inspector-header-actions { display: flex; align-items: center; gap: 3px; }
 .inspector-close-button { width: var(--control-height-compact); height: var(--control-height-compact); font-size: 21px; border-radius: var(--control-radius); }
 .inspector-submitting-notice { margin-bottom: 15px; padding: 9px 11px; border: 1px solid color-mix(in srgb, var(--blue) 24%, var(--line)); border-left: 3px solid var(--blue); border-radius: 8px; color: var(--muted); background: color-mix(in srgb, var(--blue-soft) 70%, var(--surface-raised)); font-size: 11px; }
@@ -908,13 +926,17 @@ fieldset { margin: 0; padding: 0; border: 0; }
   position: relative; z-index: 2; max-height: 190px; overflow-y: auto; margin-top: 5px; padding: 5px;
   border: 1px solid var(--line-strong); border-radius: 10px; background: var(--surface-raised); box-shadow: var(--shadow-float);
 }
-.search-result { width: 100%; display: grid; grid-template-columns: minmax(120px, .38fr) minmax(0, 1fr); gap: 12px; align-items: start; padding: 10px; border: 0; border-bottom: 1px solid var(--line); border-radius: 7px; text-align: left; background: var(--surface-raised); transition: background-color .12s ease, transform .12s ease; }
+.search-result { width: 100%; display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 10px; align-items: center; padding: 9px 10px; border: 0; border-bottom: 1px solid var(--line); border-radius: 7px; text-align: left; background: var(--surface-raised); transition: background-color .12s ease, transform .12s ease; }
 .search-result:last-child { border-bottom: 0; }
 .search-result:hover, .search-result:focus-visible { outline: 0; background: var(--blue-soft); transform: translateX(2px); }
-.search-result strong, .search-result small { display: block; }
+.search-result-icon { display: grid; width: 27px; height: 27px; place-items: center; border: 1px solid color-mix(in srgb, var(--blue) 25%, var(--line)); border-radius: 8px; color: var(--blue); background: color-mix(in srgb, var(--blue-soft) 72%, var(--surface)); }
+.search-result-icon .lucide { width: 14px; height: 14px; stroke-width: 1.9; }
+.search-result-copy { display: block; min-width: 0; }
+.search-result strong, .search-result small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .search-result strong { color: var(--ink); font-size: 12px; }
 .search-result small { color: var(--muted); margin-top: 2px; font-size: 11px; }
-.search-empty { padding: 12px; color: var(--muted); text-align: center; }
+.search-empty { display: flex; align-items: center; justify-content: center; gap: 7px; padding: 12px; color: var(--muted); text-align: center; }
+.search-empty .lucide { width: 15px; height: 15px; color: var(--subtle); }
 
 .selected-detail { margin-top: 4px; color: var(--muted); font-size: 11px; }
 .returning-user { margin: 5px 0 17px; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: color-mix(in srgb, var(--surface-alt) 75%, var(--surface-raised)); }
