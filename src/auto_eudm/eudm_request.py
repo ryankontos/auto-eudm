@@ -88,16 +88,16 @@ PROMPT_LOCK = threading.Lock()
 def http_error_message(status: int, action: str) -> str:
     messages = {
         400: "The service rejected the request data.",
-        401: "Authentication was rejected. Refresh the EUDM login and try again.",
+        401: "Authentication was rejected. Refresh the Helix login and try again.",
         403: "Your account is not allowed to perform this request.",
-        404: "The EUDM endpoint or questionnaire field was not found.",
-        409: "EUDM reported a conflict with this request.",
-        422: "EUDM rejected one of the selected values.",
+        404: "The Helix endpoint or questionnaire field was not found.",
+        409: "Helix reported a conflict with this request.",
+        422: "Helix rejected one of the selected values.",
     }
     if status >= 500:
-        detail = "The EUDM service is temporarily unavailable."
+        detail = "The Helix service is temporarily unavailable."
     else:
-        detail = messages.get(status, f"EUDM returned HTTP {status}.")
+        detail = messages.get(status, f"Helix returned HTTP {status}.")
     return f"{action}: {detail}"
 
 
@@ -205,7 +205,7 @@ class BrowserClient:
                 transport="browser", error=type(exc).__name__,
             )
             raise EUDMError(
-                "Could not reach EUDM from the authenticated Chrome session. "
+                "Could not reach Helix from the authenticated Chrome session. "
                 "Check the network connection and try again."
             ) from exc
         raw = response.text()
@@ -218,14 +218,14 @@ class BrowserClient:
         if response.status >= 400:
             if response.status in (401, 403) and is_sso_html(raw):
                 raise SSOExpiredError(
-                    "EUDM redirected to SSO. Reconnect and complete sign-in in Chrome."
+                    "Helix redirected to SSO. Reconnect and complete sign-in in Chrome."
                 )
-            raise EUDMError(http_error_message(response.status, f"EUDM request {method} {path}"))
+            raise EUDMError(http_error_message(response.status, f"Helix request {method} {path}"))
         if not raw:
             return None
         if is_sso_html(raw):
             raise SSOExpiredError(
-                "EUDM redirected to SSO. Reconnect and complete sign-in in Chrome."
+                "Helix redirected to SSO. Reconnect and complete sign-in in Chrome."
             )
         try:
             return json.loads(raw)
@@ -242,7 +242,7 @@ class BrowserClient:
         ]
         header = "; ".join(f"{item['name']}={item['value']}" for item in cookies)
         if not header:
-            raise EUDMError("The authenticated Chrome session did not provide any EUDM cookies.")
+            raise EUDMError("The authenticated Chrome session did not provide any Helix cookies.")
         run_reporting.event("Prepared %d in-memory clients from authenticated Chrome session", count)
         return [Client(self.base, header, self.verbose) for _ in range(count)]
 
@@ -640,7 +640,7 @@ class Client:
         )
         if result.returncode:
             raise EUDMError(
-                "The system curl transport could not reach EUDM. "
+                "The system curl transport could not reach Helix. "
                 "Check the network connection or corporate certificate setup."
             )
         raw = result.stdout.decode("utf-8", errors="replace")
@@ -691,14 +691,14 @@ class Client:
         if status >= 400:
             if status in (401, 403) and is_sso_html(raw):
                 raise SSOExpiredError(
-                    "EUDM redirected to SSO. Reconnect and complete sign-in in Chrome."
+                    "Helix redirected to SSO. Reconnect and complete sign-in in Chrome."
                 )
-            raise EUDMError(http_error_message(status, f"EUDM request {method} {path}"))
+            raise EUDMError(http_error_message(status, f"Helix request {method} {path}"))
         if not raw:
             return None
         if is_sso_html(raw):
             raise SSOExpiredError(
-                "EUDM redirected to SSO. Reconnect and complete sign-in in Chrome."
+                "Helix redirected to SSO. Reconnect and complete sign-in in Chrome."
             )
         try:
             return json.loads(raw)
@@ -1055,7 +1055,7 @@ def deploy_device_to_user(
 
     created = request_step(
         client,
-        "Could not create the EUDM request",
+        "Could not create the Helix request",
         "POST",
         "v2/sbe/services/requests",
         {"serviceId": "25301", "quantity": 1, "requestedForLoginIds": [request_for]},
@@ -1245,7 +1245,7 @@ def deploy_device_to_location(
 
     created = request_step(
         client,
-        "Could not create the EUDM request",
+        "Could not create the Helix request",
         "POST",
         "v2/sbe/services/requests",
         {
@@ -1625,7 +1625,7 @@ Safety:
         verbose=args.verbose,
         headless=args.headless,
     )
-    created = request_step(client, "Could not create the EUDM request", "POST", "v2/sbe/services/requests", {
+    created = request_step(client, "Could not create the Helix request", "POST", "v2/sbe/services/requests", {
         "serviceId": "25301", "quantity": 1, "requestedForLoginIds": [args.request_for]
     })
     request_id = str(created["requests"][0]["requestId"])

@@ -20,7 +20,7 @@
   <header class="app-header">
     <div class="product-name">AutoEUDM</div>
     <div class="header-actions">
-      <button id="connectionStatus" class="connection-status" type="button" aria-label="Refresh EUDM connection" title="Refresh EUDM connection" hidden>
+      <button id="connectionStatus" class="connection-status" type="button" aria-label="Refresh Helix connection" title="Refresh Helix connection" hidden>
         <span class="connection-status-dot" aria-hidden="true"></span>
         <span>Connected</span>
       </button>
@@ -33,17 +33,17 @@
     <aside class="tool-rail" aria-label="Request preparation tools">
       <div class="rail-section">
         <h2>Import</h2>
-        <button id="pastePairsButton" class="tool-button" type="button" aria-keyshortcuts="Alt+I Control+I">
+        <button id="pastePairsButton" class="tool-button" type="button" aria-keyshortcuts="Alt+I Control+I" title="Quick import device pairs">
           <span class="tool-icon import-icon" aria-hidden="true"><i data-lucide="list-plus"></i></span>
           <span class="tool-copy"><strong>Quick import</strong><small>Add devices as you go</small></span>
           <kbd class="tool-shortcut" aria-hidden="true">I</kbd>
         </button>
-        <button id="importSheetButton" class="tool-button" type="button" aria-keyshortcuts="A">
+        <button id="importSheetButton" class="tool-button" type="button" aria-keyshortcuts="A" title="Import an ALM Workbook">
           <span class="tool-icon import-icon" aria-hidden="true"><i data-lucide="file-up"></i></span>
-          <span class="tool-copy"><strong>Import ALM Workbook</strong><small>Import a local spreadsheet</small></span>
+          <span class="tool-copy"><strong>Import ALM sheet</strong><small>Import a local spreadsheet</small></span>
           <kbd class="tool-shortcut" aria-hidden="true">A</kbd>
         </button>
-        <button id="almBacklogButton" class="tool-button" type="button">
+        <button id="almBacklogButton" class="tool-button" type="button" title="Find undeployed devices in an ALM Workbook">
           <span class="tool-icon import-icon backlog-icon" aria-hidden="true"><i data-lucide="search-check"></i></span>
           <span class="tool-copy"><strong>ALM backlog</strong><small>Find undeployed devices</small></span>
         </button>
@@ -93,10 +93,9 @@
       <div id="queueEmpty" class="empty-state">
         <div class="empty-state-icon" aria-hidden="true"><i data-lucide="inbox"></i></div>
         <h2>Build a request queue</h2>
-        <p>Add a request, import serial/user pairs, or import an ALM Workbook.</p>
+        <p>Start with a request, or choose an importer from the sidebar.</p>
         <div class="empty-state-actions" aria-label="Queue actions">
           <button id="emptyNewRequestButton" class="button primary" type="button" data-empty-action="new"><i data-lucide="plus"></i><span>New request</span></button>
-          <button id="emptyQuickImportButton" class="button secondary" type="button" data-empty-action="quick"><i data-lucide="list-plus"></i><span>Quick import</span></button>
           <button id="emptyAlmImportButton" class="button secondary" type="button" data-empty-action="alm"><i data-lucide="file-spreadsheet"></i><span>Import workbook</span></button>
         </div>
       </div>
@@ -295,8 +294,8 @@
 
   <dialog id="connectionDialog" class="connection-dialog">
     <section class="connection-sheet-card" aria-labelledby="connectionSheetTitle">
-      <h1 id="connectionSheetTitle">EUDM authentication required</h1>
-      <div id="connectionVisual" class="connection-visual" data-state="disconnected" role="img" aria-label="Connection from AutoEUDM to EUDM is unavailable">
+      <h1 id="connectionSheetTitle">Helix Authentication Required</h1>
+      <div id="connectionVisual" class="connection-visual" data-state="disconnected" role="img" aria-label="Connection from AutoEUDM to Helix is unavailable">
         <div class="connection-node">
           <span class="connection-node-icon"><i data-lucide="laptop-minimal"></i></span>
           <span class="connection-node-label">AutoEUDM</span>
@@ -308,12 +307,13 @@
         </div>
         <div class="connection-node">
           <span class="connection-node-icon"><i data-lucide="server"></i></span>
-          <span class="connection-node-label">EUDM</span>
+          <span class="connection-node-label">Helix</span>
         </div>
       </div>
-      <div id="connectionLoading" class="connection-loading" role="status" aria-label="Checking EUDM authentication" hidden></div>
+      <p class="connection-sheet-copy">Opens Helix in a new window so AutoEUDM can capture your authenticated session.</p>
+      <div id="connectionLoading" class="connection-loading" role="status" aria-label="Checking Helix authentication" hidden></div>
       <div class="connection-sheet-actions">
-        <button id="connectionAuthenticateButton" class="button primary" type="button">Authenticate in EUDM</button>
+        <button id="connectionAuthenticateButton" class="button primary" type="button">Authenticate in Helix</button>
       </div>
     </section>
   </dialog>
@@ -422,8 +422,8 @@
             <div id="importFileChooser">
               <label class="file-drop" for="workbookInput">
                 <span class="file-symbol" aria-hidden="true"><i data-lucide="file-spreadsheet"></i></span>
-                <strong>Import an ALM Workbook</strong>
-                <small>.xlsx or .xlsm, up to 100 MB</small>
+                <strong>Drop an ALM Workbook here</strong>
+                <small>or choose .xlsx or .xlsm · up to 100 MB</small>
                 <input id="workbookInput" type="file" accept=".xlsx,.xlsm">
               </label>
             </div>

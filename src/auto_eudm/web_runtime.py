@@ -120,7 +120,7 @@ def display_rows(
 
 
 def authenticated_user_id(payload: Any) -> str | None:
-    """Extract EUDM's signed-in user ID from the authenticated cart response."""
+    """Extract Helix's signed-in user ID from the authenticated cart response."""
     if isinstance(payload, dict):
         user = payload.get("user")
         if isinstance(user, dict):
@@ -157,7 +157,7 @@ def open_existing_server(
 
 
 class SearchProbe:
-    """One stateful EUDM questionnaire session reused for live form options."""
+    """One stateful Helix questionnaire session reused for live form options."""
 
     def __init__(self, client: Any, request_for: str) -> None:
         self.client = client
@@ -173,7 +173,7 @@ class SearchProbe:
             return
         created = eudm.request_step(
             self.client,
-            "Could not start the live EUDM search session",
+            "Could not start the live Helix search session",
             "POST",
             "v2/sbe/services/requests",
             {
@@ -185,7 +185,7 @@ class SearchProbe:
         self.request_id = str(created["requests"][0]["requestId"])
         questionnaire = eudm.request_step(
             self.client,
-            "Could not load live EUDM form options",
+            "Could not load live Helix form options",
             "GET",
             f"v2/sbe/services/requests/{self.request_id}/questionnaire?timezoneId=Australia/Sydney",
         )["questionnaire"]
@@ -269,15 +269,15 @@ class SearchProbe:
     def users(self, query: str, returning: bool = False) -> list[dict[str, Any]]:
         with self.lock:
             self.ensure()
-            # The return-specific EUDM picker cannot be enabled in a search
+            # The return-specific Helix picker cannot be enabled in a search
             # session: it only becomes valid after its device, status, city,
-            # and location have been set. Use the normal EUDM directory lookup
+            # and location have been set. Use the normal Helix directory lookup
             # to verify and preview the person here. The actual request follows
-            # EUDM's required return sequence during submission.
+            # Helix's required return sequence during submission.
             if returning:
                 eudm.verbose_detail(
                     self.client,
-                    "Verifying returning user through the EUDM directory.",
+                    "Verifying returning user through the Helix directory.",
                 )
             label = (
                 "Please select user - device has been deployed to"
@@ -317,13 +317,13 @@ class SearchProbe:
                 self.client,
                 f"Location lookup for {city_name!r}: {len(rows)} row(s) returned.",
             )
-            # A connected EUDM form always returns its location table after a
+            # A connected Helix form always returns its location table after a
             # valid city selection. The SSO gateway can instead leave a stale
             # session with a superficially successful, but empty, answer
             # response. Fail closed so reconnection is explicit.
             if not rows:
                 raise eudm.SSOExpiredError(
-                    "EUDM did not return any locations. Your signed-in session "
+                "Helix did not return any locations. Your signed-in session "
                     "may have expired; reconnect before trying again."
                 )
             return display_rows(rows)
@@ -335,9 +335,9 @@ class ClientManager:
         self.lock = threading.Lock()
         self.state = "simulation" if config.simulate else "disconnected"
         self.message = (
-            "Simulation is ready. No browser or EUDM network access will be used."
+            "Simulation is ready. No browser or Helix network access will be used."
             if config.simulate
-            else "Connect to EUDM before using live search or submitting."
+            else "Connect to Helix before using live search or submitting."
         )
         self.client: Any | None = (
             eudm.SimulationClient(config.verbose) if config.simulate else None
@@ -383,7 +383,7 @@ class ClientManager:
                 self.fresh_probes = []
                 self.fresh_probe_cursor = 0
             self.state = "connecting"
-            self.message = "Opening the saved EUDM session…"
+            self.message = "Opening the saved Helix session…"
         thread = threading.Thread(target=self._connect, daemon=True)
         thread.start()
 
@@ -400,7 +400,7 @@ class ClientManager:
             self.last_checked_at = None
             self.state = "expired"
             self.message = (
-                "Your EUDM session has expired. Reconnect and complete SSO in Chrome."
+                "Your Helix session has expired. Reconnect and complete SSO in Chrome."
             )
             self.request_for = self.config.request_for or ""
             self.request_for_source = (
@@ -443,10 +443,10 @@ class ClientManager:
                         "EUDM_BROWSER_HEADLESS=false once, connect, and complete SSO."
                     ) from last_error
                 raise eudm.EUDMError(
-                    "EUDM SSO did not complete within two minutes. Try Connect again."
+                    "Helix SSO did not complete within two minutes. Try Connect again."
                 ) from last_error
             # Capture authenticated cookies while still on Playwright's owning
-            # thread. Subsequent EUDM API calls use independent system-curl clients.
+            # thread. Subsequent Helix API calls use independent system-curl clients.
             client = browser.parallel_clients(1)[0]
             try:
                 carts = client.request("GET", "v2/carts") or {}
@@ -458,7 +458,7 @@ class ClientManager:
             request_for = inferred_user or self.config.request_for or ""
             if not request_for:
                 raise eudm.EUDMError(
-                    "EUDM authenticated successfully but did not identify the signed-in user. "
+                    "Helix authenticated successfully but did not identify the signed-in user. "
                     "Set EUDM_REQUEST_FOR in .env and connect again."
                 )
             # The copied API client is independent of Playwright. Once it has
@@ -490,12 +490,12 @@ class ClientManager:
             self.last_checked_at = self.connected_at
             self.request_for = request_for
             self.request_for_source = (
-                "EUDM signed-in account" if inferred_user else "environment"
+                "Helix signed-in account" if inferred_user else "environment"
             )
-            self.message = "Connected to EUDM."
+            self.message = "Connected to Helix."
 
     def check_connection(self) -> dict[str, Any]:
-        """Verify the authenticated API session with a small live EUDM request."""
+        """Verify the authenticated API session with a small live Helix request."""
         if self.config.simulate:
             return self.status()
         with self.health_lock:
@@ -516,12 +516,12 @@ class ClientManager:
                     with self.lock:
                         if self.client is client:
                             self.state = "error"
-                            self.message = "Could not verify the EUDM connection. Refresh it before continuing."
+                            self.message = "Could not verify the Helix connection. Refresh it before continuing."
                 return self.status()
             with self.lock:
                 if self.client is client and self.state == "connected":
                     self.last_checked_at = datetime.now().isoformat(timespec="seconds")
-                    self.message = "Connected to EUDM."
+                    self.message = "Connected to Helix."
             return self.status()
 
     def require(self) -> Any:
@@ -529,10 +529,10 @@ class ClientManager:
             if self.client is None:
                 if self.state == "expired":
                     raise eudm.SSOExpiredError(
-                        "Your EUDM session has expired. Reconnect to continue."
+                        "Your Helix session has expired. Reconnect to continue."
                     )
                 raise eudm.EUDMError(
-                    "Connect to EUDM before searching or submitting."
+                    "Connect to Helix before searching or submitting."
                 )
             return self.client
 
@@ -545,10 +545,10 @@ class ClientManager:
             if self.client is None:
                 if self.state == "expired":
                     raise eudm.SSOExpiredError(
-                        "Your EUDM session has expired. Reconnect to continue."
+                        "Your Helix session has expired. Reconnect to continue."
                     )
                 raise eudm.EUDMError(
-                    "Connect to EUDM before using live search."
+                    "Connect to Helix before using live search."
                 )
             if self.probe is None:
                 self.probe = SearchProbe(
@@ -569,10 +569,10 @@ class ClientManager:
             if self.client is None:
                 if self.state == "expired":
                     raise eudm.SSOExpiredError(
-                        "Your EUDM session has expired. Reconnect to continue."
+                        "Your Helix session has expired. Reconnect to continue."
                     )
                 raise eudm.EUDMError(
-                    "Connect to EUDM before using live search."
+                    "Connect to Helix before using live search."
                 )
             client = self.client
             if len(self.fresh_probes) < SEARCH_PROBE_POOL_SIZE:
@@ -756,7 +756,7 @@ class JobStore:
                 self._write_history(self.persisted_history)
             except OSError:
                 # History is a convenience feature; it must never affect a
-                # completed EUDM request.
+                # completed Helix request.
                 pass
 
     def _register_job(self, job: SubmissionJob) -> None:
@@ -855,7 +855,7 @@ class JobStore:
             entry,
             state="running",
             step=1,
-            message="Creating the EUDM request",
+            message="Creating the Helix request",
             started_at=time.time(),
         )
 

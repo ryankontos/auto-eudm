@@ -657,7 +657,7 @@ function verifyCachedValueInBackground(kind, query, returning, onResult, onError
     .catch((error) => {
       if (onError) onError(error);
       // The cached verification remains usable when the background refresh
-      // cannot reach EUDM. A later foreground verification can retry it.
+      // cannot reach Helix. A later foreground verification can retry it.
     });
 }
 
@@ -1203,7 +1203,7 @@ async function validateBulkSerials({ force = false, requests = null, render = tr
       if (asset) {
         setBulkSerialState(request, serial, "valid");
       } else {
-        setBulkSerialState(request, serial, "failed", "Serial number was not found in EUDM.");
+        setBulkSerialState(request, serial, "failed", "Serial number was not found in Helix.");
       }
       updateBulkValidationSummary(request);
       scheduleBulkValidationRender(render);
@@ -1214,7 +1214,7 @@ async function validateBulkSerials({ force = false, requests = null, render = tr
           if (freshAsset) {
             setBulkSerialState(request, serial, "valid");
           } else {
-            setBulkSerialState(request, serial, "failed", "Serial number was not found in EUDM.");
+            setBulkSerialState(request, serial, "failed", "Serial number was not found in Helix.");
           }
           updateBulkValidationSummary(request);
           if (request === selectedRequest()) refreshBulkValidationButton(request);
@@ -1223,7 +1223,7 @@ async function validateBulkSerials({ force = false, requests = null, render = tr
       }
     } catch (_) {
       if (!requestHasSerial(request, serial)) return;
-      setBulkSerialState(request, serial, "failed", "Could not verify the serial number in EUDM.");
+      setBulkSerialState(request, serial, "failed", "Could not verify the serial number in Helix.");
       updateBulkValidationSummary(request);
       scheduleBulkValidationRender(render);
     }
@@ -1377,7 +1377,7 @@ function renderQueue() {
     : invalidCount
     ? "Fix every request error before reviewing or submitting."
     : !runtimeReady || !requesterReady
-      ? "Connect to EUDM before submitting."
+      ? "Connect to Helix before submitting."
       : "Review every request before submitting.";
 
   elements.queueBody.innerHTML = visibleRequests.map((request) => {
@@ -2152,7 +2152,7 @@ function spinnerPhaseStyle(duration) {
 function setLookupInputStatus(kind, value) {
   if (!value) return setLookupStatus(kind, "");
   if (value.length < 2) return setLookupStatus(kind, "Type at least 2 characters to search.");
-  setLookupStatus(kind, "Checking EUDM automatically…", true);
+  setLookupStatus(kind, "Checking Helix automatically…", true);
 }
 
 function updateLookupControlStates(request = selectedRequest()) {
@@ -2246,7 +2246,7 @@ async function loadSerialSuggestions(request, query, { requireSelection = true }
   const epoch = Number(request.serial_validation_epoch || 0);
   request.serial_validation = "checking";
   request.serial_validation_error = "";
-  setLookupStatus("serial", "Searching EUDM for serial numbers…", true);
+  setLookupStatus("serial", "Searching Helix for serial numbers…", true);
   updateLookupControlStates(request);
   refreshSelectedValidation();
   renderQueue();
@@ -2259,7 +2259,7 @@ async function loadSerialSuggestions(request, query, { requireSelection = true }
     const results = payload.results || [];
     const exactAsset = results.find((item) => serialResultMatches(item, value));
     const cachedExact = Boolean(payload.cached && exactAsset);
-    // A serial is unique. If EUDM also returns fuzzy matches, an exact serial
+    // A serial is unique. If Helix also returns fuzzy matches, an exact serial
     // is still safe to select immediately instead of making the user search
     // again or click a result.
     const autoSelectedExact = Boolean(exactAsset);
@@ -2282,7 +2282,7 @@ async function loadSerialSuggestions(request, query, { requireSelection = true }
             request.serial_validation_error = "";
           } else {
             request.serial_validation = "failed";
-            request.serial_validation_error = "Serial number was not found in EUDM.";
+            request.serial_validation_error = "Serial number was not found in Helix.";
           }
           if (selectedRequest() === request) setLookupStatus("serial", "");
           refreshSelectedValidation();
@@ -2311,7 +2311,7 @@ async function loadSerialSuggestions(request, query, { requireSelection = true }
     const exact = results.some((item) => serialResultMatches(item, value));
     if (!exact) {
       request.serial_validation = "failed";
-      request.serial_validation_error = "Serial number was not found in EUDM.";
+      request.serial_validation_error = "Serial number was not found in Helix.";
     } else if (requireSelection && !cachedExact && !autoSelectedExact) {
       request.serial_validation = "unselected";
       request.serial_validation_error = "Serial number is not verified.";
@@ -2324,7 +2324,7 @@ async function loadSerialSuggestions(request, query, { requireSelection = true }
   } catch (error) {
     if (!validationStillCurrent(request, "serial", epoch, value)) return;
     request.serial_validation = "failed";
-    request.serial_validation_error = error.message || "Could not verify the serial number in EUDM.";
+    request.serial_validation_error = error.message || "Could not verify the serial number in Helix.";
     if (selectedRequest() === request) setLookupStatus("serial", "Serial search failed.");
     refreshSelectedValidation();
     updateLookupControlStates(request);
@@ -2345,7 +2345,7 @@ async function validateUserAfterPause(request, returning = false) {
     request.user_validation = "checking";
     request.user_validation_error = "";
   }
-  setLookupStatus(returning ? "returning" : "user", "Searching EUDM for users…", true);
+  setLookupStatus(returning ? "returning" : "user", "Searching Helix for users…", true);
   updateLookupControlStates(request);
   refreshSelectedValidation();
   renderQueue();
@@ -2361,7 +2361,7 @@ async function validateUserAfterPause(request, returning = false) {
       : null;
     const exactUser = results.find((item) => userResultMatches(item, value));
     // Full names and usernames can both be exact matches. Prefer that exact
-    // result even when EUDM includes additional fuzzy suggestions.
+    // result even when Helix includes additional fuzzy suggestions.
     const autoSelectedResult = cachedResult || exactUser;
     const container = returning ? elements.returningResults : elements.userResults;
     if (autoSelectedResult) {
@@ -2390,7 +2390,7 @@ async function validateUserAfterPause(request, returning = false) {
             request[`${field}_validation_error`] = "";
           } else {
             request[`${field}_validation`] = "failed";
-            request[`${field}_validation_error`] = "User was not found in EUDM.";
+            request[`${field}_validation_error`] = "User was not found in Helix.";
           }
           if (selectedRequest() === request) setLookupStatus(returning ? "returning" : "user", "");
           refreshSelectedValidation();
@@ -2434,12 +2434,12 @@ async function validateUserAfterPause(request, returning = false) {
       request.returning_user_validation = autoSelectedResult ? "valid" : hasResults ? "suggested" : "failed";
       request.returning_user_validation_error = autoSelectedResult
         ? ""
-        : hasResults ? "Choose the verified user from the suggestions." : "User was not found in EUDM.";
+        : hasResults ? "Choose the verified user from the suggestions." : "User was not found in Helix.";
     } else {
       request.user_validation = autoSelectedResult ? "valid" : hasResults ? "suggested" : "failed";
       request.user_validation_error = autoSelectedResult
         ? ""
-        : hasResults ? "Choose the verified user from the suggestions." : "User was not found in EUDM.";
+        : hasResults ? "Choose the verified user from the suggestions." : "User was not found in Helix.";
     }
     refreshSelectedValidation();
     updateLookupControlStates(request);
@@ -2449,10 +2449,10 @@ async function validateUserAfterPause(request, returning = false) {
     if (returning) {
       request.returning_user_loading = false;
       request.returning_user_validation = "failed";
-      request.returning_user_validation_error = error.message || "Could not verify the user in EUDM.";
+      request.returning_user_validation_error = error.message || "Could not verify the user in Helix.";
     } else {
       request.user_validation = "failed";
-      request.user_validation_error = error.message || "Could not verify the user in EUDM.";
+      request.user_validation_error = error.message || "Could not verify the user in Helix.";
     }
     if (selectedRequest() === request) setLookupStatus(returning ? "returning" : "user", "User search failed.");
     refreshSelectedValidation();
@@ -2480,7 +2480,7 @@ async function searchUsers(returning = false) {
   const container = returning ? elements.returningResults : elements.userResults;
   const query = input.value.trim();
   if (query.length < 2) return toast("Enter at least two name or username characters.", "error");
-  setLookupStatus(returning ? "returning" : "user", "Searching EUDM for users…", true);
+  setLookupStatus(returning ? "returning" : "user", "Searching Helix for users…", true);
   button.disabled = true;
   try {
     const payload = await api("/api/search/users", {
@@ -2633,14 +2633,14 @@ function renderConnectionSheet(status = state.connection) {
     state.connectionDismissTimer = null;
   }
   elements.connectionStatus.hidden = stateName !== "connected";
-  elements.connectionSheetTitle.textContent = "EUDM authentication required";
+  elements.connectionSheetTitle.textContent = "Helix Authentication Required";
   elements.connectionLoading.hidden = !["checking", "connecting"].includes(stateName);
-  elements.connectionAuthenticateButton.textContent = "Authenticate in EUDM";
+  elements.connectionAuthenticateButton.textContent = "Authenticate in Helix";
   elements.connectionDialog.dataset.state = visualState;
   elements.connectionVisual.dataset.state = visualState;
   elements.connectionVisual.setAttribute(
     "aria-label",
-    ready ? "AutoEUDM is connected to EUDM" : "Connection from AutoEUDM to EUDM is unavailable",
+    ready ? "AutoEUDM is connected to Helix" : "Connection from AutoEUDM to Helix is unavailable",
   );
   const linkIcon = visualState === "connected" ? "link-2" : "link-2-off";
   if (elements.connectionLinkIcon.dataset.icon !== linkIcon) {
@@ -2995,9 +2995,9 @@ function renderQuickImportReview() {
       entry.userCacheVerification ? "user" : "",
     ].filter(Boolean);
     const checking = validationState === "checking"
-      ? `<small class="import-checking" ${spinnerPhaseStyle(750)}>${iconMarkup("loader-circle")}<span>${entry.serialValidationState === "valid" ? "Serial verified · Verifying the user in EUDM…" : "Verifying the serial and user in EUDM…"}</span></small>`
+      ? `<small class="import-checking" ${spinnerPhaseStyle(750)}>${iconMarkup("loader-circle")}<span>${entry.serialValidationState === "valid" ? "Serial verified · Verifying the user in Helix…" : "Verifying the serial and user in Helix…"}</span></small>`
       : validationState === "failed"
-        ? `<small class="import-check-failed">${escapeHtml(entry.validationError || "Not found in EUDM")}</small>`
+        ? `<small class="import-check-failed">${escapeHtml(entry.validationError || "Not found in Helix")}</small>`
         : cachedFields.length
           ? `<small class="import-checking" ${spinnerPhaseStyle(750)}>${iconMarkup("loader-circle")}<span>${cachedVerificationMessage(...cachedFields)}</span></small>`
         : validationState === "valid"
@@ -3139,7 +3139,7 @@ async function resolveQuickImportReturningUsers() {
           : (assetsResult.value?.results || []).find((item) => serialResultMatches(item, entry.serial));
         if (assetsResult.error || !asset) {
           entry.serialValidationState = "failed";
-          entry.serialValidationError = assetsResult.error?.message || "Serial number was not found in EUDM.";
+          entry.serialValidationError = assetsResult.error?.message || "Serial number was not found in Helix.";
         } else {
           entry.serialValidationState = "valid";
           entry.serialValidationError = "";
@@ -3152,7 +3152,7 @@ async function resolveQuickImportReturningUsers() {
               if (freshAsset) {
               } else {
                 entry.serialValidationState = "failed";
-                entry.serialValidationError = "Serial number was not found in EUDM.";
+                entry.serialValidationError = "Serial number was not found in Helix.";
               }
               syncQuickImportValidation(entry);
               scheduleQuickImportReview();
@@ -3171,7 +3171,7 @@ async function resolveQuickImportReturningUsers() {
           : (usersResult.value?.results || []).find((item) => userResultMatches(item, entry.username));
         if (usersResult.error || !result) {
           entry.userValidationState = "failed";
-          entry.userValidationError = usersResult.error?.message || "Username was not found in EUDM.";
+          entry.userValidationError = usersResult.error?.message || "Username was not found in Helix.";
         } else {
           entry.returningUserInfo = { login: bestLogin(result, entry.username), columns: (result.columns || [result.value]).map(String).filter(Boolean) };
           entry.userValidationState = "valid";
@@ -3186,7 +3186,7 @@ async function resolveQuickImportReturningUsers() {
                 entry.returningUserInfo = { login: bestLogin(freshResult, entry.username), columns: (freshResult.columns || [freshResult.value]).map(String).filter(Boolean) };
               } else {
                 entry.userValidationState = "failed";
-                entry.userValidationError = "Username was not found in EUDM.";
+                entry.userValidationError = "Username was not found in Helix.";
                 entry.returningUserInfo = null;
               }
               syncQuickImportValidation(entry);
@@ -3290,8 +3290,8 @@ function addPairs() {
       errors.push("Choose a complete city and location before adding these requests.");
     }
   }
-  if (validationEnabled("validate_quick_import") && state.pasteEntries.some((entry) => !["valid", "failed"].includes(entry.validationState))) errors.push("Wait for EUDM validation to finish.");
-  if (validationEnabled("validate_quick_import") && state.pasteEntries.some((entry) => entry.validationState === "failed")) errors.push("Correct the entries EUDM could not validate.");
+  if (validationEnabled("validate_quick_import") && state.pasteEntries.some((entry) => !["valid", "failed"].includes(entry.validationState))) errors.push("Wait for Helix validation to finish.");
+  if (validationEnabled("validate_quick_import") && state.pasteEntries.some((entry) => entry.validationState === "failed")) errors.push("Correct the entries Helix could not validate.");
   if (state.pasteEntries.some((entry) => entry.kind === "user" && !entry.username)) errors.push("A username is required for a deployed status.");
   if (errors.length) {
     $("#pairsError").textContent = errors.join(" ");
@@ -4250,7 +4250,7 @@ function importFailedFields(request) {
 function importValidationStatus(request) {
   const cachedFields = importCachedVerificationFields(request);
   if (request.import_validation === "checking") {
-    return `<small class="import-checking" ${spinnerPhaseStyle(750)}>${iconMarkup("loader-circle")}<span>Verifying serial in EUDM…</span></small>`;
+    return `<small class="import-checking" ${spinnerPhaseStyle(750)}>${iconMarkup("loader-circle")}<span>Verifying serial in Helix…</span></small>`;
   }
   if (request.import_validation === "failed") {
     return `<small class="import-check-failed">${escapeHtml(request.import_error || "Could not verify this row")}</small>`;
@@ -4279,7 +4279,7 @@ function renderImportVerificationWarnings(payload = state.importPreview) {
     const detail = affected.length ? ` (${affected.join(" and ")})` : "";
     const user = request.kind === "user" ? request.user || "No username" : "";
     const identity = user ? ` · ${escapeHtml(user)}` : "";
-    return `<li><strong>${escapeHtml(request.serials[0] || "No serial")}</strong>${identity}${escapeHtml(detail)}: ${escapeHtml(request.import_error || "Could not verify in EUDM.")}</li>`;
+    return `<li><strong>${escapeHtml(request.serials[0] || "No serial")}</strong>${identity}${escapeHtml(detail)}: ${escapeHtml(request.import_error || "Could not verify in Helix.")}</li>`;
   }).join("");
   warning.hidden = false;
 }
@@ -4935,7 +4935,7 @@ async function validateImportPreview(retryRequests = null) {
       if (needsUserVerification && !userInfo) missingFields.push("username");
       if (missingFields.length) {
         const missingLabels = missingFields.map((field) => field === "serial" ? "Serial number" : "Username");
-        const validationError = new Error(`${missingLabels.join(" and ")} ${missingLabels.length === 1 ? "was" : "were"} not found in EUDM.`);
+        const validationError = new Error(`${missingLabels.join(" and ")} ${missingLabels.length === 1 ? "was" : "were"} not found in Helix.`);
         validationError.failedFields = missingFields;
         throw validationError;
       }
@@ -4958,7 +4958,7 @@ async function validateImportPreview(retryRequests = null) {
             request.import_validation = "failed";
             request.serial_validation = "failed";
             addImportFailedField(request, "serial");
-            request.import_error = "Serial number was not found in EUDM.";
+            request.import_error = "Serial number was not found in Helix.";
           }
           scheduleImportPreviewUpdate(payload);
         }, () => {
@@ -4981,7 +4981,7 @@ async function validateImportPreview(retryRequests = null) {
             request.import_validation = "failed";
             request.user_validation = "failed";
             addImportFailedField(request, "username");
-            request.import_error = "Username was not found in EUDM.";
+            request.import_error = "Username was not found in Helix.";
             request.user_info = null;
           }
           scheduleImportPreviewUpdate(payload);
@@ -5095,10 +5095,10 @@ async function validateBacklogPreview(payload = state.importPreview, retryReques
           ...(!userInfo ? ["username"] : []),
         ];
         request.import_error = !asset && !userInfo
-          ? "Serial and user were not found in EUDM."
+          ? "Serial and user were not found in Helix."
           : !asset
-            ? "Serial number was not found in EUDM."
-            : "User was not found in EUDM.";
+            ? "Serial number was not found in Helix."
+            : "User was not found in Helix.";
         request.user_info = null;
         return;
       }
@@ -5118,7 +5118,7 @@ async function validateBacklogPreview(payload = state.importPreview, retryReques
             request.import_validation = "failed";
             request.serial_validation = "failed";
             addImportFailedField(request, "serial");
-            request.import_error = "Serial number was not found in EUDM.";
+            request.import_error = "Serial number was not found in Helix.";
           }
           scheduleImportPreviewUpdate(payload);
         }, () => {
@@ -5141,7 +5141,7 @@ async function validateBacklogPreview(payload = state.importPreview, retryReques
             request.import_validation = "failed";
             request.user_validation = "failed";
             addImportFailedField(request, "username");
-            request.import_error = "User was not found in EUDM.";
+            request.import_error = "User was not found in Helix.";
             request.user_info = null;
           }
           scheduleImportPreviewUpdate(payload);
@@ -5459,12 +5459,30 @@ function jobCompletedSuccessfully(job) {
 function celebrateSubmission(job) {
   if (!jobCompletedSuccessfully(job) || state.celebratedJobs.has(job.job_id)) return;
   state.celebratedJobs.add(job.job_id);
+  const celebration = $("#progressCelebration");
+  if (celebration) {
+    celebration.classList.remove("is-celebrating");
+    // Force a fresh animation when a completed run is rendered more than once.
+    void celebration.offsetWidth;
+    celebration.classList.add("is-celebrating");
+    window.setTimeout(() => celebration.classList.remove("is-celebrating"), 1800);
+  }
   if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
   const burst = window.confetti;
   if (typeof burst !== "function") return;
   const colors = ["#f48234", "#24724a", "#f9c56d", "#ffffff"];
-  burst({ particleCount: 54, spread: 62, startVelocity: 28, gravity: .9, origin: { x: .18, y: .58 }, colors });
-  window.setTimeout(() => burst({ particleCount: 38, spread: 54, startVelocity: 24, gravity: .95, origin: { x: .82, y: .56 }, colors }), 150);
+  try {
+    burst({ particleCount: 54, spread: 62, startVelocity: 28, gravity: .9, origin: { x: .18, y: .58 }, colors });
+    window.setTimeout(() => {
+      try {
+        burst({ particleCount: 38, spread: 54, startVelocity: 24, gravity: .95, origin: { x: .82, y: .56 }, colors });
+      } catch (_) {
+        // The in-dialog completion animation remains as the visual fallback.
+      }
+    }, 150);
+  } catch (_) {
+    // The in-dialog completion animation remains as the visual fallback.
+  }
 }
 
 function renderSubmissionNotice(job = state.currentJob) {
@@ -5969,7 +5987,6 @@ function bindEvents() {
   });
   $("#newRequestButton").addEventListener("click", startNewRequest);
   $("#emptyNewRequestButton").addEventListener("click", startNewRequest);
-  $("#emptyQuickImportButton").addEventListener("click", openPasteDialog);
   $("#emptyAlmImportButton").addEventListener("click", openAlmWorkbookImport);
   $("#saveNewRequestButton").addEventListener("click", saveNewRequest);
   $("#discardNewRequestButton").addEventListener("click", discardNewRequest);
@@ -6324,7 +6341,7 @@ function bindEvents() {
   bindConnectionSheetEvents();
   elements.connectionStatus.addEventListener("click", () => {
     // Keep the successful state compact, but make it the reconnect control the
-    // moment the user needs to refresh a stale EUDM session.
+    // moment the user needs to refresh a stale Helix session.
     void connect();
   });
   elements.historyButton.addEventListener("click", openHistory);

@@ -117,7 +117,7 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
         if eudm.is_sso_expired_error(exc):
             self.app.clients.mark_sso_expired()
             self._error(
-                "Your EUDM session has expired. Reconnect and complete SSO in Chrome.",
+                "Your Helix session has expired. Reconnect and complete SSO in Chrome.",
                 401,
                 code="sso_expired",
                 connection=self.app.clients.status(),
