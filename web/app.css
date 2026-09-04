@@ -1924,6 +1924,7 @@ input:hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var
 .progress-track span::after { content: ""; position: absolute; inset: 0 auto 0 -38%; width: 38%; background: linear-gradient(90deg, transparent, rgba(255,255,255,.5), transparent); animation: progress-sheen 1.7s ease-in-out infinite; }
 .progress-modal[data-progress-state="success"] .progress-track span { background: linear-gradient(90deg, var(--green), color-mix(in srgb, var(--green) 62%, #a6e5be)); }
 .progress-modal[data-progress-state="failed"] .progress-track span { background: linear-gradient(90deg, var(--red), color-mix(in srgb, var(--red) 62%, #f3aaaa)); }
+.progress-modal:not([data-progress-state="running"]) .progress-track span::after { opacity: 0; animation: none; }
 .progress-modal[data-progress-state="success"] #progressCounts { color: var(--green); }
 .progress-modal[data-progress-state="failed"] #progressCounts { color: var(--red); }
 @keyframes progress-sheen { from { transform: translateX(0); } to { transform: translateX(365%); } }
@@ -1932,13 +1933,15 @@ input:hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var
 .progress-list { max-height: min(520px, 60vh); overflow-y: auto; margin-top: 14px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface-raised); box-shadow: var(--shadow-soft); }
 .progress-row {
   display: grid;
-  grid-template-columns: 30px minmax(190px, 1.2fr) minmax(220px, 1fr) minmax(155px, .72fr);
+  grid-template-columns: 30px minmax(170px, 1.15fr) minmax(0, 1fr) minmax(135px, .65fr);
   gap: 14px;
   align-items: start;
   min-height: 0;
   padding: 13px 15px;
   border-bottom: 1px solid var(--line);
 }
+.progress-modal .modal-header { padding-block: 14px 12px; }
+.progress-modal .modal-header h2 { min-width: 0; font-size: 17px; font-weight: 680; letter-spacing: -.01em; }
 .progress-row:last-child { border-bottom: 0; }
 .progress-state { width: 24px; height: 24px; display: grid; place-items: center; border-radius: 50%; color: var(--muted); background: var(--neutral-badge); font-weight: 800; font-size: 12px; }
 .progress-state .lucide { width: 14px; height: 14px; stroke-width: 2.1; }

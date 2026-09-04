@@ -961,6 +961,15 @@ function applyInferredKind(request, status, bulk = request.kind === "bulk_locati
   const kind = kindForStatus(status, bulk);
   const changed = request.kind !== kind;
   const wasUser = request.kind === "user";
+  const wasSingleLocation = request.kind === "location";
+  const previousUser = request.user || "";
+  const previousUserInfo = request.user_info || null;
+  const previousUserSelected = Boolean(request.user_selected || previousUserInfo);
+  const previousUserValidation = request.user_validation || (previousUserInfo ? "valid" : "empty");
+  const previousReturningUser = request.returning_user || "";
+  const previousReturningInfo = request.returning_user_info || null;
+  const previousReturningSelected = Boolean(request.returning_user_selected || previousReturningInfo);
+  const previousReturningValidation = request.returning_user_validation || (previousReturningInfo ? "valid" : "empty");
   request.kind = kind;
   request.status = status;
   request.group = kind === "user"
@@ -969,9 +978,32 @@ function applyInferredKind(request, status, bulk = request.kind === "bulk_locati
       ? "Bulk add to location stock"
       : "Add to location stock";
   if (kind === "user") {
+    if (changed && wasSingleLocation && request.returning && previousReturningUser) {
+      request.user = previousReturningUser;
+      request.user_info = previousReturningInfo;
+      request.user_selected = previousReturningSelected;
+      request.user_validation = previousReturningValidation;
+      request.user_validation_error = request.returning_user_validation_error || "";
+    }
+    request.returning = false;
+    request.returning_user = "";
+    request.returning_user_selected = false;
+    request.returning_user_info = null;
+    request.returning_user_validation = "empty";
+    request.returning_user_validation_error = "";
+    request.returning_user_loading = false;
     request.location = null;
     request.serials = request.serials.slice(0, 1);
   } else if (changed) {
+    if (wasUser && kind === "location" && previousUser) {
+      request.returning = true;
+      request.returning_user = previousUser;
+      request.returning_user_info = previousUserInfo;
+      request.returning_user_selected = previousUserSelected;
+      request.returning_user_validation = previousUserValidation;
+      request.returning_user_validation_error = request.user_validation_error || "";
+      request.returning_user_loading = false;
+    }
     request.user = "";
     request.user_selected = false;
     request.user_info = null;
@@ -1151,8 +1183,9 @@ function userInfoMatchesQuery(info, query) {
 function importCachedVerificationFields(request) {
   const fields = [];
   if (request.cached_serial_verification && request.serials?.[0]) fields.push("serial");
-  const username = request.user || request.username;
-  const userInfo = request.user_info;
+  const returning = request.kind === "location" && Boolean(request.returning);
+  const username = returning ? request.returning_user : request.user || request.username;
+  const userInfo = returning ? request.returning_user_info : request.user_info;
   if (request.cached_user_verification && userInfoMatchesQuery(userInfo, username)) fields.push("user");
   return fields;
 }
@@ -4388,6 +4421,7 @@ function resumeImportDraft(id) {
 
 function importFailedFields(request) {
   const userImport = request.kind === "user"
+    || (request.kind === "location" && Boolean(request.returning || request.returning_user))
     || (!request.kind && String(request.username || "").trim());
   const defaults = ["serial", ...(userImport ? ["username"] : [])];
   const fields = Array.isArray(request.import_failed_fields) && request.import_failed_fields.length
@@ -4419,14 +4453,18 @@ function verificationStatusIndicatorMarkup(stateName) {
 
 function importValidationDescriptor(request) {
   const cachedFields = importCachedVerificationFields(request);
+  const verifiesUser = request.kind === "user" || (request.kind === "location" && Boolean(request.returning));
   if (request.import_validation === "checking") {
-    return { state: "checking", message: "Verifying serial in Helix…" };
+    return { state: "checking", message: verifiesUser ? "Verifying serial and user in Helix…" : "Verifying serial in Helix…" };
   }
   if (request.import_validation === "failed") {
     return { state: "failed", message: request.import_error || "Could not verify this row" };
   }
-  if (cachedFields.includes("serial")) {
-    return { state: "checking", message: cachedVerificationMessage("serial") };
+  if (cachedFields.length) {
+    const cachedKind = cachedFields.includes("serial") && cachedFields.includes("user")
+      ? "details"
+      : cachedFields.includes("user") ? "user" : "serial";
+    return { state: "checking", message: cachedKind === "details" ? "Verifying cached user and serial…" : cachedVerificationMessage(cachedKind) };
   }
   return request.import_validation === "valid"
     ? { state: "valid", message: "Serial verified" }
@@ -4570,8 +4608,12 @@ const IMPORT_HISTORY_FIELDS = [
   "serials",
   "username",
   "user",
+  "returning",
   "returning_user",
+  "returning_user_selected",
   "returning_user_info",
+  "returning_user_validation",
+  "returning_user_validation_error",
   "user_info",
   "import_validation",
   "import_error",
@@ -4894,9 +4936,10 @@ function renderImportPreview() {
         : `<span class="fixed-status">Deployed - Pending Return</span>`;
       const validation = importValidationStatus(request);
       const failedFields = importFailedFields(request);
+      const editableUsername = request.kind === "location" ? request.returning_user : request.user;
       const editable = request.import_validation === "failed" && failedFields.length ? `<div class="import-inline-edit">
         ${failedFields.includes("serial") ? `<input data-import-serial="${escapeHtml(request.id)}" value="${escapeHtml(request.serials[0])}" aria-label="Serial number" placeholder="Correct serial">` : ""}
-        ${failedFields.includes("username") ? `<input data-import-user="${escapeHtml(request.id)}" value="${escapeHtml(request.user)}" aria-label="Username" placeholder="Correct username">` : ""}
+        ${failedFields.includes("username") ? `<input data-import-user="${escapeHtml(request.id)}" value="${escapeHtml(editableUsername || "")}" aria-label="Username" placeholder="Correct username">` : ""}
         <button class="button secondary compact" data-import-retry="${escapeHtml(request.id)}" type="button">${iconMarkup("rotate-ccw")}<span>Retry</span></button>
       </div>` : "";
       const destination = locationDisplay(state.importLocation) || "Location stock";
@@ -5130,9 +5173,13 @@ async function validateImportPreview(retryRequests = null) {
     request.cached_serial_verification = false;
     request.cached_user_verification = false;
     request.serial_validation = "checking";
+    const verifiesReturningUser = request.kind === "location" && Boolean(request.returning);
     if (request.kind === "user") {
       request.user_info = null;
       request.user_validation = request.user ? "checking" : "empty";
+    } else if (verifiesReturningUser) {
+      request.returning_user_info = null;
+      request.returning_user_validation = request.returning_user ? "checking" : "empty";
     }
   });
   renderImportPreview();
@@ -5140,8 +5187,9 @@ async function validateImportPreview(retryRequests = null) {
   await forEachWithConcurrency(requests, VALIDATION_CONCURRENCY, async (request) => {
     const epoch = request.import_validation_epoch;
     const serial = String(request.serials?.[0] || "").trim();
-    const username = String(request.user || "").trim();
-    const needsUserVerification = request.kind === "user";
+    const verifiesReturningUser = request.kind === "location" && Boolean(request.returning);
+    const username = String(verifiesReturningUser ? request.returning_user : request.user || "").trim();
+    const needsUserVerification = request.kind === "user" || verifiesReturningUser;
     try {
       const [assets, users] = await Promise.all([
         api("/api/search/assets", {
@@ -5152,7 +5200,7 @@ async function validateImportPreview(retryRequests = null) {
           }),
         }),
         needsUserVerification
-          ? api("/api/search/users", { method: "POST", body: JSON.stringify({ query: username, fresh: true }) })
+          ? api("/api/search/users", { method: "POST", body: JSON.stringify({ query: username, returning: verifiesReturningUser, fresh: true }) })
           : Promise.resolve({ results: [] }),
       ]);
       if (!importValidationIsCurrent(payload, request, epoch)) return;
@@ -5171,9 +5219,16 @@ async function validateImportPreview(retryRequests = null) {
         throw validationError;
       }
       if (needsUserVerification) {
-        request.user = userInfo.login;
-        request.user_info = userInfo;
-        request.user_validation = "valid";
+        if (verifiesReturningUser) {
+          request.returning_user = userInfo.login;
+          request.returning_user_info = userInfo;
+          request.returning_user_selected = true;
+          request.returning_user_validation = "valid";
+        } else {
+          request.user = userInfo.login;
+          request.user_info = userInfo;
+          request.user_validation = "valid";
+        }
       }
       request.serial_validation = "valid";
       request.import_validation = "valid";
@@ -5201,19 +5256,22 @@ async function validateImportPreview(retryRequests = null) {
       if (needsUserVerification && users.cached) {
         request.cached_user_verification = true;
         scheduleImportPreviewUpdate(payload);
-        verifyCachedValueInBackground("username", username, false, (freshPayload) => {
+        verifyCachedValueInBackground("username", username, verifiesReturningUser, (freshPayload) => {
           if (!importValidationIsCurrent(payload, request, epoch)) return;
           const freshUser = (freshPayload.results || []).find((item) => userResultMatches(item, username));
           const freshUserInfo = verifiedUserInfo(freshUser, username);
           request.cached_user_verification = false;
           if (freshUserInfo) {
-            request.user_info = freshUserInfo;
+            if (verifiesReturningUser) request.returning_user_info = freshUserInfo;
+            else request.user_info = freshUserInfo;
           } else {
             request.import_validation = "failed";
-            request.user_validation = "failed";
+            if (verifiesReturningUser) request.returning_user_validation = "failed";
+            else request.user_validation = "failed";
             addImportFailedField(request, "username");
             request.import_error = "Username was not found in Helix.";
-            request.user_info = null;
+            if (verifiesReturningUser) request.returning_user_info = null;
+            else request.user_info = null;
           }
           scheduleImportPreviewUpdate(payload, { full: !freshUserInfo });
         }, () => {
@@ -5226,8 +5284,9 @@ async function validateImportPreview(retryRequests = null) {
       if (!importValidationIsCurrent(payload, request, epoch)) return;
       request.import_validation = "failed";
       request.import_error = error.message || "Could not validate this request.";
-      request.import_failed_fields = error.failedFields || ["serial", ...(request.kind === "user" ? ["username"] : [])];
+      request.import_failed_fields = error.failedFields || ["serial", ...(needsUserVerification ? ["username"] : [])];
       request.user_info = null;
+      if (verifiesReturningUser) request.returning_user_info = null;
     } finally {
       if (importValidationIsCurrent(payload, request, epoch)) {
         scheduleImportPreviewUpdate(payload);
@@ -5493,13 +5552,6 @@ async function prepareImport() {
       const cleanRequest = { ...request };
       cleanRequest.serial_validation = "valid";
       if (cleanRequest.kind === "user") cleanRequest.user_validation = "valid";
-      if (cleanRequest.kind === "location") {
-        delete cleanRequest.returning;
-        delete cleanRequest.returning_user;
-        delete cleanRequest.returning_user_info;
-        delete cleanRequest.returning_user_validation;
-        delete cleanRequest.returning_user_validation_error;
-      }
       delete cleanRequest.included;
       return cleanRequest;
     });
@@ -5860,8 +5912,7 @@ function resetProgressView() {
   $("#progressActions").hidden = true;
   $("#progressCelebration").hidden = true;
   $("#progressDialog").dataset.progressState = "starting";
-  $("#progressHeading").innerHTML = `${iconMarkup("send")}<span>Starting submission</span>`;
-  refreshIcons($("#progressHeading"));
+  $("#progressHeading").textContent = "Starting submission";
   $("#closeProgressButton").title = "Continue in the background";
   requestAnimationFrame(() => { bar.style.transition = ""; });
 }
@@ -5912,7 +5963,10 @@ function renderProgress(job) {
   progressList.scrollTop = previousScrollTop;
   const finished = job.state === "finished";
   const fullySuccessful = jobCompletedSuccessfully(job);
-  $("#progressDialog").dataset.progressState = finished ? (fullySuccessful ? "success" : "failed") : "running";
+  const allEntriesStopped = job.counts.total > 0 && done === job.counts.total && !job.counts.running;
+  $("#progressDialog").dataset.progressState = finished || allEntriesStopped
+    ? (fullySuccessful ? "success" : "failed")
+    : "running";
   const celebration = $("#progressCelebration");
   celebration.hidden = !fullySuccessful;
   if (fullySuccessful) {
@@ -5923,10 +5977,9 @@ function renderProgress(job) {
       ? "All requests submitted"
       : `${job.counts.succeeded} submitted, ${job.counts.failed} failed`
     : "Submitting requests";
-  const progressHeadingIcon = finished
-    ? fullySuccessful ? "circle-check" : "circle-alert"
-    : "send";
-  $("#progressHeading").innerHTML = `${iconMarkup(progressHeadingIcon)}<span>${escapeHtml(progressHeading)}</span>`;
+  $("#progressHeading").innerHTML = finished
+    ? `${iconMarkup(fullySuccessful ? "circle-check" : "circle-alert")}<span>${escapeHtml(progressHeading)}</span>`
+    : `<span>${escapeHtml(progressHeading)}</span>`;
   $("#progressActions").hidden = !finished;
   $("#closeProgressButton").title = finished ? "Close results" : "Continue in the background";
   $("#downloadResultsLink").href = `/api/jobs/${job.job_id}/results.txt`;
@@ -6195,7 +6248,10 @@ async function pollJob(jobId) {
     state.pollFailures += 1;
     state.pollStatusMessage = "Connection interrupted — submission is still running and status will retry.";
     renderSubmissionNotice();
-    if ($("#progressDialog").open) $("#progressCounts").textContent = "Reconnecting to submission status…";
+    if ($("#progressDialog").open) {
+      $("#progressDialog").dataset.progressState = "paused";
+      $("#progressCounts").textContent = "Reconnecting to submission status…";
+    }
     if (state.pollFailures === 1) toast("Submission is still running. Reconnecting to its status…", "error");
     scheduleJobPoll(jobId, Math.min(10_000, 1200 * (2 ** Math.min(state.pollFailures - 1, 3))));
   } finally {

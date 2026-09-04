@@ -279,6 +279,25 @@ class WorkbookUploadTests(unittest.TestCase):
             "",
         )
 
+    def test_workbook_prepare_never_submits_the_status_suffix_as_part_of_the_serial(self) -> None:
+        row = inventory.SheetRow(
+            row_number=2,
+            deployment_date=date(2025, 2, 3),
+            username="valid.user",
+            deployment_serial="SERIAL123 U",
+            returned_device_serial=None,
+            pending_return_serial=None,
+            marked_red=False,
+            enabled=True,
+            deployment_status_hint="Deployed - Existing Stock",
+        )
+        workbook = WorkbookImport("import-suffix", "tracking.xlsx", {"Sheet": [row]})
+
+        request = workbook.prepare("Sheet", "2025-02-03", "deployments")["requests"][0]
+
+        self.assertEqual(request["serials"], ["SERIAL123"])
+        self.assertEqual(request["status"], "Deployed - Existing Stock")
+
     def test_workbook_prepare_persists_new_joiner_marker(self) -> None:
         row = inventory.SheetRow(
             row_number=2,
@@ -314,6 +333,27 @@ class WorkbookUploadTests(unittest.TestCase):
 
         self.assertFalse(request["has_returned_device_serial"])
         self.assertFalse(request["has_pending_return_serial"])
+
+    def test_returned_device_import_is_a_return_from_the_row_user(self) -> None:
+        row = inventory.SheetRow(
+            row_number=2,
+            deployment_date=date(2025, 2, 3),
+            username="returning.user",
+            deployment_serial=None,
+            returned_device_serial="RETURN123",
+            pending_return_serial=None,
+            marked_red=False,
+            enabled=True,
+        )
+        workbook = WorkbookImport("import-returned", "tracking.xlsx", {"Sheet": [row]})
+        location = web_models.Location("Sydney, AU", "Building", "1", "Store")
+
+        request = workbook.prepare(
+            "Sheet", "2025-02-03", "returned_devices", location
+        )["requests"][0]
+
+        self.assertTrue(request["returning"])
+        self.assertEqual(request["returning_user"], "returning.user")
 
     def test_workbook_prepare_reports_deployment_serial_without_username(self) -> None:
         row = inventory.SheetRow(

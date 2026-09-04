@@ -1228,6 +1228,10 @@ class WorkbookImport:
             )
         requests = []
         for action in actions:
+            cleaned_serial, _ = inventory.serial_and_status_hint(
+                action.serial,
+                returned_device=action.group == "Returned devices",
+            )
             if action.kind == "location" and (
                 not location
                 or not all(
@@ -1243,7 +1247,9 @@ class WorkbookImport:
             request = RequestSpec(
                 client_id=uuid.uuid4().hex,
                 kind=action.kind,
-                serials=(action.serial,),
+                # Strip recognised ALM status suffixes again at this boundary.
+                # This also protects resumed drafts created by an older parser.
+                serials=(cleaned_serial or action.serial,),
                 status=(
                     action.status
                     if action.group == "Pending returns" or action.status_preselected
@@ -1252,6 +1258,10 @@ class WorkbookImport:
                 user=action.username if action.kind == "user" else None,
                 location=location if action.kind == "location" else None,
                 group=action.group,
+                returning_requested=action.group == "Returned devices",
+                returning_user=(
+                    action.username if action.group == "Returned devices" else None
+                ),
                 source=f"{self.filename} · {sheet_name}",
                 device_allocation=action.device_allocation,
                 first_name=action.first_name,

@@ -644,37 +644,44 @@ def build_actions(
         if not looks_like_username(row.username):
             ignored["Username is not a valid login ID"] += 1
             continue
+        deployment_serial, deployment_status_hint = serial_and_status_hint(
+            row.deployment_serial
+        )
+        returned_device_serial, returned_device_status_hint = serial_and_status_hint(
+            row.returned_device_serial,
+            returned_device=True,
+        )
         if "deployments" in selected_modes:
-            if looks_like_serial(row.deployment_serial):
+            if looks_like_serial(deployment_serial):
                 actions.append(Action(
                     "Deployments",
                     row.row_number,
                     row.username,
-                    row.deployment_serial,
-                    row.deployment_status_hint or NEW_STOCK,
+                    deployment_serial,
+                    row.deployment_status_hint or deployment_status_hint or NEW_STOCK,
                     device_allocation=row.device_allocation,
                     new_asset_status=row.new_asset_status,
-                    has_returned_device_serial=looks_like_serial(row.returned_device_serial),
+                    has_returned_device_serial=looks_like_serial(returned_device_serial),
                     has_pending_return_serial=looks_like_serial(row.pending_return_serial),
                     new_joiner=row.new_joiner,
                     first_name=row.first_name,
                     last_name=row.last_name,
-                    status_preselected=bool(row.deployment_status_hint),
+                    status_preselected=bool(row.deployment_status_hint or deployment_status_hint),
                 ))
             else:
                 ignored["Deployment serial is blank or invalid"] += 1
         if "returned_devices" in selected_modes:
-            if looks_like_serial(row.returned_device_serial):
+            if looks_like_serial(returned_device_serial):
                 actions.append(Action(
                     "Returned devices",
                     row.row_number,
                     row.username,
-                    row.returned_device_serial,
-                    row.returned_device_status_hint or "Used Stock",
+                    returned_device_serial,
+                    row.returned_device_status_hint or returned_device_status_hint or "Used Stock",
                     "location",
                     first_name=row.first_name,
                     last_name=row.last_name,
-                    status_preselected=bool(row.returned_device_status_hint),
+                    status_preselected=bool(row.returned_device_status_hint or returned_device_status_hint),
                 ))
             else:
                 ignored["Returned-device serial is blank or invalid"] += 1
