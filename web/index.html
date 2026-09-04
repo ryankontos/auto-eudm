@@ -62,6 +62,10 @@
           <p id="queueCounts">0 requests</p>
         </div>
         <div class="queue-actions">
+          <label class="queue-search" for="queueSearchInput">
+            <i data-lucide="search" aria-hidden="true"></i>
+            <input id="queueSearchInput" type="search" autocomplete="off" spellcheck="false" placeholder="Filter queue" aria-label="Filter request queue">
+          </label>
           <button id="newRequestButton" class="new-request-button" type="button" aria-label="Prepare a request" title="Prepare a request"><i data-lucide="plus"></i></button>
         </div>
       </div>
@@ -92,6 +96,12 @@
           <button id="emptyQuickImportButton" class="button secondary" type="button" data-empty-action="quick"><i data-lucide="list-plus"></i><span>Quick import</span></button>
           <button id="emptyAlmImportButton" class="button secondary" type="button" data-empty-action="alm"><i data-lucide="file-spreadsheet"></i><span>Import workbook</span></button>
         </div>
+      </div>
+      <div id="queueFilterEmpty" class="empty-state queue-filter-empty" hidden>
+        <div class="empty-state-icon" aria-hidden="true"><i data-lucide="search-x"></i></div>
+        <h2>No matching requests</h2>
+        <p>Try a different serial, user, status, or destination.</p>
+        <div class="empty-state-actions"><button id="clearQueueSearchButton" class="button quiet" type="button"><i data-lucide="x"></i><span>Clear filter</span></button></div>
       </div>
 
       <div id="queueTableWrap" class="queue-table-wrap" hidden>
@@ -561,7 +571,7 @@
       <section data-settings-panel="statuses" hidden>
         <p class="settings-help">Choose which deployment statuses appear in the request editor and arrange their order. Hidden statuses remain available on existing requests.</p>
         <div class="request-status-group">
-          <div class="request-status-group-heading"><h3>Request editor statuses</h3><small>Use the arrows to set the order shown in the status list.</small></div>
+          <div class="request-status-group-heading"><h3>Request editor statuses</h3><small>Drag rows or use the arrows to set the order shown in the status list.</small></div>
           <div id="requestStatuses" class="request-status-list" data-request-status-list></div>
         </div>
       </section>

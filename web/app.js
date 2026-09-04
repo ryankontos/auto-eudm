@@ -5,6 +5,7 @@ const state = {
   queueLoaded: false,
   persistedQueueSnapshot: null,
   queuePersistTimer: null,
+  queueSearch: "",
   selectedId: null,
   connection: null,
   connectionSheetEventsBound: false,
@@ -46,6 +47,7 @@ const state = {
   appInputHistoryTimers: new Map(),
   commandPaletteIndex: 0,
   queueSortable: null,
+  requestStatusSortable: null,
   queueDropDepth: 0,
   validationTimers: new Map(),
   backlogValidationIds: new Set(),
@@ -116,6 +118,7 @@ function commandPaletteActions() {
     { label: "Quick import", detail: "Add devices from a list", icon: "list-plus", shortcut: "I", run: openPasteDialog },
     { label: "Import ALM Workbook", detail: "Review an ALM spreadsheet", icon: "file-spreadsheet", shortcut: "A", run: openAlmWorkbookImport },
     ...(reviewAvailable ? [{ label: "Review & submit", detail: `Review ${state.queue.length} queued request${state.queue.length === 1 ? "" : "s"}`, icon: "send", shortcut: "⌥ Enter", run: openReview }] : []),
+    { label: "Filter request queue", detail: "Find a serial, user, status, or location", icon: "search", shortcut: "", run: focusQueueSearch },
     { label: "Request history", detail: "Search submitted requests", icon: "history", shortcut: "⌥ ⇧ H", run: openHistory },
     { label: "Settings", detail: "Change app and import settings", icon: "settings-2", shortcut: "⌥ ,", run: openSettings },
     { label: themeIsDark ? "Use light appearance" : "Use dark appearance", detail: "Change the interface theme", icon: themeIsDark ? "sun" : "moon", shortcut: "", run: toggleTheme },
@@ -191,6 +194,8 @@ const elements = {
   queueTableWrap: $("#queueTableWrap"),
   queueBody: $("#queueBody"),
   queueCounts: $("#queueCounts"),
+  queueSearch: $("#queueSearchInput"),
+  queueFilterEmpty: $("#queueFilterEmpty"),
   connectionStatus: $("#connectionStatus"),
   queueValidationNotice: $("#queueValidationNotice"),
   queueValidationMessage: $("#queueValidationMessage"),
@@ -305,6 +310,34 @@ function parseSerials(raw) {
 
 function selectedRequest() {
   return state.newRequest || state.queue.find((request) => request.id === state.selectedId) || null;
+}
+
+function queueSearchText(request) {
+  const userInfo = request?.user_info && typeof request.user_info === "object"
+    ? Object.values(request.user_info)
+    : [];
+  const location = request?.location && typeof request.location === "object"
+    ? Object.values(request.location)
+    : [];
+  return [
+    ...(request?.serials || []),
+    request?.user,
+    request?.returning_user,
+    request?.status,
+    request?.group,
+    request?.source,
+    request?.device_allocation,
+    request?.request_id,
+    ...userInfo,
+    ...location,
+  ].filter(Boolean).join(" ").toLowerCase();
+}
+
+function focusQueueSearch() {
+  const input = $("#queueSearchInput");
+  if (!input) return;
+  input.focus();
+  input.select();
 }
 
 function toast(message, type = "") {
@@ -662,6 +695,7 @@ function renderRequestStatusSettings() {
       : "Location";
     return `
       <div class="request-status-row" data-request-status-row data-status-value="${escapeHtml(option.value)}">
+        <span class="request-status-drag-handle" title="Drag to reorder" aria-label="Drag to reorder">${iconMarkup("grip-vertical")}</span>
         <label class="request-status-choice">
           <input type="checkbox" data-request-status-visible ${visible.has(option.value) ? "checked" : ""}>
           <span>${escapeHtml(option.label)}<small>${kind} deployment</small></span>
@@ -673,6 +707,22 @@ function renderRequestStatusSettings() {
       </div>`;
   }).join("");
   refreshIcons(list);
+  syncRequestStatusSorting();
+}
+
+function syncRequestStatusSorting() {
+  const list = $("[data-request-status-list]");
+  if (!list || !window.Sortable) return;
+  if (!state.requestStatusSortable) {
+    state.requestStatusSortable = new window.Sortable(list, {
+      animation: 160,
+      easing: "cubic-bezier(.2,.8,.2,1)",
+      handle: ".request-status-drag-handle",
+      ghostClass: "request-status-row-ghost",
+      chosenClass: "request-status-row-chosen",
+    });
+  }
+  state.requestStatusSortable.option("disabled", false);
 }
 
 function readRequestStatusSettings() {
@@ -1245,7 +1295,7 @@ function syncQueueSorting() {
       },
     });
   }
-  state.queueSortable.option("disabled", submissionBusy() || state.queue.length < 2);
+  state.queueSortable.option("disabled", submissionBusy() || state.queue.length < 2 || Boolean(state.queueSearch.trim()));
 }
 
 function renderQueue() {
@@ -1254,14 +1304,21 @@ function renderQueue() {
   const invalidCount = [...validations.values()].filter((errors) => errors.length).length;
   const submittedCount = state.queue.filter((request) => request.result_state === "succeeded").length;
   const submissionLocked = submissionBusy();
+  const query = String(state.queueSearch || "").trim().toLowerCase();
+  const visibleRequests = query
+    ? state.queue.filter((request) => queueSearchText(request).includes(query))
+    : state.queue;
+  const visibleCount = visibleRequests.length;
   const currentJobIds = new Set((state.currentJob?.entries || []).map((entry) => entry.id));
-  elements.queueCounts.textContent = `${requestCount} request${requestCount === 1 ? "" : "s"}`;
+  const requestCountLabel = `${requestCount} request${requestCount === 1 ? "" : "s"}`;
+  elements.queueCounts.textContent = query ? `${visibleCount} of ${requestCountLabel}` : requestCountLabel;
   elements.queueValidationNotice.hidden = invalidCount === 0;
   elements.queueValidationMessage.textContent = invalidCount
     ? `${invalidCount} request${invalidCount === 1 ? " needs" : "s need"} attention`
     : "";
   elements.queueEmpty.hidden = requestCount > 0;
-  elements.queueTableWrap.hidden = requestCount === 0;
+  elements.queueFilterEmpty.hidden = !query || visibleCount > 0 || requestCount === 0;
+  elements.queueTableWrap.hidden = requestCount === 0 || visibleCount === 0;
   const runtimeReady = state.connection?.state === "simulation"
     || state.connection?.state === "connected";
   const requesterReady = Boolean(state.connection?.request_for || state.config?.request_for);
@@ -1282,7 +1339,8 @@ function renderQueue() {
       ? "Connect to EUDM before submitting."
       : "Review every request before submitting.";
 
-  elements.queueBody.innerHTML = state.queue.map((request, index) => {
+  elements.queueBody.innerHTML = visibleRequests.map((request) => {
+    const index = state.queue.indexOf(request);
     const errors = validations.get(request.id) || [];
     const errorText = validationErrorTexts(request, errors).join(" ");
     const submitting = currentJobIds.has(request.id)
@@ -5835,6 +5893,16 @@ function bindEvents() {
       event.preventDefault();
       runCommandPaletteItem(state.commandPaletteIndex);
     }
+  });
+  elements.queueSearch.addEventListener("input", () => {
+    state.queueSearch = elements.queueSearch.value;
+    renderQueue();
+  });
+  $("#clearQueueSearchButton").addEventListener("click", () => {
+    state.queueSearch = "";
+    elements.queueSearch.value = "";
+    renderQueue();
+    focusQueueSearch();
   });
   $("#newRequestButton").addEventListener("click", startNewRequest);
   $("#emptyNewRequestButton").addEventListener("click", startNewRequest);
