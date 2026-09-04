@@ -2037,8 +2037,8 @@ input:hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var
   border-radius: 50%;
   animation: activity-spin .75s linear infinite;
 }
-.import-inline-edit { display: grid; grid-template-columns: minmax(90px, 1fr) minmax(90px, 1fr) auto; gap: 5px; margin-top: 7px; }
-.import-inline-edit input { min-width: 0; padding: 5px 6px; font-size: 12px; }
+.import-inline-edit { display: grid; grid-template-columns: minmax(90px, 1fr) minmax(90px, 1fr) auto; gap: 5px; align-items: stretch; margin-top: 7px; }
+.import-inline-edit input { min-width: 0; height: var(--control-height-compact); min-height: var(--control-height-compact); padding: 5px 6px; font-size: 12px; }
 @media (min-width: 1200px) {
   .import-preview-list { gap: 12px; }
   .import-group-heading { min-height: 48px; padding: 9px 14px; }
@@ -2172,6 +2172,7 @@ input:hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var
   .bulk-serial-prefix-warning .button { grid-column: 2; justify-self: start; }
   .bulk-serial-row { grid-template-columns: 23px minmax(0, 1fr) 28px; grid-template-rows: auto auto; }
   .bulk-serial-detail { grid-column: 2; grid-row: 2; text-align: left; }
+  .import-inline-edit { grid-template-columns: 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {

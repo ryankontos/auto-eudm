@@ -4817,7 +4817,7 @@ function renderImportPreview() {
       const editable = request.import_validation === "failed" && failedFields.length ? `<div class="import-inline-edit">
         ${failedFields.includes("serial") ? `<input data-import-serial="${escapeHtml(request.id)}" value="${escapeHtml(request.serials[0])}" aria-label="Serial number" placeholder="Correct serial">` : ""}
         ${failedFields.includes("username") ? `<input data-import-user="${escapeHtml(request.id)}" value="${escapeHtml(request.user)}" aria-label="Username" placeholder="Correct username">` : ""}
-        <button class="text-button" data-import-retry="${escapeHtml(request.id)}" type="button">${iconMarkup("rotate-ccw")}<span>Retry</span></button>
+        <button class="button secondary compact" data-import-retry="${escapeHtml(request.id)}" type="button">${iconMarkup("rotate-ccw")}<span>Retry</span></button>
       </div>` : "";
       const destination = locationDisplay(state.importLocation) || "Location stock";
       const missingReturnWarning = isDeployment

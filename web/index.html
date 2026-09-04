@@ -164,7 +164,7 @@
           <div id="serialConfirmed" class="lookup-confirmed" hidden>
             <span class="lookup-confirmed-mark" aria-hidden="true"><i data-lucide="circle-check"></i></span>
             <span><strong id="serialConfirmedValue"></strong></span>
-            <button id="resetSerialSelection" class="text-button" type="button">Change</button>
+            <button id="resetSerialSelection" class="text-button" type="button"><i data-lucide="pencil-line"></i><span>Change</span></button>
           </div>
           <div id="bulkSerialEditor" class="bulk-serial-editor" hidden>
             <div class="bulk-serial-mode" role="group" aria-label="Bulk serial entry mode">
@@ -218,7 +218,7 @@
             <div id="userConfirmed" class="lookup-confirmed" hidden>
               <span class="lookup-confirmed-mark" aria-hidden="true"><i data-lucide="circle-check"></i></span>
               <span><strong id="userConfirmedValue"></strong><small id="userConfirmedUsername"></small></span>
-              <button id="resetUserSelection" class="text-button" type="button">Change</button>
+              <button id="resetUserSelection" class="text-button" type="button"><i data-lucide="pencil-line"></i><span>Change</span></button>
             </div>
             <div id="userLookupStatus" class="lookup-status" role="status" aria-live="polite" hidden></div>
             <div id="userResults" class="search-results" hidden></div>
@@ -255,7 +255,7 @@
               <div id="returningConfirmed" class="lookup-confirmed" hidden>
                 <span class="lookup-confirmed-mark" aria-hidden="true"><i data-lucide="circle-check"></i></span>
                 <span><strong id="returningConfirmedValue"></strong><small id="returningConfirmedUsername"></small></span>
-                <button id="resetReturningSelection" class="text-button" type="button">Change</button>
+                <button id="resetReturningSelection" class="text-button" type="button"><i data-lucide="pencil-line"></i><span>Change</span></button>
               </div>
               <div id="returningLookupStatus" class="lookup-status" role="status" aria-live="polite" hidden></div>
               <div id="returningResults" class="search-results" hidden></div>
@@ -430,7 +430,7 @@
             <div id="importMapColumns" hidden>
               <div class="import-file-row">
                 <div><strong id="importMapFilename"></strong><small>Choose the columns in this workbook.</small></div>
-                <button id="changeMappedFileButton" class="text-button" type="button">Change file</button>
+                <button id="changeMappedFileButton" class="text-button" type="button"><i data-lucide="file-up"></i><span>Change file</span></button>
               </div>
               <div class="column-map">
                 <label class="column-map-sheet">Sheet
@@ -452,8 +452,8 @@
             <div class="import-file-row">
               <div><strong id="importFilename"></strong><small id="importFileSummary"></small></div>
               <div class="import-file-actions">
-                <button id="changeColumnsButton" class="text-button" type="button">Change columns</button>
-                <button id="changeFileButton" class="text-button" type="button">Change file</button>
+                <button id="changeColumnsButton" class="text-button" type="button"><i data-lucide="columns-3"></i><span>Change columns</span></button>
+                <button id="changeFileButton" class="text-button" type="button"><i data-lucide="file-up"></i><span>Change file</span></button>
               </div>
             </div>
             <div class="two-column-form">
@@ -584,7 +584,7 @@
           <label>First name column<input id="spreadsheetFirstNameColumnInput" type="text" placeholder="First Name"></label>
           <label>Last name column<input id="spreadsheetLastNameColumnInput" type="text" placeholder="Last Name"></label>
         </div>
-        <div class="settings-inline-action"><small>Backlog rows marked as ignored are remembered in the project files.</small><button id="clearAlmBacklogIgnoredButton" class="text-button" type="button">Clear ignored backlog rows</button></div>
+        <div class="settings-inline-action"><small>Backlog rows marked as ignored are remembered in the project files.</small><button id="clearAlmBacklogIgnoredButton" class="text-button" type="button"><i data-lucide="trash-2"></i><span>Clear ignored backlog rows</span></button></div>
       </section>
       <section data-settings-panel="statuses" hidden>
         <p class="settings-help">Choose which deployment statuses appear in the request editor and arrange their order. Hidden statuses remain available on existing requests.</p>
