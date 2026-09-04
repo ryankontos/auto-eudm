@@ -169,6 +169,21 @@ function openCommandPalette() {
   requestAnimationFrame(() => $("#commandPaletteInput")?.focus());
 }
 
+function setupOptionalListAnimation() {
+  if (typeof window.autoAnimate !== "function"
+    || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  ["#commandPaletteList", "#pairsReviewList", "#bulkSerialList", "#importDraftList"].forEach((selector) => {
+    const target = $(selector);
+    if (!target || target.dataset.autoAnimateReady) return;
+    try {
+      window.autoAnimate(target, { duration: 180, easing: "ease-out" });
+      target.dataset.autoAnimateReady = "true";
+    } catch (error) {
+      console.warn(`Could not animate ${selector}.`, error);
+    }
+  });
+}
+
 const elements = {
   workspace: $(".workspace"),
   concurrency: $("#concurrencyInput"),
@@ -6478,6 +6493,8 @@ async function init() {
     if (spreadsheetSettings) spreadsheetSettings.hidden = !spreadsheetEnabled;
     configureConcurrency(state.config.concurrency);
     bindEvents();
+    await window.autoAnimateReady;
+    setupOptionalListAnimation();
     renderAll();
     await restoreSubmissionFromHistory();
     renderConnectionSheet();
