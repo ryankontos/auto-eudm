@@ -56,6 +56,7 @@ const state = {
   bulkValidationNeedsFullRender: false,
   quickImportRenderFrame: null,
   importPreviewRenderFrame: null,
+  importPreviewNeedsFullRender: false,
   historyRuns: [],
 };
 
@@ -2999,13 +3000,13 @@ function renderQuickImportReview() {
       entry.userCacheVerification ? "user" : "",
     ].filter(Boolean);
     const checking = validationState === "checking"
-      ? `<small class="import-checking" ${spinnerPhaseStyle(750)}>${iconMarkup("loader-circle")}<span>${entry.serialValidationState === "valid" ? "Serial verified · Verifying the user in Helix…" : "Verifying the serial and user in Helix…"}</span></small>`
+      ? verificationStatusMarkup("checking", entry.serialValidationState === "valid" ? "Serial verified · Verifying the user in Helix…" : "Verifying the serial and user in Helix…")
       : validationState === "failed"
-        ? `<small class="import-check-failed">${escapeHtml(entry.validationError || "Not found in Helix")}</small>`
+        ? verificationStatusMarkup("failed", entry.validationError || "Not found in Helix")
         : cachedFields.length
-          ? `<small class="import-checking" ${spinnerPhaseStyle(750)}>${iconMarkup("loader-circle")}<span>${cachedVerificationMessage(...cachedFields)}</span></small>`
+          ? verificationStatusMarkup("checking", cachedVerificationMessage(...cachedFields))
         : validationState === "valid"
-          ? `<small class="import-check-ok">${iconMarkup("circle-check")}<span>Serial verified${entry.username ? " · User verified" : ""}</span></small>`
+          ? verificationStatusMarkup("valid", `Serial verified${entry.username ? " · User verified" : ""}`)
           : "";
     const usernameError = usernameRequired
       ? `<div class="quick-import-row-error"><input data-pairs-username="${index}" type="text" autocomplete="off" spellcheck="false" placeholder="Enter username" aria-label="Username for ${escapeHtml(entry.serial)}"><small>Username required for Deploy to user</small></div>`
@@ -3350,6 +3351,7 @@ function resetImportDialog(mode = state.importMode || "deploy") {
   state.workbook = null;
   state.workbookInspection = null;
   state.importPreview = null;
+  state.importPreviewNeedsFullRender = false;
   state.importDraftId = null;
   state.importUndoStack = [];
   state.importRedoStack = [];
@@ -3977,6 +3979,7 @@ function readImportDrafts() {
 let importDraftSaveTimer = null;
 let importDraftSavePending = null;
 let importDraftSaveInFlight = Promise.resolve();
+let importPreviewDraftSaveTimer = null;
 
 async function loadImportDrafts() {
   const payload = await api("/api/import-drafts");
@@ -4009,6 +4012,10 @@ function importDraftSettings() {
 }
 
 function saveCurrentImportDraft({ immediate = false } = {}) {
+  if (immediate && importPreviewDraftSaveTimer) {
+    window.clearTimeout(importPreviewDraftSaveTimer);
+    importPreviewDraftSaveTimer = null;
+  }
   const workbook = state.workbook || state.workbookInspection;
   if (state.preferences.save_alm_import_drafts === false || !state.importDraftId || !workbook?.import_id) return Promise.resolve();
   const draft = {
@@ -4031,6 +4038,14 @@ function saveCurrentImportDraft({ immediate = false } = {}) {
     flushImportDraftSave();
   }, 150);
   return importDraftSaveInFlight;
+}
+
+function scheduleImportDraftSave() {
+  if (importPreviewDraftSaveTimer) return;
+  importPreviewDraftSaveTimer = window.setTimeout(() => {
+    importPreviewDraftSaveTimer = null;
+    saveCurrentImportDraft();
+  }, 180);
 }
 
 function flushImportDraftSave({ keepalive = false } = {}) {
@@ -4058,6 +4073,8 @@ function deleteImportDraft(id) {
   if (!id) return Promise.resolve();
   const deletingCurrent = state.importDraftId === id;
   if (deletingCurrent) {
+    if (importPreviewDraftSaveTimer) window.clearTimeout(importPreviewDraftSaveTimer);
+    importPreviewDraftSaveTimer = null;
     if (importDraftSaveTimer) window.clearTimeout(importDraftSaveTimer);
     importDraftSaveTimer = null;
     // A late validation/render callback must not enqueue this draft again after
@@ -4252,19 +4269,92 @@ function importFailedFields(request) {
 }
 
 function importValidationStatus(request) {
+  const descriptor = importValidationDescriptor(request);
+  if (!descriptor.state) return "";
+  return verificationStatusMarkup(
+    descriptor.state,
+    descriptor.message,
+    ` data-import-validation-id="${escapeHtml(request.id)}" data-validation-state="${descriptor.state}"`,
+  );
+}
+
+function verificationStatusMarkup(stateName, message, attributes = "") {
+  const indicator = verificationStatusIndicatorMarkup(stateName);
+  return `<span class="import-validation-status import-check-${stateName}"${attributes}><span class="import-validation-indicator">${indicator}</span><span data-import-validation-copy>${escapeHtml(message)}</span></span>`;
+}
+
+function verificationStatusIndicatorMarkup(stateName) {
+  return stateName === "checking"
+    ? '<span class="import-status-spinner" aria-hidden="true"></span>'
+    : iconMarkup(stateName === "valid" ? "circle-check" : "circle-alert");
+}
+
+function importValidationDescriptor(request) {
   const cachedFields = importCachedVerificationFields(request);
   if (request.import_validation === "checking") {
-    return `<small class="import-checking" ${spinnerPhaseStyle(750)}>${iconMarkup("loader-circle")}<span>Verifying serial in Helix…</span></small>`;
+    return { state: "checking", message: "Verifying serial in Helix…" };
   }
   if (request.import_validation === "failed") {
-    return `<small class="import-check-failed">${escapeHtml(request.import_error || "Could not verify this row")}</small>`;
+    return { state: "failed", message: request.import_error || "Could not verify this row" };
   }
   if (cachedFields.includes("serial")) {
-    return `<small class="import-checking" ${spinnerPhaseStyle(750)}>${iconMarkup("loader-circle")}<span>${cachedVerificationMessage("serial")}</span></small>`;
+    return { state: "checking", message: cachedVerificationMessage("serial") };
   }
   return request.import_validation === "valid"
-    ? `<small class="import-check-ok">${iconMarkup("circle-check")}<span>Serial verified</span></small>`
-    : "";
+    ? { state: "valid", message: "Serial verified" }
+    : { state: "idle", message: "" };
+}
+
+function patchImportValidationStatusNode(node, request) {
+  const descriptor = importValidationDescriptor(request);
+  const currentState = node.dataset.validationState || "idle";
+  node.className = `import-validation-status import-check-${descriptor.state}`;
+  node.dataset.validationState = descriptor.state;
+  node.hidden = !descriptor.state || descriptor.state === "idle";
+  if (!descriptor.state || descriptor.state === "idle") {
+    node.replaceChildren();
+    return;
+  }
+  const copy = node.querySelector("[data-import-validation-copy]");
+  if (currentState === descriptor.state && copy) {
+    if (copy.textContent !== descriptor.message) copy.textContent = descriptor.message;
+    return;
+  }
+  node.innerHTML = `<span class="import-validation-indicator">${verificationStatusIndicatorMarkup(descriptor.state)}</span><span data-import-validation-copy>${escapeHtml(descriptor.message)}</span>`;
+  refreshIcons(node);
+}
+
+function patchImportPreviewValidation(payload) {
+  // Validation is a high-frequency update. Keep the review rows and their
+  // animated indicators alive while only changing the status copy/icon.
+  const list = $("#importPreviewList");
+  if (!payload || !list) return;
+  const rows = new Map([...list.querySelectorAll("[data-import-row-id]")].map((row) => [row.dataset.importRowId, row]));
+  const statuses = new Map([...list.querySelectorAll("[data-import-validation-id]")].map((node) => [node.dataset.importValidationId, node]));
+  const requestsById = new Map((payload.requests || []).map((request) => [String(request.id), request]));
+  let needsFullRender = false;
+  rows.forEach((_, id) => {
+    const request = requestsById.get(id);
+    if (!request) {
+      needsFullRender = true;
+      return;
+    }
+    if (request.included === false) return;
+    const descriptor = importValidationDescriptor(request);
+    const node = statuses.get(id);
+    if (!node) {
+      if (descriptor.state && descriptor.state !== "idle") needsFullRender = true;
+      return;
+    }
+    patchImportValidationStatusNode(node, request);
+  });
+  if (needsFullRender) {
+    renderImportPreview();
+    return;
+  }
+  if (payload.mode !== "backlog") renderImportVerificationWarnings(payload);
+  updateImportPrepareButton(payload);
+  scheduleImportDraftSave();
 }
 
 function renderImportVerificationWarnings(payload = state.importPreview) {
@@ -4298,7 +4388,7 @@ function updateImportPrepareButton(payload = state.importPreview) {
     const invalid = selected.some((request) => request.import_validation !== "valid");
     const button = $("#prepareImportButton");
     button.disabled = !selected.length || checking || missingStatus || invalid;
-    button.textContent = checking
+    setButtonLabel(button, checking
       ? `Verifying ${verifiedCount}/${selected.length}…`
       : missingStatus
         ? "Choose deployment statuses"
@@ -4306,7 +4396,7 @@ function updateImportPrepareButton(payload = state.importPreview) {
           ? "Fix invalid rows or exclude them"
           : selected.length
             ? `Add ${selected.length} to queue`
-            : "Select rows to add";
+            : "Select rows to add");
     return;
   }
   const selected = payload.requests.filter((request) => request.included !== false);
@@ -4319,7 +4409,7 @@ function updateImportPrepareButton(payload = state.importPreview) {
   const valid = selected.filter((request) => request.import_validation === "valid").length;
   const button = $("#prepareImportButton");
   button.disabled = !selected.length || checking || missingStatus || missingLocation || invalid;
-  button.textContent = checking
+  setButtonLabel(button, checking
     ? `Verifying ${verifiedCount}/${selected.length}…`
     : missingStatus
       ? "Choose import statuses"
@@ -4329,7 +4419,7 @@ function updateImportPrepareButton(payload = state.importPreview) {
           ? "Fix invalid rows or exclude them"
           : selected.length
             ? `Add ${valid} to queue`
-            : "Select rows to add";
+            : "Select rows to add");
 }
 
 function importPersonMarkup(request) {
@@ -4509,7 +4599,7 @@ function renderBacklogPreview(payload) {
     </div>`;
     const validation = importValidationStatus(request);
     const includedRow = request.included !== false;
-    return `<div class="import-preview-row ${includedRow ? "" : "excluded"}${notAttending ? " not-attending" : ""}">
+    return `<div class="import-preview-row ${includedRow ? "" : "excluded"}${notAttending ? " not-attending" : ""}" data-import-row-id="${escapeHtml(request.id)}">
       <label class="include-control" title="${includedRow ? "Included" : exclusionLabel}">
         <input type="checkbox" data-backlog-include="${escapeHtml(request.id)}" ${includedRow ? "checked" : ""}>
         <span>${index + 1}</span>
@@ -4692,7 +4782,7 @@ function renderImportPreview() {
       const personColumn = isReturnedDevice
         ? `<div><small class="import-field-title">Destination</small><strong>${escapeHtml(destination)}</strong></div>`
         : `${importPersonMarkup(request).replace("</div>", `${missingReturnWarning}</div>`)}`;
-      return `<div class="import-preview-row ${isIncluded ? "" : "excluded"}">
+      return `<div class="import-preview-row ${isIncluded ? "" : "excluded"}" data-import-row-id="${escapeHtml(request.id)}">
         <label class="include-control" title="${isIncluded ? "Included" : "Do not deploy"}">
           <input type="checkbox" data-import-include="${escapeHtml(request.id)}" ${isIncluded ? "checked" : ""}>
           <span>${index + 1}</span>
@@ -4832,13 +4922,22 @@ function renderImportPreview() {
   saveCurrentImportDraft();
 }
 
-function scheduleImportPreviewUpdate(payload = state.importPreview) {
+function scheduleImportPreviewUpdate(payload = state.importPreview, { full = false } = {}) {
+  // Coalesce result bursts into one frame without rebuilding the whole review
+  // list for every serial that finishes.
+  if (!payload || state.importPreview !== payload) return;
+  state.importPreviewNeedsFullRender ||= full;
   if (state.importPreviewRenderFrame) return;
   state.importPreviewRenderFrame = window.requestAnimationFrame(() => {
     state.importPreviewRenderFrame = null;
-    if (!payload || state.importPreview !== payload) return;
-    renderImportPreview();
-    updateImportPrepareButton(payload);
+    if (!payload || state.importPreview !== payload) {
+      state.importPreviewNeedsFullRender = false;
+      return;
+    }
+    const renderFull = state.importPreviewNeedsFullRender;
+    state.importPreviewNeedsFullRender = false;
+    if (renderFull) renderImportPreview();
+    else patchImportPreviewValidation(payload);
   });
 }
 
@@ -4964,7 +5063,7 @@ async function validateImportPreview(retryRequests = null) {
             addImportFailedField(request, "serial");
             request.import_error = "Serial number was not found in Helix.";
           }
-          scheduleImportPreviewUpdate(payload);
+          scheduleImportPreviewUpdate(payload, { full: !freshAsset });
         }, () => {
           if (!importValidationIsCurrent(payload, request, epoch)) return;
           request.cached_serial_verification = false;
@@ -4988,7 +5087,7 @@ async function validateImportPreview(retryRequests = null) {
             request.import_error = "Username was not found in Helix.";
             request.user_info = null;
           }
-          scheduleImportPreviewUpdate(payload);
+          scheduleImportPreviewUpdate(payload, { full: !freshUserInfo });
         }, () => {
           if (!importValidationIsCurrent(payload, request, epoch)) return;
           request.cached_user_verification = false;
@@ -5124,7 +5223,7 @@ async function validateBacklogPreview(payload = state.importPreview, retryReques
             addImportFailedField(request, "serial");
             request.import_error = "Serial number was not found in Helix.";
           }
-          scheduleImportPreviewUpdate(payload);
+          scheduleImportPreviewUpdate(payload, { full: !freshAsset });
         }, () => {
           if (!backlogValidationIsCurrent(payload, request, epoch)) return;
           request.cached_serial_verification = false;
@@ -5148,7 +5247,7 @@ async function validateBacklogPreview(payload = state.importPreview, retryReques
             request.import_error = "User was not found in Helix.";
             request.user_info = null;
           }
-          scheduleImportPreviewUpdate(payload);
+          scheduleImportPreviewUpdate(payload, { full: !freshUserInfo });
         }, () => {
           if (!backlogValidationIsCurrent(payload, request, epoch)) return;
           request.cached_user_verification = false;
@@ -5362,7 +5461,7 @@ async function prepareImport() {
     state.importExpandedGroups.clear();
     setImportStage("preview");
     $("#backImportButton").hidden = false;
-    button.textContent = "Verifying selections…";
+    setButtonLabel(button, "Verifying selections…");
     button.disabled = true;
     setImportStep(3);
     renderImportPreview();
