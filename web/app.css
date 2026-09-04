@@ -1791,6 +1791,7 @@ input:hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var
 .review-status-value { display: flex; align-items: center; min-height: 26px; }
 .review-label { display: none !important; margin-bottom: 4px; color: var(--subtle) !important; font-size: 10px !important; font-weight: 750; letter-spacing: .04em; text-transform: uppercase; }
 .review-meta { margin-top: 3px; }
+.review-model { margin-top: 5px; color: var(--muted) !important; font-size: 12px !important; font-weight: 600; }
 .review-error { margin-top: 5px; color: var(--red) !important; }
 .history-list {
   display: grid;

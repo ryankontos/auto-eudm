@@ -5626,7 +5626,7 @@ async function openReview() {
           <small class="review-label">Device</small>
           <strong>${escapeHtml(request.serials.join(", ") || "No serial")}</strong>
           <small class="review-meta review-kind"><span class="queue-context">${requestKindMarkup(request.kind)}<span>${escapeHtml(kindLabel(request.kind))}${request.kind === "bulk_location" ? ` · ${request.serials.length} devices` : ""}</span></span></small>
-          ${request.device_allocation ? `<small class="review-meta">${escapeHtml(request.device_allocation)}</small>` : ""}
+          ${request.device_allocation ? `<small class="review-model">${escapeHtml(request.device_allocation)}</small>` : ""}
         </div>
         <div class="review-field review-status">
           <small class="review-label">Status</small>
