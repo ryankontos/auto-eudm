@@ -73,6 +73,54 @@ def valid_request(client_id: str) -> RequestSpec:
 
 
 class ReturnQuestionSubmissionTests(unittest.TestCase):
+    def test_yes_no_answers_use_live_questionnaire_values(self) -> None:
+        class ChangedChoiceClient(eudm.SimulationClient):
+            def __init__(self) -> None:
+                super().__init__()
+                self.answers: list[dict[str, object]] = []
+
+            def questionnaire(self) -> dict[str, object]:
+                questionnaire = super().questionnaire()
+                replacements = {
+                    "is-return": ("return-yes-v2", "return-no-v2"),
+                    "return-confirmed": ("confirm-yes-v2", "confirm-no-v2"),
+                }
+                for item in questionnaire["pages"][0]["pageItems"]:
+                    if item["id"] in replacements:
+                        yes_value, no_value = replacements[item["id"]]
+                        item["options"] = [
+                            {"dataValue": yes_value, "displayValue": "Yes"},
+                            {"dataValue": no_value, "displayValue": "No"},
+                        ]
+                return questionnaire
+
+            def request(self, method: str, path: str, payload: object | None = None) -> object:
+                if method == "POST" and path.endswith("/questionnaire/answers"):
+                    self.answers.append(payload if isinstance(payload, dict) else {})
+                return super().request(method, path, payload)
+
+        client = ChangedChoiceClient()
+        with mock.patch.object(eudm.SimulationClient, "SIMULATED_LOOKUP_DELAY_SECONDS", 0):
+            eudm.deploy_device_to_location(
+                client,
+                serials=["SERIAL123"],
+                request_for="requester.user",
+                status="Pending Rebuild",
+                city="Sydney, AU",
+                building="1 Elizabeth Street",
+                floor="Level 15",
+                room="Store Room",
+                returning_user="returning.user",
+                submit=False,
+            )
+
+        values = {
+            str(answer.get("questionId")): answer.get("answers")
+            for answer in client.answers
+        }
+        self.assertEqual(values["is-return"], ["return-yes-v2"])
+        self.assertEqual(values["return-confirmed"], ["confirm-yes-v2"])
+
     def test_location_submission_answers_eudm_return_question(self) -> None:
         class RecordingSimulationClient(eudm.SimulationClient):
             def __init__(self) -> None:

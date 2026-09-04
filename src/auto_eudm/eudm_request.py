@@ -748,6 +748,58 @@ def answer(client: Any, request_id: str, questionnaire_id: str, item: dict[str, 
     return answer_values(client, request_id, questionnaire_id, item, [value])
 
 
+def questionnaire_choice_value(item: dict[str, Any], desired: Any) -> Any:
+    """Resolve a displayed questionnaire choice to its current Helix value.
+
+    Helix occasionally changes the data values behind otherwise unchanged
+    Yes/No controls. Prefer the value advertised by the live questionnaire so
+    submissions do not depend on the old ``YES``/``NO`` constants.
+    """
+    options = item.get("options")
+    if not isinstance(options, list):
+        return desired
+
+    def normalise(value: Any) -> str:
+        return " ".join(str(value).split()).casefold()
+
+    wanted = normalise(desired)
+    yes_values = {"1", "true", "y", "yes"}
+    no_values = {"0", "false", "n", "no"}
+    wanted_group = yes_values if wanted in yes_values else no_values if wanted in no_values else None
+
+    for option in options:
+        if not isinstance(option, dict):
+            continue
+        display = next(
+            (option[key] for key in ("displayValue", "label", "name") if key in option),
+            None,
+        )
+        value = next(
+            (option[key] for key in ("dataValue", "value", "id") if key in option),
+            None,
+        )
+        candidates = {normalise(candidate) for candidate in (display, value) if candidate is not None}
+        if wanted in candidates or (wanted_group is not None and candidates & wanted_group):
+            return value if value is not None else display
+    return desired
+
+
+def answer_choice(
+    client: Any,
+    request_id: str,
+    questionnaire_id: str,
+    item: dict[str, Any],
+    desired: Any,
+) -> dict[str, Any]:
+    return answer(
+        client,
+        request_id,
+        questionnaire_id,
+        item,
+        questionnaire_choice_value(item, desired),
+    )
+
+
 def option_data(
     events: dict[str, Any],
     question_id: str,
@@ -1342,12 +1394,12 @@ def deploy_device_to_location(
                 "Is this a return from a user",
                 type_="RadioButtons",
             )
-            answer(
+            answer_choice(
                 client,
                 request_id,
                 questionnaire_id,
                 returned,
-                "YES" if returning_user else "NO",
+                "Yes" if returning_user else "No",
             )
             if returning_user:
                 add_dropoff = field_by_label(
@@ -1355,7 +1407,7 @@ def deploy_device_to_location(
                     "Add Name of person who dropped off device",
                     type_="YesNo",
                 )
-                answer(client, request_id, questionnaire_id, add_dropoff, "true")
+                answer_choice(client, request_id, questionnaire_id, add_dropoff, "true")
                 search_question_and_answer_exact(
                     client,
                     request_id,
@@ -1368,7 +1420,7 @@ def deploy_device_to_location(
                 confirmation = field_by_label(
                     all_items, "Does this look right?", type_="RadioButtons"
                 )
-                answer(
+                answer_choice(
                     client,
                     request_id,
                     questionnaire_id,
@@ -1692,13 +1744,13 @@ Safety:
                 "Is this a return from a user",
                 type_="RadioButtons",
             )
-            answer(client, request_id, questionnaire_id, returned, "YES")
+            answer_choice(client, request_id, questionnaire_id, returned, "Yes")
             add_dropoff = field_by_label(
                 all_items,
                 "Add Name of person who dropped off device",
                 type_="YesNo",
             )
-            answer(client, request_id, questionnaire_id, add_dropoff, "true")
+            answer_choice(client, request_id, questionnaire_id, add_dropoff, "true")
             search_question_and_answer(
                 client,
                 request_id,
@@ -1711,7 +1763,7 @@ Safety:
             confirmation = field_by_label(
                 all_items, "Does this look right?", type_="RadioButtons"
             )
-            answer(client, request_id, questionnaire_id, confirmation, "YES")
+            answer_choice(client, request_id, questionnaire_id, confirmation, "Yes")
 
         location_summary = " --> ".join([args.building, args.floor, args.room])
         if args.cabinet:
