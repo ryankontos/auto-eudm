@@ -210,7 +210,7 @@ select:focus-visible,
 textarea:focus-visible {
   outline: 0;
   border-color: var(--focus);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--focus) 28%, transparent);
+  box-shadow: inset 0 0 0 1px var(--focus);
 }
 
 .app-header {
@@ -492,7 +492,7 @@ input:hover, select:hover, textarea:hover { border-color: #99a8b5; }
   box-shadow: 0 2px 6px rgba(32, 46, 59, .04);
   transition: border-color .14s ease, box-shadow .14s ease, transform .14s ease;
 }
-.queue-search:focus-within { border-color: var(--blue); box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 13%, transparent), 0 3px 8px rgba(32, 46, 59, .06); transform: translateY(-1px); }
+.queue-search:focus-within { border-color: var(--blue); box-shadow: inset 0 0 0 1px var(--blue); transform: none; }
 .queue-search > .lucide { width: 15px; height: 15px; flex: 0 0 15px; }
 .queue-search input { width: 100%; min-height: 29px; padding: 3px 0; border: 0; outline: 0; background: transparent; }
 .queue-search input:focus { box-shadow: none; }
@@ -923,7 +923,7 @@ fieldset { margin: 0; padding: 0; border: 0; }
   background: var(--surface);
   transition: border-color .14s ease, box-shadow .14s ease;
 }
-.search-control:focus-within { border-color: var(--focus); box-shadow: 0 0 0 2px color-mix(in srgb, var(--focus) 28%, transparent); }
+.search-control:focus-within { border-color: var(--focus); box-shadow: inset 0 0 0 1px var(--focus); }
 .search-control > input,
 .search-control > select { min-width: 0; border: 0; border-radius: 0; box-shadow: none; }
 .search-control > .button { border: 0; border-left: 1px solid var(--line-strong); border-radius: 0; }
@@ -1188,7 +1188,7 @@ input:hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var
   box-shadow: 0 2px 6px rgba(32, 46, 59, .04);
   transition: border-color .14s ease, box-shadow .14s ease, transform .14s ease;
 }
-.history-search:focus-within { border-color: var(--blue); box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 13%, transparent), 0 3px 8px rgba(32, 46, 59, .06); transform: translateY(-1px); }
+.history-search:focus-within { border-color: var(--blue); box-shadow: inset 0 0 0 1px var(--blue); transform: none; }
 .history-search > .lucide { width: 16px; height: 16px; flex: 0 0 16px; }
 .history-search input { width: 100%; min-width: 0; height: auto; min-height: 30px; padding: 3px 0; border: 0; outline: 0; background: transparent; }
 .history-search input:focus { box-shadow: none; }
