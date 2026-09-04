@@ -87,6 +87,11 @@
         <div class="empty-state-icon" aria-hidden="true"><i data-lucide="inbox"></i></div>
         <h2>Build a request queue</h2>
         <p>Add a request, import serial/user pairs, or import an ALM Workbook.</p>
+        <div class="empty-state-actions" aria-label="Queue actions">
+          <button id="emptyNewRequestButton" class="button primary" type="button" data-empty-action="new"><i data-lucide="plus"></i><span>New request</span></button>
+          <button id="emptyQuickImportButton" class="button secondary" type="button" data-empty-action="quick"><i data-lucide="list-plus"></i><span>Quick import</span></button>
+          <button id="emptyAlmImportButton" class="button secondary" type="button" data-empty-action="alm"><i data-lucide="file-spreadsheet"></i><span>Import workbook</span></button>
+        </div>
       </div>
 
       <div id="queueTableWrap" class="queue-table-wrap" hidden>
@@ -524,7 +529,7 @@
       <section data-settings-panel="run">
         <label>Appearance
           <button id="themeToggle" class="button secondary theme-button" type="button">
-            <span id="themeIcon" aria-hidden="true">◐</span>
+            <span id="themeIcon" aria-hidden="true"><i data-lucide="sun-moon"></i></span>
             <span id="themeLabel">Appearance</span>
           </button>
         </label>

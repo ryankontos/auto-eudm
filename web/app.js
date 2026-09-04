@@ -339,7 +339,8 @@ function effectiveTheme() {
 function updateThemeButton() {
   const dark = effectiveTheme() === "dark";
   const overridden = Boolean(savedTheme());
-  $("#themeIcon").textContent = overridden ? "↺" : (dark ? "☀" : "☾");
+  $("#themeIcon").innerHTML = iconMarkup(overridden ? "sun-moon" : (dark ? "sun" : "moon"));
+  refreshIcons($("#themeIcon"));
   $("#themeLabel").textContent = overridden
     ? "Use system"
     : (dark ? "Light mode" : "Dark mode");
@@ -5821,6 +5822,9 @@ function bindEvents() {
     }
   });
   $("#newRequestButton").addEventListener("click", startNewRequest);
+  $("#emptyNewRequestButton").addEventListener("click", startNewRequest);
+  $("#emptyQuickImportButton").addEventListener("click", openPasteDialog);
+  $("#emptyAlmImportButton").addEventListener("click", openAlmWorkbookImport);
   $("#saveNewRequestButton").addEventListener("click", saveNewRequest);
   $("#discardNewRequestButton").addEventListener("click", discardNewRequest);
   elements.inspectorContent.addEventListener("keydown", handleInspectorDefaultKey);
@@ -6469,6 +6473,7 @@ async function init() {
     if (state.preferences.save_alm_import_drafts !== false) await loadImportDrafts();
     const spreadsheetEnabled = Boolean(state.config.spreadsheet_import_enabled);
     $("#importSheetButton").hidden = !spreadsheetEnabled;
+    $("#emptyAlmImportButton").hidden = !spreadsheetEnabled;
     const spreadsheetSettings = $('[data-settings-tab="spreadsheet"]');
     if (spreadsheetSettings) spreadsheetSettings.hidden = !spreadsheetEnabled;
     configureConcurrency(state.config.concurrency);
