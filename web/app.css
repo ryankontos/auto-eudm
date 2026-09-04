@@ -796,25 +796,23 @@ input:hover, select:hover, textarea:hover { border-color: #99a8b5; }
 .status-chip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
   max-width: 100%;
-  min-height: 26px;
-  padding: 4px 8px;
+  min-height: 0;
+  padding: 0;
   overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: 999px;
+  border: 0;
+  border-radius: 0;
   color: var(--muted);
-  background: var(--surface-alt);
+  background: transparent;
   font-size: 11px;
   font-weight: 650;
   line-height: 1.2;
   vertical-align: middle;
 }
 .status-chip > span:last-child { display: -webkit-box; min-width: 0; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow-wrap: anywhere; line-height: 1.15; }
-.status-chip .lucide { width: 14px; height: 14px; flex: 0 0 14px; stroke-width: 2; }
-.status-chip.success { color: var(--green); border-color: color-mix(in srgb, var(--green) 34%, var(--line)); background: var(--green-soft); }
-.status-chip.pending { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 34%, var(--line)); background: var(--amber-soft); }
-.status-chip.stock { color: var(--blue); border-color: color-mix(in srgb, var(--blue) 28%, var(--line)); background: var(--blue-soft); }
+.status-chip.success { color: var(--green); }
+.status-chip.pending { color: var(--amber); }
+.status-chip.stock { color: var(--blue); }
 .status-chip.neutral { color: var(--muted); }
 .ready-mark, .invalid-mark {
   display: inline-grid; width: 22px; height: 22px; place-items: center; border-radius: 50%; font-size: 12px; font-weight: 800;
@@ -1758,12 +1756,11 @@ input:hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var
 .import-empty strong { color: var(--ink); font-size: 14px; }
 .import-empty small { font-size: 11px; }
 #importDialog .modal-actions {
-  position: sticky;
-  bottom: -20px;
-  margin-bottom: -20px;
-  padding: 14px 0 20px;
+  position: static;
+  margin: 16px 0 0;
+  padding: 16px 0 0;
   border-top: 1px solid var(--line);
-  background: var(--surface);
+  background: transparent;
 }
 
 .review-card,
@@ -1873,7 +1870,10 @@ input:hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var
 .progress-modal { width: min(1040px, calc(100vw - 32px)); }
 .progress-card { position: relative; }
 .progress-confetti-canvas { position: absolute; inset: 0; z-index: 5; width: 100%; height: 100%; pointer-events: none; }
-.progress-card > :not(.progress-confetti-canvas) { position: relative; z-index: 1; }
+.progress-card > :not(.progress-confetti-canvas):not(.progress-confetti-layer) { position: relative; z-index: 1; }
+.progress-confetti-layer { position: absolute; inset: 0; z-index: 20; overflow: hidden; pointer-events: none; }
+.progress-confetti-layer span { position: absolute; top: -18px; left: var(--confetti-left); width: 8px; height: 13px; border-radius: 1px; background: var(--confetti-colour); box-shadow: 0 1px 2px rgba(0,0,0,.16); opacity: 0; animation: progress-confetti-fall 1.8s cubic-bezier(.18,.72,.32,1) var(--confetti-delay) both; }
+@keyframes progress-confetti-fall { 0% { opacity: 0; transform: translate3d(0, 0, 0) rotate(0deg); } 8% { opacity: 1; } 100% { opacity: .92; transform: translate3d(var(--confetti-drift), 540px, 0) rotate(620deg); } }
 .progress-celebration {
   position: relative;
   overflow: hidden;
@@ -1919,10 +1919,10 @@ input:hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var
 .progress-list { max-height: min(520px, 60vh); overflow-y: auto; margin-top: 14px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface-raised); box-shadow: var(--shadow-soft); }
 .progress-row {
   display: grid;
-  grid-template-columns: 30px minmax(190px, 1.15fr) minmax(220px, 1fr) minmax(170px, .8fr);
-  gap: 16px;
-  align-items: center;
-  min-height: 76px;
+  grid-template-columns: 30px minmax(190px, 1.2fr) minmax(220px, 1fr) minmax(155px, .72fr);
+  gap: 14px;
+  align-items: start;
+  min-height: 0;
   padding: 13px 15px;
   border-bottom: 1px solid var(--line);
 }
@@ -1948,15 +1948,15 @@ input:hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var
   animation-delay: var(--spinner-delay, 0ms);
 }
 @keyframes activity-spin { to { transform: rotate(360deg); } }
-.progress-device, .progress-message, .progress-request-cell { min-width: 0; }
-.progress-message { align-self: stretch; display: flex; flex-direction: column; justify-content: center; }
+.progress-device, .progress-message, .progress-request-cell { min-width: 0; padding-top: 1px; }
+.progress-message { align-self: start; display: flex; flex-direction: column; justify-content: flex-start; }
 .progress-device strong, .progress-device small, .progress-message strong { display: block; overflow-wrap: anywhere; line-height: 1.28; }
-.progress-device strong { font-size: 14px; font-variant-numeric: tabular-nums; }
+.progress-device strong { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; font-size: 12px; font-variant-numeric: tabular-nums; }
 .progress-device .progress-destination { margin-top: 4px; color: var(--muted); font-size: 11px; }
 .progress-field-label { margin-bottom: 4px; color: var(--subtle); font-size: 10px !important; font-weight: 750; letter-spacing: .04em; text-transform: uppercase; }
 .progress-message strong { color: var(--muted); font-size: 12px; font-weight: 600; }
 .progress-row.failed .progress-message strong { color: var(--red); }
-.progress-request-cell { display: flex; align-items: center; min-height: 32px; }
+.progress-request-cell { display: flex; align-items: flex-start; min-height: 0; }
 .progress-pending-id { color: var(--muted); font-size: 11px; }
 .progress-request-id { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 4px 7px; width: 100%; margin-top: 0; }
 .progress-request-id > span:first-child { grid-column: 1 / -1; color: var(--subtle); font-size: 10px; font-weight: 750; letter-spacing: .04em; text-transform: uppercase; }
@@ -2153,10 +2153,9 @@ input:hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var
     max-height: min(600px, calc(100vh - 250px));
   }
   #importDialog .modal-actions {
-    position: sticky;
-    bottom: -15px;
-    margin-bottom: -15px;
-    padding: 14px 0 15px;
+    position: static;
+    margin: 16px 0 0;
+    padding: 14px 0 0;
   }
   .two-column-form,
   .choice-cards,

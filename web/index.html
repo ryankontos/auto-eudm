@@ -170,25 +170,10 @@
             <button id="resetSerialSelection" class="text-button" type="button"><i data-lucide="pencil-line"></i><span>Change</span></button>
           </div>
           <div id="bulkSerialEditor" class="bulk-serial-editor" hidden>
-            <div class="bulk-serial-mode" role="group" aria-label="Bulk serial entry mode">
-              <button id="bulkSerialEntryModeButton" class="button secondary compact active" type="button" aria-pressed="true">Add individually</button>
-              <button id="bulkSerialTextModeButton" class="button secondary compact" type="button" aria-pressed="false">Text field</button>
-            </div>
-            <div id="bulkSerialEntryMode">
-              <div class="bulk-serial-add-row">
-                <input id="bulkSerialAddInput" type="text" autocomplete="off" spellcheck="false" placeholder="Enter a serial number" aria-label="Serial number to add">
-                <button id="addBulkSerialButton" class="button secondary compact" type="button"><i data-lucide="plus"></i><span>Add</span></button>
-              </div>
-              <small class="bulk-serial-help">Press Enter or Add to verify each serial.</small>
-              <div id="bulkSerialEntryError" class="bulk-serial-error" role="alert" hidden></div>
-              <div id="bulkSerialList" class="bulk-serial-list" aria-live="polite"></div>
-            </div>
-            <div id="bulkSerialTextMode" hidden>
-              <textarea id="serialsInput" rows="5" spellcheck="false" placeholder="Enter serials separated by commas, spaces, or new lines" aria-label="Bulk serial numbers"></textarea>
-              <div class="bulk-serial-text-meta">
-                <small id="bulkSerialUniqueCount" class="bulk-serial-help">0 unique serials</small>
-                <small id="bulkSerialDuplicateWarning" class="bulk-serial-duplicate-warning" hidden></small>
-              </div>
+            <textarea id="serialsInput" rows="5" spellcheck="false" placeholder="Enter serials separated by commas, spaces, or new lines" aria-label="Bulk serial numbers"></textarea>
+            <div class="bulk-serial-text-meta">
+              <small id="bulkSerialUniqueCount" class="bulk-serial-help">0 unique serials</small>
+              <small id="bulkSerialDuplicateWarning" class="bulk-serial-duplicate-warning" hidden></small>
             </div>
             <div id="bulkSerialPrefixWarning" class="bulk-serial-prefix-warning" role="status" hidden>
               <span class="bulk-serial-warning-symbol" aria-hidden="true"><i data-lucide="triangle-alert"></i></span>

@@ -606,17 +606,7 @@ function resetPersistedValidationState(request) {
   if (!request.returning_user && request.returning_user_validation === undefined) {
     request.returning_user_validation = "empty";
   }
-  if (request.kind === "bulk_location" && request.bulk_serial_mode === "individual") {
-    request.bulk_serial_states = request.bulk_serial_states || {};
-    let pending = request.bulk_validation === "checking";
-    request.serials?.forEach((serial) => {
-      if (["checking", "pending"].includes(request.bulk_serial_states[serial])) {
-        request.bulk_serial_states[serial] = "pending";
-        pending = true;
-      }
-    });
-    if (pending) request.bulk_validation = request.serials?.length ? "pending" : "empty";
-  }
+  if (request.kind === "bulk_location") request.bulk_serial_mode = "text";
   return request;
 }
 
@@ -930,7 +920,7 @@ function makeRequest(kind) {
     bulk_validation: "empty",
     bulk_validation_error: "",
     bulk_validation_missing: [],
-    bulk_serial_mode: kind === "bulk_location" ? "individual" : "",
+    bulk_serial_mode: kind === "bulk_location" ? "text" : "",
     bulk_serial_states: {},
     bulk_serial_errors: {},
     status: "",
@@ -1289,15 +1279,8 @@ async function validateBulkSerials({ force = false, requests = null, render = tr
 }
 
 function resumePendingBulkValidation() {
-  if (!connectionIsReady()) return;
-  const requests = [
-    ...state.queue,
-    ...(state.newRequest ? [state.newRequest] : []),
-  ].filter((request) => request.kind === "bulk_location"
-    && request.bulk_serial_mode === "individual"
-    && request.serials?.length
-    && request.bulk_validation !== "valid");
-  if (requests.length) void validateBulkSerials({ requests, render: true });
+  // Text-list bulk requests remain ready to verify on demand. They should not
+  // redraw themselves in the background while an editor is being used.
 }
 
 function statusLabel(request) {
@@ -1325,7 +1308,7 @@ function statusSymbol(request) {
 
 function statusMarkup(request) {
   const label = statusLabel(request);
-  return `<span class="status-chip ${statusTone(request)}" data-tooltip="${escapeHtml(label)}">${iconMarkup(statusSymbol(request))}<span>${escapeHtml(label)}</span></span>`;
+  return `<span class="status-chip ${statusTone(request)}" data-tooltip="${escapeHtml(label)}"><span>${escapeHtml(label)}</span></span>`;
 }
 
 function requestKindSymbol(kind) {
@@ -1559,13 +1542,8 @@ function fillSelect(select, options, selected, placeholder = null) {
 }
 
 function bulkSerialMode(request) {
-  if (request.bulk_serial_mode === "individual" || request.bulk_serial_mode === "text") {
-    return request.bulk_serial_mode;
-  }
-  // Bulk requests saved before the individual-entry editor was added already
-  // contain a text-list value, so keep those requests in the compatible mode.
   request.bulk_serial_mode = "text";
-  return request.bulk_serial_mode;
+  return "text";
 }
 
 function bulkSerialState(request, serial) {
@@ -1623,18 +1601,9 @@ function renderBulkSerialEditor(request) {
     $("#bulkSerialPrefixWarning").hidden = true;
     return;
   }
-  const mode = bulkSerialMode(request);
-  const individual = mode === "individual";
-  const entryButton = $("#bulkSerialEntryModeButton");
-  const textButton = $("#bulkSerialTextModeButton");
-  entryButton.classList.toggle("active", individual);
-  entryButton.setAttribute("aria-pressed", String(individual));
-  textButton.classList.toggle("active", !individual);
-  textButton.setAttribute("aria-pressed", String(!individual));
-  $("#bulkSerialEntryMode").hidden = !individual;
-  $("#bulkSerialTextMode").hidden = individual;
-  elements.serialsInput.hidden = individual;
-  $("#validateBulkSerialButton").hidden = individual;
+  bulkSerialMode(request);
+  elements.serialsInput.hidden = false;
+  $("#validateBulkSerialButton").hidden = false;
   const keys = request.serials.map((serial) => String(serial).toLowerCase());
   const uniqueCount = new Set(keys).size;
   const duplicateCount = keys.length - uniqueCount;
@@ -1669,16 +1638,11 @@ function removeBulkSerialPrefixes() {
   request.bulk_serial_states = {};
   request.bulk_serial_errors = {};
   renderAll();
-  if (bulkSerialMode(request) === "individual") {
-    void validateBulkSerials({ requests: [request], render: true });
-  }
   toast("Removed the leading S from MacBook serials.", "success");
 }
 
 function focusRequestSerialInput(request = selectedRequest()) {
-  const input = request?.kind === "bulk_location"
-    ? bulkSerialMode(request) === "individual" ? $("#bulkSerialAddInput") : elements.serialsInput
-    : elements.serialInput;
+  const input = request?.kind === "bulk_location" ? elements.serialsInput : elements.serialInput;
   input?.focus({ preventScroll: true });
 }
 
@@ -1917,7 +1881,7 @@ function changeRequestSize(size) {
     request.location = request.location || preferredLocation();
     request.bulk_validation = request.serials.length ? "pending" : "empty";
     request.bulk_validation_error = "";
-    request.bulk_serial_mode = "individual";
+    request.bulk_serial_mode = "text";
     request.bulk_serial_states = {};
     request.bulk_serial_errors = {};
   } else if (request.kind === "bulk_location") {
@@ -5819,10 +5783,8 @@ function celebrateSubmission(job) {
     window.setTimeout(() => celebration.classList.remove("is-celebrating"), 1800);
   }
   if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-  const canvas = $("#progressConfettiCanvas");
-  const burst = canvas && typeof window.confetti?.create === "function"
-    ? window.confetti.create(canvas, { resize: true, useWorker: true })
-    : window.confetti;
+  launchProgressConfetti();
+  const burst = window.confetti;
   if (typeof burst !== "function") return;
   const colors = ["#f48234", "#24724a", "#f9c56d", "#ffffff"];
   try {
@@ -5837,6 +5799,24 @@ function celebrateSubmission(job) {
   } catch (_) {
     // The in-dialog completion animation remains as the visual fallback.
   }
+}
+
+function launchProgressConfetti() {
+  const card = $("#progressDialog .progress-card");
+  if (!card || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  card.querySelector(".progress-confetti-layer")?.remove();
+  const layer = document.createElement("div");
+  layer.className = "progress-confetti-layer";
+  const colours = ["#f48234", "#58c982", "#f9c56d", "#ffffff", "#74b8ff"];
+  layer.innerHTML = Array.from({ length: 42 }, (_, index) => {
+    const left = 6 + ((index * 37) % 88);
+    const delay = (index % 8) * 34;
+    const drift = ((index * 19) % 120) - 60;
+    const colour = colours[index % colours.length];
+    return `<span style="--confetti-left:${left}%;--confetti-delay:${delay}ms;--confetti-drift:${drift}px;--confetti-colour:${colour}"></span>`;
+  }).join("");
+  card.append(layer);
+  window.setTimeout(() => layer.remove(), 2400);
 }
 
 function renderSubmissionNotice(job = state.currentJob) {
@@ -6645,20 +6625,6 @@ function bindEvents() {
     updateImportCounts();
   });
   $("#requestSizeInput").addEventListener("change", () => changeRequestSize($("#requestSizeInput").value));
-  $("#bulkSerialEntryModeButton").addEventListener("click", () => setBulkSerialMode("individual"));
-  $("#bulkSerialTextModeButton").addEventListener("click", () => setBulkSerialMode("text"));
-  $("#addBulkSerialButton").addEventListener("click", addBulkSerial);
-  $("#bulkSerialAddInput").addEventListener("input", () => setBulkSerialEntryError());
-  $("#bulkSerialAddInput").addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && !event.isComposing) {
-      event.preventDefault();
-      addBulkSerial();
-    }
-  });
-  $("#bulkSerialList").addEventListener("click", (event) => {
-    const button = event.target.closest("[data-bulk-serial-remove]");
-    if (button) removeBulkSerial(Number(button.dataset.bulkSerialRemove));
-  });
   $("#removeBulkSerialPrefixesButton").addEventListener("click", removeBulkSerialPrefixes);
   $("#prepareImportButton").addEventListener("click", prepareImport);
   $("#backImportButton").addEventListener("click", backToImportSelection);
