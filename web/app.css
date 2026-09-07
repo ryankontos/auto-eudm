@@ -628,7 +628,8 @@ input:hover, select:hover, textarea:hover { border-color: #99a8b5; }
   overflow: hidden;
 }
 .connection-dialog::backdrop { background: color-mix(in srgb, #111 68%, transparent); backdrop-filter: blur(5px); }
-.connection-sheet-card { padding: 30px 30px 28px; }
+.connection-sheet-card { position: relative; padding: 30px 30px 28px; }
+.connection-close-button { position: absolute; top: 13px; right: 13px; }
 .connection-sheet-card h1 { margin: 0; text-align: center; font-size: 18px; font-weight: 600; letter-spacing: -.01em; }
 .connection-visual {
   display: grid;

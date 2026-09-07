@@ -249,6 +249,7 @@ const elements = {
   submissionNoticeTitle: $("#submissionNoticeTitle"),
   submissionNoticeDetail: $("#submissionNoticeDetail"),
   connectionDialog: $("#connectionDialog"),
+  closeConnectionButton: $("#closeConnectionButton"),
   connectionSheetTitle: $("#connectionSheetTitle"),
   connectionVisual: $("#connectionVisual"),
   connectionLinkIcon: $("#connectionLinkIcon"),
@@ -2737,6 +2738,7 @@ function renderConnectionSheet(status = state.connection) {
     state.connectionDismissTimer = null;
   }
   elements.connectionStatus.hidden = !ready;
+  elements.closeConnectionButton.hidden = !ready;
   elements.connectionSheetTitle.textContent = ready
     ? "Authenticated with Helix"
     : "Helix Authentication Required";
@@ -2835,6 +2837,9 @@ async function checkConnection() {
 }
 
 async function connect() {
+  // A deliberate reauthentication request should transition back to the
+  // normal startup flow so the sheet can dismiss after the new session works.
+  state.connectionSheetManual = false;
   try {
     const status = await api("/api/connect", { method: "POST", body: "{}" });
     updateConnection(status);
@@ -2848,7 +2853,14 @@ function bindConnectionSheetEvents() {
   if (state.connectionSheetEventsBound) return;
   state.connectionSheetEventsBound = true;
   elements.connectionAuthenticateButton.addEventListener("click", connect);
-  elements.connectionDialog.addEventListener("cancel", (event) => event.preventDefault());
+  elements.closeConnectionButton.addEventListener("click", () => {
+    state.connectionSheetManual = false;
+    elements.connectionDialog.close();
+  });
+  elements.connectionDialog.addEventListener("cancel", (event) => {
+    if (!connectionIsReady()) event.preventDefault();
+    else state.connectionSheetManual = false;
+  });
 }
 
 function openConnectionSheet() {
