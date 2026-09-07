@@ -497,6 +497,15 @@ class SimulationClient:
             question_id = str((payload or {}).get("questionId", ""))
             answers = (payload or {}).get("answers") or []
             value = str(answers[0]) if answers else ""
+            if question_id == "status":
+                return {
+                    "is-return": [
+                        {
+                            "type": "VisibilityChange",
+                            "visible": value.casefold() != "new stock",
+                        }
+                    ]
+                }
             if question_id == "serial-search":
                 if value.casefold() == "no-match":
                     return self._event("device-list", [])
@@ -921,6 +930,46 @@ def answer_choice(
         item,
         questionnaire_choice_value(item, desired),
     )
+
+
+def questionnaire_visibility(
+    events: dict[str, Any] | None,
+    question_id: str,
+) -> bool | None:
+    """Return the latest live visibility decision for a questionnaire item.
+
+    Conditional Helix questions are present in the initial questionnaire even
+    when they are not valid for the selected status. The response to the
+    status answer contains a ``VisibilityChange`` event for those questions.
+    Posting an answer to a question that Helix has hidden is rejected as an
+    invalid selected value, so callers must use this event before answering.
+    """
+    if not isinstance(events, dict):
+        return None
+    changes = events.get(question_id)
+    if not isinstance(changes, list):
+        return None
+    for change in reversed(changes):
+        if not isinstance(change, dict) or change.get("type") != "VisibilityChange":
+            continue
+        visible = change.get("visible")
+        if isinstance(visible, bool):
+            return visible
+    return None
+
+
+def questionnaire_item_visible(
+    item: dict[str, Any],
+    events: dict[str, Any] | None = None,
+) -> bool:
+    """Determine whether a conditional questionnaire item can be answered."""
+    event_visibility = questionnaire_visibility(events, str(item.get("id", "")))
+    if event_visibility is not None:
+        return event_visibility
+    item_visibility = item.get("visible")
+    if isinstance(item_visibility, bool):
+        return item_visibility
+    return True
 
 
 def option_data(
@@ -1484,7 +1533,7 @@ def deploy_device_to_location(
         status_item = field_by_label(
             all_items, "Change Status to", type_="Dropdown"
         )
-        answer(client, request_id, questionnaire_id, status_item, status)
+        status_events = answer(client, request_id, questionnaire_id, status_item, status)
 
         city_item = field_by_label(
             all_items,
@@ -1517,39 +1566,40 @@ def deploy_device_to_location(
                 "Is this a return from a user",
                 type_="RadioButtons",
             )
-            answer_choice(
-                client,
-                request_id,
-                questionnaire_id,
-                returned,
-                "Yes" if returning_user else "No",
-            )
-            if returning_user:
-                add_dropoff = field_by_label(
-                    all_items,
-                    "Add Name of person who dropped off device",
-                    type_="YesNo",
-                )
-                answer_choice(client, request_id, questionnaire_id, add_dropoff, "true")
-                search_question_and_answer_exact(
-                    client,
-                    request_id,
-                    questionnaire_id,
-                    all_items,
-                    "Search Name or User ID that dropped off devices",
-                    "Select person who dropped device/s off",
-                    returning_user,
-                )
-                confirmation = field_by_label(
-                    all_items, "Does this look right?", type_="RadioButtons"
-                )
+            if questionnaire_item_visible(returned, status_events):
                 answer_choice(
                     client,
                     request_id,
                     questionnaire_id,
-                    confirmation,
-                    "YES",
+                    returned,
+                    "Yes" if returning_user else "No",
                 )
+                if returning_user:
+                    add_dropoff = field_by_label(
+                        all_items,
+                        "Add Name of person who dropped off device",
+                        type_="YesNo",
+                    )
+                    answer_choice(client, request_id, questionnaire_id, add_dropoff, "true")
+                    search_question_and_answer_exact(
+                        client,
+                        request_id,
+                        questionnaire_id,
+                        all_items,
+                        "Search Name or User ID that dropped off devices",
+                        "Select person who dropped device/s off",
+                        returning_user,
+                    )
+                    confirmation = field_by_label(
+                        all_items, "Does this look right?", type_="RadioButtons"
+                    )
+                    answer_choice(
+                        client,
+                        request_id,
+                        questionnaire_id,
+                        confirmation,
+                        "YES",
+                    )
 
         if not submit:
             return DeploymentResult(
@@ -1837,7 +1887,7 @@ Safety:
         )
 
     status = field_by_label(all_items, "Change Status to", type_="Dropdown")
-    answer(client, request_id, questionnaire_id, status, args.status)
+    status_events = answer(client, request_id, questionnaire_id, status, args.status)
 
     if user_deployment:
         # User deployments expose a server-backed "deployed to" table.
@@ -1867,26 +1917,27 @@ Safety:
                 "Is this a return from a user",
                 type_="RadioButtons",
             )
-            answer_choice(client, request_id, questionnaire_id, returned, "Yes")
-            add_dropoff = field_by_label(
-                all_items,
-                "Add Name of person who dropped off device",
-                type_="YesNo",
-            )
-            answer_choice(client, request_id, questionnaire_id, add_dropoff, "true")
-            search_question_and_answer(
-                client,
-                request_id,
-                questionnaire_id,
-                all_items,
-                "Search Name or User ID that dropped off devices",
-                "Select person who dropped device/s off",
-                args.dropped_by,
-            )
-            confirmation = field_by_label(
-                all_items, "Does this look right?", type_="RadioButtons"
-            )
-            answer_choice(client, request_id, questionnaire_id, confirmation, "Yes")
+            if questionnaire_item_visible(returned, status_events):
+                answer_choice(client, request_id, questionnaire_id, returned, "Yes")
+                add_dropoff = field_by_label(
+                    all_items,
+                    "Add Name of person who dropped off device",
+                    type_="YesNo",
+                )
+                answer_choice(client, request_id, questionnaire_id, add_dropoff, "true")
+                search_question_and_answer(
+                    client,
+                    request_id,
+                    questionnaire_id,
+                    all_items,
+                    "Search Name or User ID that dropped off devices",
+                    "Select person who dropped device/s off",
+                    args.dropped_by,
+                )
+                confirmation = field_by_label(
+                    all_items, "Does this look right?", type_="RadioButtons"
+                )
+                answer_choice(client, request_id, questionnaire_id, confirmation, "Yes")
 
         location_summary = " --> ".join([args.building, args.floor, args.room])
         if args.cabinet:

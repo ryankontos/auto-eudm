@@ -217,6 +217,34 @@ class ReturnQuestionSubmissionTests(unittest.TestCase):
         self.assertEqual(values["is-return"], ["NO"])
         self.assertNotIn("add-dropoff", values)
 
+    def test_location_stock_submission_skips_hidden_return_question(self) -> None:
+        class RecordingSimulationClient(eudm.SimulationClient):
+            def __init__(self) -> None:
+                super().__init__()
+                self.answer_ids: list[str] = []
+
+            def request(self, method: str, path: str, payload: object | None = None) -> object:
+                if method == "POST" and path.endswith("/questionnaire/answers") and isinstance(payload, dict):
+                    self.answer_ids.append(str(payload.get("questionId", "")))
+                return super().request(method, path, payload)
+
+        client = RecordingSimulationClient()
+        with mock.patch.object(eudm.SimulationClient, "SIMULATED_LOOKUP_DELAY_SECONDS", 0):
+            eudm.deploy_device_to_location(
+                client,
+                serials=["SERIAL123"],
+                request_for="requester.user",
+                status="New Stock",
+                city="Sydney, AU",
+                building="1 Elizabeth Street",
+                floor="Level 15",
+                room="Store Room",
+                submit=False,
+            )
+
+        self.assertNotIn("is-return", client.answer_ids)
+        self.assertNotIn("add-dropoff", client.answer_ids)
+
 
 class HelixApiVerificationTests(unittest.TestCase):
     def test_verification_reads_catalogue_and_authenticated_carts(self) -> None:
