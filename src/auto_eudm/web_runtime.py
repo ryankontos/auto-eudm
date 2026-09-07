@@ -139,6 +139,25 @@ def authenticated_user_id(payload: Any) -> str | None:
     return None
 
 
+def session_status_is_authenticated(payload: Any) -> bool:
+    """Interpret Helix's sessionstatus response without trusting HTTP 200 alone."""
+    if not isinstance(payload, dict) or "session" not in payload:
+        return False
+    value = payload.get("session")
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value or "").strip().casefold() not in {
+        "",
+        "0",
+        "false",
+        "none",
+        "null",
+        "unauthenticated",
+    }
+
+
 def open_existing_server(
     url: str,
 ) -> bool:
@@ -430,12 +449,16 @@ class ClientManager:
             last_error: Exception | None = None
             while time.monotonic() < deadline:
                 try:
-                    browser.request("GET", "sessionstatus")
-                    last_error = None
-                    break
+                    session_status = browser.request("GET", "sessionstatus")
+                    if session_status_is_authenticated(session_status):
+                        last_error = None
+                        break
+                    last_error = eudm.EUDMError(
+                        "Helix is still waiting for the manual sign-in to finish."
+                    )
                 except eudm.EUDMError as exc:
                     last_error = exc
-                    time.sleep(2)
+                time.sleep(2)
             if last_error:
                 if self.config.browser_headless:
                     raise eudm.EUDMError(

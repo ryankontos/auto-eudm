@@ -13,6 +13,7 @@ from unittest import mock
 from auto_eudm import eudm_request as eudm
 from auto_eudm import eudm_inventory_import as inventory
 from auto_eudm import run_reporting
+from auto_eudm import web_runtime as eudm_runtime
 from auto_eudm.web_models import RequestSpec, WorkbookImport
 from auto_eudm.web_runtime import (
     Application,
@@ -215,6 +216,18 @@ class ReturnQuestionSubmissionTests(unittest.TestCase):
         }
         self.assertEqual(values["is-return"], ["NO"])
         self.assertNotIn("add-dropoff", values)
+
+
+class HelixSessionStatusTests(unittest.TestCase):
+    def test_http_success_with_zero_session_is_not_authenticated(self) -> None:
+        self.assertFalse(eudm_runtime.session_status_is_authenticated({"session": 0}))
+
+    def test_truthy_session_values_are_authenticated(self) -> None:
+        self.assertTrue(eudm_runtime.session_status_is_authenticated({"session": 1}))
+        self.assertTrue(eudm_runtime.session_status_is_authenticated({"session": "active"}))
+
+    def test_missing_session_value_is_not_authenticated(self) -> None:
+        self.assertFalse(eudm_runtime.session_status_is_authenticated({}))
 
 
 class RequestStatusPreferenceTests(unittest.TestCase):
