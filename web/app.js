@@ -2194,12 +2194,13 @@ function bestLogin(result, query) {
 }
 
 function bestSerial(result, query) {
-  const columns = (result.columns || []).map(String);
-  const exact = columns.find((value) => value.toLowerCase() === query.toLowerCase());
+  const columns = (Array.isArray(result?.columns) ? result.columns : []).map(String);
+  const wanted = String(query || "").trim().toLowerCase();
+  const exact = wanted && columns.find((value) => value.toLowerCase() === wanted);
   return exact
     || columns.find((value) => /^[A-Za-z0-9._-]{6,}$/.test(value))
-    || String(result.value || "")
-    || query;
+    || String(result?.value || "")
+    || String(query || "").trim();
 }
 
 function scheduleValidation(request, field, work) {
