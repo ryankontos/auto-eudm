@@ -283,6 +283,7 @@
   <dialog id="connectionDialog" class="connection-dialog">
     <section class="connection-sheet-card" aria-labelledby="connectionSheetTitle">
       <button id="closeConnectionButton" class="icon-button connection-close-button" type="button" aria-label="Close Helix authentication" title="Close" hidden><i data-lucide="x"></i></button>
+      <button id="exportDiagnosticsSheetButton" class="icon-button diagnostics-sheet-button" type="button" aria-label="Export diagnostics" title="Export diagnostics" disabled><i data-lucide="file-down"></i></button>
       <h1 id="connectionSheetTitle">Helix Authentication Required</h1>
       <div id="connectionVisual" class="connection-visual" data-state="disconnected" role="img" aria-label="Connection from AutoEUDM to Helix is unavailable">
         <div class="connection-node">
@@ -550,6 +551,13 @@
             <option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option><option value="15">15</option><option value="20">20</option><option value="25">25</option><option value="30">30</option><option value="40">40</option><option value="50">50</option>
           </select>
         </label>
+        <div class="settings-inline-action diagnostics-settings">
+          <div><strong>Diagnostics</strong><small>Export the last five minutes of Helix API activity for troubleshooting.</small></div>
+          <div class="diagnostics-actions">
+            <button id="downloadDiagnosticsButton" class="button secondary compact" type="button">Export log</button>
+          </div>
+        </div>
+        <p id="diagnosticsStatus" class="diagnostics-status">The capture is kept only while AutoEUDM is running.</p>
       </section>
       <section data-settings-panel="validation" hidden>
         <label class="settings-checkbox"><input id="validateQuickImportInput" type="checkbox"><span>Verify serials and users in Quick import</span></label>

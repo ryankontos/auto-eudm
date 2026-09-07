@@ -630,6 +630,9 @@ input:hover, select:hover, textarea:hover { border-color: #99a8b5; }
 .connection-dialog::backdrop { background: color-mix(in srgb, #111 68%, transparent); backdrop-filter: blur(5px); }
 .connection-sheet-card { position: relative; padding: 30px 30px 28px; }
 .connection-close-button { position: absolute; top: 13px; right: 13px; }
+.diagnostics-sheet-button { position: absolute; top: 10px; right: 48px; width: 28px; height: 28px; color: var(--subtle); }
+.diagnostics-sheet-button .lucide { width: 15px; height: 15px; }
+.diagnostics-sheet-button:disabled { opacity: .35; }
 .connection-sheet-card h1 { margin: 0; text-align: center; font-size: 18px; font-weight: 600; letter-spacing: -.01em; }
 .connection-visual {
   display: grid;
@@ -671,6 +674,14 @@ input:hover, select:hover, textarea:hover { border-color: #99a8b5; }
 .connection-loading { width: 18px; height: 18px; margin: 12px auto 0; border: 2px solid var(--control-muted); border-top-color: var(--primary-blue); border-radius: 50%; animation: activity-spin .75s linear infinite; }
 .connection-sheet-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
 .connection-sheet-actions .button { width: 100%; }
+.diagnostics-settings { align-items: center; gap: 14px; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
+.diagnostics-settings > div:first-child { min-width: 0; }
+.diagnostics-settings strong, .diagnostics-settings small { display: block; }
+.diagnostics-settings strong { font-size: 12px; }
+.diagnostics-settings small { margin-top: 3px; color: var(--muted); font-size: 10px; line-height: 1.4; }
+.diagnostics-actions { display: flex; flex: 0 0 auto; gap: 7px; }
+.diagnostics-actions .button { white-space: nowrap; }
+.diagnostics-status { margin: 9px 0 0; color: var(--muted); font-size: 10px; line-height: 1.4; }
 @keyframes connection-dash { to { background-position: 18px 0; } }
 @keyframes connection-pulse { 50% { transform: scale(1.08); box-shadow: 0 0 0 4px color-mix(in srgb, var(--blue) 12%, transparent); } }
 

@@ -254,6 +254,23 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
         if path == "/api/status":
             self._json(self.app.clients.status())
             return
+        if path == "/api/diagnostics":
+            self._json(run_reporting.diagnostics_status())
+            return
+        if path == "/api/diagnostics/download":
+            downloaded = run_reporting.diagnostics_download()
+            if downloaded is None:
+                self._error("No diagnostic capture is available yet.", 404)
+                return
+            body, filename = downloaded
+            self._bytes(
+                body,
+                content_type="application/gzip",
+                headers={
+                    "Content-Disposition": f'attachment; filename="{filename}"',
+                },
+            )
+            return
         if path == "/api/options":
             self._json(self.app.form_options())
             return

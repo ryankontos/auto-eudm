@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import http.client
 import json
 import threading
@@ -7,6 +8,7 @@ from types import SimpleNamespace
 import unittest
 from unittest import mock
 
+from auto_eudm import run_reporting
 from auto_eudm.web_server import AutoEUDMServer, MAX_BODY, MAX_SEARCH_QUERY
 
 
@@ -142,6 +144,26 @@ class LocalWebServerTests(unittest.TestCase):
         self.assertEqual(response.status, 404)
         self.assertEqual(response.getheader("Content-Type"), "application/json; charset=utf-8")
         self.assertIn("Unknown local API endpoint", json.loads(raw)["error"])
+
+    def test_diagnostics_endpoint_returns_the_current_capture_as_gzip(self) -> None:
+        run_reporting.configure_logging(enabled=False, command="test")
+        self.addCleanup(run_reporting.configure_logging, enabled=False, command="test")
+        run_reporting.network(
+            "GET",
+            "v2/carts",
+            status=200,
+            transport="browser",
+            response_body={"user": {"userId": "request.user"}},
+        )
+
+        status_response, status_raw = self.request("GET", "/api/diagnostics")
+        self.assertEqual(status_response.status, 200)
+        self.assertTrue(json.loads(status_raw)["download_available"])
+
+        response, raw = self.request("GET", "/api/diagnostics/download")
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.getheader("Content-Type"), "application/gzip")
+        self.assertIn("request.user", gzip.decompress(raw).decode("utf-8"))
 
     @mock.patch("auto_eudm.web_server.run_reporting.exception")
     def test_unexpected_errors_are_logged_but_sanitized_for_the_browser(

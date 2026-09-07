@@ -215,60 +215,11 @@ class BrowserClient:
         context: Any,
         verbose: bool = False,
         user_agent: str = "auto-eudm/1.0",
-        auth_page: Any | None = None,
     ) -> None:
         self.base = base
         self.context = context
         self.verbose = verbose
         self.user_agent = user_agent
-        self.auth_page = auth_page
-
-    def establish_web_session(self, payload: dict[str, Any]) -> Any:
-        """Create the DWP session within the actual signed-in Helix tab.
-
-        Helix's frontend does this through a same-origin browser fetch. Using
-        the page preserves any browser-only session state that is not exposed
-        to Playwright's standalone request context.
-        """
-        if self.auth_page is None or self.auth_page.is_closed():
-            return self.request("POST", "/dwp/restapi/users/sessions", payload)
-        parsed = urllib.parse.urlsplit(self.base)
-        url = urllib.parse.urlunsplit(
-            (parsed.scheme, parsed.netloc, "/dwp/restapi/users/sessions", "", "")
-        )
-        try:
-            response = self.auth_page.evaluate(
-                """async ({ url, payload }) => {
-                    const response = await fetch(url, {
-                        method: "POST",
-                        credentials: "include",
-                        headers: {
-                            "Accept": "application/json, text/plain, */*",
-                            "Content-Type": "application/json",
-                            "X-Requested-By": "XMLHttpRequest",
-                        },
-                        body: JSON.stringify(payload),
-                    });
-                    return { status: response.status, text: await response.text() };
-                }""",
-                {"url": url, "payload": payload},
-            )
-        except Exception as exc:
-            raise EUDMError(
-                "Could not establish the Helix browser session."
-            ) from exc
-        status = int(response.get("status", 0)) if isinstance(response, dict) else 0
-        raw = str(response.get("text", "")) if isinstance(response, dict) else ""
-        if status == 401 or status >= 300 or is_sso_html(raw):
-            raise SSOExpiredError("Helix requires a new authenticated browser session.")
-        if status >= 400 or status <= 0:
-            raise EUDMError(http_error_message(status, "Could not establish the Helix session"))
-        if not raw:
-            return None
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise EUDMError("Helix returned an invalid browser-session response.") from exc
 
     def request(self, method: str, path: str, payload: Any | None = None) -> Any:
         started = time.monotonic()
@@ -299,6 +250,7 @@ class BrowserClient:
             run_reporting.network(
                 method, path, duration_ms=int((time.monotonic() - started) * 1000),
                 transport="browser", error=type(exc).__name__,
+                request_body=body, request_headers=headers,
             )
             raise EUDMError(
                 "Could not reach Helix from the authenticated Chrome session. "
@@ -308,6 +260,10 @@ class BrowserClient:
         run_reporting.network(
             method, path, status=response.status,
             duration_ms=int((time.monotonic() - started) * 1000), transport="browser",
+            request_body=body,
+            response_body=raw,
+            request_headers=headers,
+            response_headers=getattr(response, "headers", None),
         )
         if self.verbose:
             print(f"{method} {path} -> {response.status}", file=sys.stderr)
@@ -615,6 +571,61 @@ class SimulationClient:
         raise EUDMError(f"Simulation does not implement {method} {path}.")
 
 
+def diagnostic_api_path(url: str) -> str:
+    """Keep API host/path/query useful while removing query credentials."""
+    parsed = urllib.parse.urlsplit(url)
+    query = []
+    for key, value in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True):
+        if any(marker in key.casefold() for marker in ("token", "code", "state", "secret")):
+            value = "[REDACTED]"
+        query.append((key, value))
+    suffix = urllib.parse.urlencode(query)
+    return urllib.parse.urlunsplit(
+        (parsed.scheme, parsed.netloc, parsed.path, suffix, "")
+    )
+
+
+def is_diagnostic_api_url(url: str) -> bool:
+    path = urllib.parse.urlsplit(url).path.casefold()
+    return path.startswith("/dwp/rest/") or path.startswith("/dwp/restapi/")
+
+
+def attach_page_api_diagnostics(page: Any) -> None:
+    """Capture API traffic made by Helix's own page, when diagnostics are on."""
+    def on_request(request: Any) -> None:
+        url = str(getattr(request, "url", ""))
+        if not run_reporting.diagnostics_enabled() or not is_diagnostic_api_url(url):
+            return
+        run_reporting.network(
+            str(getattr(request, "method", "GET")),
+            diagnostic_api_path(url),
+            transport="page",
+            request_body=getattr(request, "post_data", None),
+            request_headers=getattr(request, "headers", None),
+        )
+
+    def on_response(response: Any) -> None:
+        url = str(getattr(response, "url", ""))
+        if not run_reporting.diagnostics_enabled() or not is_diagnostic_api_url(url):
+            return
+        try:
+            body = response.text()
+        except Exception:
+            body = None
+        request = getattr(response, "request", None)
+        run_reporting.network(
+            str(getattr(request, "method", "GET")),
+            diagnostic_api_path(url),
+            status=getattr(response, "status", None),
+            transport="page",
+            response_body=body,
+            response_headers=getattr(response, "headers", None),
+        )
+
+    page.on("request", on_request)
+    page.on("response", on_response)
+
+
 def browser_client_from_profile(
     profile: str,
     app_url: str,
@@ -647,6 +658,7 @@ def browser_client_from_profile(
                 except Exception:
                     pass
         page = context.new_page()
+        attach_page_api_diagnostics(page)
         run_reporting.event("Opening Chrome for EUDM SSO")
         page.goto(app_url, wait_until="domcontentloaded", timeout=60_000)
         user_agent = str(page.evaluate("navigator.userAgent") or "auto-eudm/1.0")
@@ -669,7 +681,7 @@ def browser_client_from_profile(
     # captures the authenticated API cookies.
     atexit.register(playwright.stop)
     atexit.register(context.close)
-    return BrowserClient(base, context, verbose, user_agent, page)
+    return BrowserClient(base, context, verbose, user_agent)
 
 
 def open_client(
@@ -782,11 +794,16 @@ class Client:
                 duration_ms=int((time.monotonic() - started) * 1000),
                 transport="curl",
                 error="transport",
+                request_body=body,
+                request_headers=headers,
             )
             raise
         run_reporting.network(
             method, path, status=status,
             duration_ms=int((time.monotonic() - started) * 1000), transport="curl",
+            request_body=body,
+            response_body=raw,
+            request_headers=headers,
         )
         if self.verbose:
             print(f"{method} {path} -> {status}", file=sys.stderr)
@@ -1740,7 +1757,7 @@ Safety:
         "--verbose",
         action=argparse.BooleanOptionalAction,
         default=config.verbose,
-        help="Show questionnaire field updates, matching details, and request/status diagnostics; never prints cookies or response bodies.",
+        help="Show questionnaire field updates, matching details, and request/status diagnostics; credentials remain redacted.",
     )
     parser.add_argument(
         "--logging",

@@ -11,6 +11,7 @@ const state = {
   connectionSheetEventsBound: false,
   connectionDismissTimer: null,
   connectionSheetManual: false,
+  diagnosticsStatusTimer: null,
   workbook: null,
   workbookInspection: null,
   importPreview: null,
@@ -255,6 +256,9 @@ const elements = {
   connectionLinkIcon: $("#connectionLinkIcon"),
   connectionLoading: $("#connectionLoading"),
   connectionAuthenticateButton: $("#connectionAuthenticateButton"),
+  exportDiagnosticsSheetButton: $("#exportDiagnosticsSheetButton"),
+  downloadDiagnosticsButton: $("#downloadDiagnosticsButton"),
+  diagnosticsStatus: $("#diagnosticsStatus"),
   railResizeHandle: $("#railResizeHandle"),
   inspectorResizeHandle: $("#inspectorResizeHandle"),
   historyButton: $("#historyButton"),
@@ -2860,6 +2864,8 @@ function bindConnectionSheetEvents() {
   if (state.connectionSheetEventsBound) return;
   state.connectionSheetEventsBound = true;
   elements.connectionAuthenticateButton.addEventListener("click", connect);
+  elements.exportDiagnosticsSheetButton?.addEventListener("click", exportDiagnostics);
+  elements.downloadDiagnosticsButton?.addEventListener("click", exportDiagnostics);
   elements.closeConnectionButton.addEventListener("click", () => {
     state.connectionSheetManual = false;
     elements.connectionDialog.close();
@@ -2874,6 +2880,46 @@ function openConnectionSheet() {
   state.connectionSheetManual = true;
   if (!elements.connectionDialog.open) elements.connectionDialog.showModal();
   renderConnectionSheet();
+  void refreshDiagnosticsStatus();
+}
+
+function renderDiagnosticsStatus(status) {
+  if (!elements.downloadDiagnosticsButton || !elements.diagnosticsStatus) return;
+  const available = Boolean(status?.download_available);
+  elements.downloadDiagnosticsButton.disabled = !available;
+  elements.diagnosticsStatus.textContent = available
+    ? "Includes the last five minutes of API traffic. Request and response bodies are included with credentials removed."
+    : "The capture is kept only while AutoEUDM is running; reproduce the problem first, then export it.";
+  if (elements.exportDiagnosticsSheetButton) elements.exportDiagnosticsSheetButton.disabled = !available;
+}
+
+async function refreshDiagnosticsStatus() {
+  try {
+    renderDiagnosticsStatus(await api("/api/diagnostics"));
+  } catch (_) {
+    // Diagnostics are optional and must never prevent the workspace loading.
+  }
+}
+
+async function exportDiagnostics() {
+  try {
+    const response = await fetch("/api/diagnostics/download");
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.error || "No diagnostic capture is available yet.");
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "auto-eudm-helix-diagnostics.log.gz";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (error) {
+    toast(`Could not export diagnostics: ${error.message}`, "error");
+  }
 }
 
 function restoreSidebarWidths() {
@@ -2950,6 +2996,7 @@ function openSettings() {
   $("#saveAlmImportDraftsInput").checked = state.preferences.save_alm_import_drafts !== false;
   renderRequestStatusSettings();
   $("#settingsDialog").showModal();
+  void refreshDiagnosticsStatus();
 }
 
 function openAlmWorkbookImport() {
@@ -7064,9 +7111,11 @@ async function init() {
     setupOptionalListAnimation();
     renderAll();
     await restoreSubmissionFromHistory();
+    await refreshDiagnosticsStatus();
     renderConnectionSheet();
     await refreshConnection({ verify: true });
     state.connectionHeartbeatTimer = window.setInterval(checkConnection, 30_000);
+    state.diagnosticsStatusTimer = window.setInterval(refreshDiagnosticsStatus, 5_000);
     renderAll();
   } catch (error) {
     document.body.innerHTML = `<main class="empty-state"><h1>AutoEUDM could not start</h1><p>${escapeHtml(error.message)}</p></main>`;
