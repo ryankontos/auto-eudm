@@ -2429,7 +2429,10 @@ async function loadSerialSuggestions(request, query, { requireSelection = true }
     if (!validationStillCurrent(request, "serial", epoch, value)) return;
     request.serial_validation = "failed";
     request.serial_validation_error = error.message || "Could not verify the serial number in Helix.";
-    if (selectedRequest() === request) setLookupStatus("serial", "Serial search failed.");
+    if (selectedRequest() === request) {
+      const detail = String(error.message || "").trim();
+      setLookupStatus("serial", detail ? `Serial search failed: ${detail}` : "Serial search failed.");
+    }
     refreshSelectedValidation();
     updateLookupControlStates(request);
     renderQueue();

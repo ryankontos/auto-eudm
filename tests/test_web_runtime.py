@@ -309,12 +309,23 @@ class HelixApiVerificationTests(unittest.TestCase):
             browser_headless=False,
         )
         manager = ClientManager(config)
+        prepared_probe = mock.Mock()
 
-        with mock.patch.object(eudm, "open_client", return_value=browser):
+        with (
+            mock.patch.object(eudm, "open_client", return_value=browser),
+            mock.patch.object(
+                eudm_runtime,
+                "SearchProbe",
+                return_value=prepared_probe,
+            ) as search_probe,
+        ):
             manager._connect()
 
         self.assertEqual(manager.state, "connected")
         self.assertIs(manager.client, transferred)
+        self.assertIs(manager.probe, prepared_probe)
+        search_probe.assert_called_once_with(transferred, "signed.in.user")
+        prepared_probe._prepare_asset_search.assert_called_once_with()
         self.assertEqual(manager.request_for, "signed.in.user")
         self.assertEqual(
             [call.args[1] for call in browser.request.call_args_list],

@@ -514,6 +514,7 @@ class ClientManager:
             handoff_deadline = time.monotonic() + 20
             handoff_error: Exception | None = None
             client: Any | None = None
+            prepared_probe: SearchProbe | None = None
             while time.monotonic() < handoff_deadline:
                 try:
                     candidate = browser.parallel_clients(1)[0]
@@ -522,7 +523,15 @@ class ClientManager:
                         self.config.request_for or "",
                     )
                     request_for = verified_session.request_for
+                    # Read-only health checks can succeed while Helix still
+                    # rejects service-request/questionnaire calls. Prepare the
+                    # same form used by serial searches before presenting the
+                    # session as authenticated, then reuse it for the first
+                    # lookup instead of creating another request.
+                    candidate_probe = SearchProbe(candidate, request_for)
+                    candidate_probe._prepare_asset_search()
                     client = candidate
+                    prepared_probe = candidate_probe
                     handoff_error = None
                     break
                 except eudm.EUDMError as exc:
@@ -555,7 +564,7 @@ class ClientManager:
             return
         with self.lock:
             self.client = client
-            self.probe = None
+            self.probe = prepared_probe
             self.fresh_probes = []
             self.fresh_probe_cursor = 0
             self.state = "connected"
