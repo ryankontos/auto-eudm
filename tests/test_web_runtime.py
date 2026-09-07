@@ -219,6 +219,31 @@ class ReturnQuestionSubmissionTests(unittest.TestCase):
 
 
 class HelixApiVerificationTests(unittest.TestCase):
+    def test_web_session_bootstrap_matches_the_live_helix_client(self) -> None:
+        class Client:
+            user_agent = "Chrome test"
+
+            def request(self, method, path, payload=None):
+                self.call = (method, path, payload)
+                return {"loginId": "signed.in.user"}
+
+        client = Client()
+        result = eudm_runtime.establish_helix_web_session(client)
+
+        self.assertEqual(result["loginId"], "signed.in.user")
+        self.assertEqual(client.call[0:2], ("POST", "/dwp/restapi/users/sessions"))
+        self.assertEqual(
+            client.call[2],
+            {
+                "appName": "dwp",
+                "apiVersion": 19020000,
+                "locale": "en-GB",
+                "deviceToken": "dummyToken",
+                "os": "Chrome test",
+                "model": "Web Client",
+            },
+        )
+
     def test_verification_reads_catalogue_and_authenticated_carts(self) -> None:
         client = mock.Mock()
         client.request.side_effect = [
@@ -258,7 +283,11 @@ class HelixApiVerificationTests(unittest.TestCase):
         self.assertIsNone(session.authenticated_user)
 
     def test_connection_proves_browser_and_transferred_api_clients(self) -> None:
-        def api_response(method: str, path: str):
+        def api_response(method: str, path: str, payload=None):
+            if path == "/dwp/restapi/users/sessions":
+                self.assertEqual(method, "POST")
+                self.assertEqual(payload["appName"], "dwp")
+                return {"loginId": "signed.in.user"}
             self.assertEqual(method, "GET")
             if path == "v2/sbe/services/25301":
                 return {"id": "25301", "available": True}
@@ -289,7 +318,11 @@ class HelixApiVerificationTests(unittest.TestCase):
         self.assertEqual(manager.request_for, "signed.in.user")
         self.assertEqual(
             [call.args[1] for call in browser.request.call_args_list],
-            ["v2/sbe/services/25301", "v2/carts"],
+            [
+                "/dwp/restapi/users/sessions",
+                "v2/sbe/services/25301",
+                "v2/carts",
+            ],
         )
         self.assertEqual(
             [call.args[1] for call in transferred.request.call_args_list],

@@ -172,6 +172,23 @@ def verify_helix_api(
     return VerifiedHelixSession(request_for, authenticated_user)
 
 
+def establish_helix_web_session(client: Any) -> Any:
+    """Create the DWP web-client session from the browser's existing SSO login."""
+    user_agent = str(getattr(client, "user_agent", "") or "auto-eudm/1.0")
+    return client.request(
+        "POST",
+        "/dwp/restapi/users/sessions",
+        {
+            "appName": "dwp",
+            "apiVersion": 19020000,
+            "locale": "en-GB",
+            "deviceToken": "dummyToken",
+            "os": user_agent,
+            "model": "Web Client",
+        },
+    )
+
+
 def open_existing_server(
     url: str,
 ) -> bool:
@@ -462,8 +479,16 @@ class ClientManager:
             )
             last_error: Exception | None = None
             request_for = ""
+            session_established = False
             while time.monotonic() < deadline:
                 try:
+                    # The current Helix client explicitly converts the browser's
+                    # RSSO login into a DWP API session before calling /rest/v2.
+                    # This is also the fast path for a saved, already-signed-in
+                    # Chrome profile.
+                    if not session_established:
+                        establish_helix_web_session(browser)
+                        session_established = True
                     verified_session = verify_helix_api(
                         browser,
                         self.config.request_for or "",
