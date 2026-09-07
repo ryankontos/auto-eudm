@@ -2843,7 +2843,10 @@ async function connect() {
   try {
     const status = await api("/api/connect", { method: "POST", body: "{}" });
     updateConnection(status);
-    setTimeout(() => refreshConnection({ verify: true }), 700);
+    // connect_async verifies the new Helix client before reporting
+    // "connected". Do not immediately race it with a second health request;
+    // the regular heartbeat will verify the settled session shortly after.
+    setTimeout(() => refreshConnection(), 700);
   } catch (error) {
     toast(error.message, "error");
   }
