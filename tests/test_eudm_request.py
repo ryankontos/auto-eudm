@@ -79,5 +79,68 @@ class HelixRequestHeaderTests(unittest.TestCase):
         self.assertEqual(clients[0].user_agent, "Chrome test")
 
 
+class BrowserAuthenticationPageTests(unittest.TestCase):
+    class Page:
+        def __init__(self, *, navigates: bool) -> None:
+            self.url = "about:blank"
+            self.navigates = navigates
+            self.closed = False
+            self.goto_calls: list[str] = []
+
+        def on(self, _event, _handler) -> None:
+            return None
+
+        def goto(self, url, **_kwargs) -> None:
+            self.goto_calls.append(url)
+            if self.navigates:
+                self.url = url
+
+        def is_closed(self) -> bool:
+            return self.closed
+
+        def wait_for_timeout(self, _milliseconds) -> None:
+            return None
+
+        def close(self) -> None:
+            self.closed = True
+
+    class Context:
+        def __init__(self, first_page) -> None:
+            self.pages = [first_page]
+            self.created_pages: list[BrowserAuthenticationPageTests.Page] = []
+
+        def new_page(self):
+            page = BrowserAuthenticationPageTests.Page(navigates=True)
+            self.pages.append(page)
+            self.created_pages.append(page)
+            return page
+
+    def test_reuses_chromes_existing_startup_page(self) -> None:
+        startup = self.Page(navigates=True)
+        context = self.Context(startup)
+
+        active = eudm.open_helix_auth_page(
+            context,
+            "https://macquarie-dwp.onbmc.com/dwp/app/",
+        )
+
+        self.assertIs(active, startup)
+        self.assertEqual(context.created_pages, [])
+        self.assertEqual(startup.goto_calls, ["https://macquarie-dwp.onbmc.com/dwp/app/"])
+
+    def test_retries_in_a_new_tab_if_startup_page_stays_blank(self) -> None:
+        startup = self.Page(navigates=False)
+        context = self.Context(startup)
+
+        active = eudm.open_helix_auth_page(
+            context,
+            "https://macquarie-dwp.onbmc.com/dwp/app/",
+        )
+
+        self.assertIs(active, context.created_pages[0])
+        self.assertTrue(startup.closed)
+        self.assertEqual(active.url, "https://macquarie-dwp.onbmc.com/dwp/app/")
+
+
 if __name__ == "__main__":
     unittest.main()

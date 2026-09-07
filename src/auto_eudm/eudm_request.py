@@ -635,6 +635,87 @@ def attach_page_api_diagnostics(page: Any) -> None:
     page.on("response", on_response)
 
 
+def browser_page_url(page: Any) -> str:
+    try:
+        return str(page.url or "").strip()
+    except Exception:
+        return ""
+
+
+def browser_page_is_open(page: Any) -> bool:
+    try:
+        return not bool(page.is_closed())
+    except Exception:
+        return True
+
+
+def usable_auth_page(page: Any) -> bool:
+    """Whether Chrome has navigated beyond its temporary startup document."""
+    if not browser_page_is_open(page):
+        return False
+    url = browser_page_url(page).casefold()
+    return bool(
+        url
+        and url != "about:blank"
+        and not url.startswith("chrome-error://")
+        and not url.startswith("data:")
+    )
+
+
+def open_helix_auth_page(context: Any, app_url: str) -> Any:
+    """Navigate a persistent Chrome context without racing its startup tab.
+
+    Chrome normally creates one ``about:blank`` page with a persistent
+    context. Reusing it is important: closing the only page before opening the
+    Helix page can close or invalidate the browser context on some Chrome
+    versions. If navigation still leaves that page blank, retry in a fresh tab
+    while keeping the original context alive.
+    """
+    pages = [page for page in list(context.pages) if browser_page_is_open(page)]
+    page = pages[0] if pages else context.new_page()
+    attached: set[int] = set()
+    last_error: Exception | None = None
+
+    for attempt in range(3):
+        if id(page) not in attached:
+            attach_page_api_diagnostics(page)
+            attached.add(id(page))
+        try:
+            page.goto(app_url, wait_until="domcontentloaded", timeout=60_000)
+        except Exception as exc:
+            last_error = exc
+            run_reporting.event(
+                "Helix page navigation attempt %d did not complete: %s",
+                attempt + 1,
+                type(exc).__name__,
+            )
+
+        candidates = [page, *list(context.pages)]
+        active = next((candidate for candidate in candidates if usable_auth_page(candidate)), None)
+        if active is not None:
+            if id(active) not in attached:
+                attach_page_api_diagnostics(active)
+            for unused in list(context.pages):
+                if unused is active or browser_page_url(unused).casefold() != "about:blank":
+                    continue
+                try:
+                    unused.close()
+                except Exception:
+                    pass
+            return active
+
+        if attempt < 2:
+            try:
+                page.wait_for_timeout(500)
+            except Exception:
+                pass
+            page = context.new_page()
+
+    raise EUDMError(
+        "Chrome opened but its authentication tab remained blank. Try Authenticate again."
+    ) from last_error
+
+
 def browser_client_from_profile(
     profile: str,
     app_url: str,
@@ -650,6 +731,8 @@ def browser_client_from_profile(
             "Playwright could not be loaded after automatic setup. Re-run the command; "
             "if it persists, set EUDM_LOGGING=true and share the new log file."
         ) from exc
+    playwright: Any | None = None
+    context: Any | None = None
     try:
         playwright = sync_playwright().start()
         context = playwright.chromium.launch_persistent_context(
@@ -657,19 +740,8 @@ def browser_client_from_profile(
             channel="chrome",
             headless=headless,
         )
-        # Chrome's persistent context starts with a visible blank tab. Close
-        # those startup tabs before creating the verification page; otherwise
-        # the user can be left looking at an unrelated about:blank window.
-        for existing_page in list(context.pages):
-            if str(existing_page.url) in {"", "about:blank"}:
-                try:
-                    existing_page.close()
-                except Exception:
-                    pass
-        page = context.new_page()
-        attach_page_api_diagnostics(page)
         run_reporting.event("Opening Chrome for EUDM SSO")
-        page.goto(app_url, wait_until="domcontentloaded", timeout=60_000)
+        page = open_helix_auth_page(context, app_url)
         user_agent = str(page.evaluate("navigator.userAgent") or "auto-eudm/1.0")
         if headless:
             print("Checking the saved Chrome SSO session in the background...")
@@ -682,6 +754,18 @@ def browser_client_from_profile(
             input("After the EUDM page is signed in, press Enter here to continue: ")
     except Exception as exc:
         run_reporting.event("Chrome/SSO setup failed: %s", type(exc).__name__)
+        if context is not None:
+            try:
+                context.close()
+            except Exception:
+                pass
+        if playwright is not None:
+            try:
+                playwright.stop()
+            except Exception:
+                pass
+        if isinstance(exc, EUDMError):
+            raise
         raise EUDMError(
             "Could not start Chrome or complete browser authentication. "
             "Check that Google Chrome and Playwright are installed."
