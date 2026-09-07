@@ -662,7 +662,11 @@ def usable_auth_page(page: Any) -> bool:
     )
 
 
-def open_helix_auth_page(context: Any, app_url: str) -> Any:
+def open_helix_auth_page(
+    context: Any,
+    app_url: str,
+    startup_page: Any | None = None,
+) -> Any:
     """Navigate a persistent Chrome context without racing its startup tab.
 
     Chrome normally creates one ``about:blank`` page with a persistent
@@ -672,7 +676,11 @@ def open_helix_auth_page(context: Any, app_url: str) -> Any:
     while keeping the original context alive.
     """
     pages = [page for page in list(context.pages) if browser_page_is_open(page)]
-    page = pages[0] if pages else context.new_page()
+    page = (
+        startup_page
+        if startup_page is not None and browser_page_is_open(startup_page)
+        else pages[0] if pages else context.new_page()
+    )
     attached: set[int] = set()
     last_error: Exception | None = None
 
@@ -695,13 +703,6 @@ def open_helix_auth_page(context: Any, app_url: str) -> Any:
         if active is not None:
             if id(active) not in attached:
                 attach_page_api_diagnostics(active)
-            for unused in list(context.pages):
-                if unused is active or browser_page_url(unused).casefold() != "about:blank":
-                    continue
-                try:
-                    unused.close()
-                except Exception:
-                    pass
             return active
 
         if attempt < 2:
@@ -740,9 +741,23 @@ def browser_client_from_profile(
             channel="chrome",
             headless=headless,
         )
+        startup_pages = [
+            candidate
+            for candidate in list(context.pages)
+            if browser_page_is_open(candidate)
+        ]
+        startup_page = startup_pages[0] if startup_pages else context.new_page()
+        try:
+            user_agent = str(
+                startup_page.evaluate("navigator.userAgent") or "auto-eudm/1.0"
+            )
+        except Exception:
+            # The user-agent helps copied API requests match Chrome, but a tab
+            # replacement during startup must not abort authentication.
+            user_agent = "auto-eudm/1.0"
+            run_reporting.event("Could not read Chrome user agent before Helix navigation")
         run_reporting.event("Opening Chrome for EUDM SSO")
-        page = open_helix_auth_page(context, app_url)
-        user_agent = str(page.evaluate("navigator.userAgent") or "auto-eudm/1.0")
+        page = open_helix_auth_page(context, app_url, startup_page)
         if headless:
             print("Checking the saved Chrome SSO session in the background...")
             page.wait_for_timeout(2_000)
@@ -766,9 +781,22 @@ def browser_client_from_profile(
                 pass
         if isinstance(exc, EUDMError):
             raise
+        detail = " ".join(str(exc).split()).casefold()
+        if any(
+            marker in detail
+            for marker in (
+                "processsingleton",
+                "profile appears to be in use",
+                "user data directory is already in use",
+            )
+        ):
+            raise EUDMError(
+                "The Helix Chrome profile is already open. Close its Chrome window "
+                "and authenticate again."
+            ) from exc
         raise EUDMError(
             "Could not start Chrome or complete browser authentication. "
-            "Check that Google Chrome and Playwright are installed."
+            f"Chrome reported {type(exc).__name__}; export the session log if it repeats."
         ) from exc
     # Keep Playwright alive while the caller verifies the browser session and
     # captures the authenticated API cookies.
