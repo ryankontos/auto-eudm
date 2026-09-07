@@ -218,16 +218,83 @@ class ReturnQuestionSubmissionTests(unittest.TestCase):
         self.assertNotIn("add-dropoff", values)
 
 
-class HelixSessionStatusTests(unittest.TestCase):
-    def test_http_success_with_zero_session_is_not_authenticated(self) -> None:
-        self.assertFalse(eudm_runtime.session_status_is_authenticated({"session": 0}))
+class HelixApiVerificationTests(unittest.TestCase):
+    def test_verification_reads_catalogue_and_authenticated_carts(self) -> None:
+        client = mock.Mock()
+        client.request.side_effect = [
+            {"id": "25301", "available": True},
+            [{"user": {"userId": "signed.in.user"}}],
+        ]
 
-    def test_truthy_session_values_are_authenticated(self) -> None:
-        self.assertTrue(eudm_runtime.session_status_is_authenticated({"session": 1}))
-        self.assertTrue(eudm_runtime.session_status_is_authenticated({"session": "active"}))
+        session = eudm_runtime.verify_helix_api(client)
 
-    def test_missing_session_value_is_not_authenticated(self) -> None:
-        self.assertFalse(eudm_runtime.session_status_is_authenticated({}))
+        self.assertEqual(session.request_for, "signed.in.user")
+        self.assertEqual(session.authenticated_user, "signed.in.user")
+        self.assertEqual(
+            client.request.call_args_list,
+            [
+                mock.call("GET", "v2/sbe/services/25301"),
+                mock.call("GET", "v2/carts"),
+            ],
+        )
+
+    def test_verification_rejects_a_non_catalogue_response(self) -> None:
+        client = mock.Mock()
+        client.request.return_value = {"session": 0}
+
+        with self.assertRaises(eudm.EUDMError):
+            eudm_runtime.verify_helix_api(client)
+
+    def test_configured_requester_is_used_when_carts_have_no_user(self) -> None:
+        client = mock.Mock()
+        client.request.side_effect = [
+            {"id": "25301", "available": True},
+            [],
+        ]
+
+        session = eudm_runtime.verify_helix_api(client, "configured.user")
+
+        self.assertEqual(session.request_for, "configured.user")
+        self.assertIsNone(session.authenticated_user)
+
+    def test_connection_proves_browser_and_transferred_api_clients(self) -> None:
+        def api_response(method: str, path: str):
+            self.assertEqual(method, "GET")
+            if path == "v2/sbe/services/25301":
+                return {"id": "25301", "available": True}
+            if path == "v2/carts":
+                return [{"user": {"userId": "signed.in.user"}}]
+            self.fail(f"Unexpected Helix path: {path}")
+
+        transferred = mock.Mock()
+        transferred.request.side_effect = api_response
+        browser = mock.Mock()
+        browser.request.side_effect = api_response
+        browser.parallel_clients.return_value = [transferred]
+        config = SimpleNamespace(
+            simulate=False,
+            verbose=False,
+            request_for=None,
+            base="https://macquarie-dwp.onbmc.com/dwp/rest",
+            browser_profile="~/.auto-eudm-chrome",
+            browser_headless=False,
+        )
+        manager = ClientManager(config)
+
+        with mock.patch.object(eudm, "open_client", return_value=browser):
+            manager._connect()
+
+        self.assertEqual(manager.state, "connected")
+        self.assertIs(manager.client, transferred)
+        self.assertEqual(manager.request_for, "signed.in.user")
+        self.assertEqual(
+            [call.args[1] for call in browser.request.call_args_list],
+            ["v2/sbe/services/25301", "v2/carts"],
+        )
+        self.assertEqual(
+            [call.args[1] for call in transferred.request.call_args_list],
+            ["v2/sbe/services/25301", "v2/carts"],
+        )
 
 
 class RequestStatusPreferenceTests(unittest.TestCase):

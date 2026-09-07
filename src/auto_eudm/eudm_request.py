@@ -103,7 +103,45 @@ def http_error_message(status: int, action: str) -> str:
 
 def is_sso_html(raw: str) -> bool:
     sample = raw[:4000].casefold()
-    return "single sign on" in sample or "redirecting to single sign" in sample
+    return any(
+        marker in sample
+        for marker in (
+            "single sign on",
+            "redirecting to single sign",
+            "rsso/",
+            "idp.staffam.macquarie.com",
+        )
+    )
+
+
+def helix_site_url(base: str) -> str:
+    """Return the browser origin used by Helix's own API requests."""
+    parsed = urllib.parse.urlsplit(base)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise EUDMError("The Helix REST URL is invalid.")
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, "/", "", ""))
+
+
+def helix_request_headers(
+    base: str,
+    method: str,
+    *,
+    has_body: bool,
+    user_agent: str,
+) -> dict[str, str]:
+    """Build the same request context used by the current Helix web app."""
+    site = helix_site_url(base)
+    headers = {
+        "Accept": "application/json, text/plain, */*",
+        "Referer": site,
+        "X-Requested-By": "XMLHttpRequest",
+        "User-Agent": user_agent,
+    }
+    if has_body:
+        headers["Content-Type"] = "application/json"
+    if method.upper() not in {"GET", "HEAD"}:
+        headers["Origin"] = site.rstrip("/")
+    return headers
 
 
 def request_step(
@@ -171,10 +209,17 @@ def manual_review(
 class BrowserClient:
     """API client that stays inside the authenticated Playwright browser context."""
 
-    def __init__(self, base: str, context: Any, verbose: bool = False) -> None:
+    def __init__(
+        self,
+        base: str,
+        context: Any,
+        verbose: bool = False,
+        user_agent: str = "auto-eudm/1.0",
+    ) -> None:
         self.base = base
         self.context = context
         self.verbose = verbose
+        self.user_agent = user_agent
 
     def request(self, method: str, path: str, payload: Any | None = None) -> Any:
         started = time.monotonic()
@@ -186,18 +231,20 @@ class BrowserClient:
         else:
             url = self.base.rstrip("/") + "/" + path.lstrip("/")
         body = None if payload is None else json.dumps(payload)
-        headers = {
-            "Accept": "application/json, text/plain, */*",
-            "Origin": self.base.split("/rest", 1)[0],
-            "Referer": self.base.split("/rest", 1)[0] + "/",
-            "X-Requested-By": "XMLHttpRequest",
-            "User-Agent": "auto-eudm/1.0",
-        }
-        if body is not None:
-            headers["Content-Type"] = "application/json"
+        headers = helix_request_headers(
+            self.base,
+            method,
+            has_body=body is not None,
+            user_agent=self.user_agent,
+        )
         try:
             response = self.context.request.fetch(
-                url, method=method, headers=headers, data=body, fail_on_status_code=False
+                url,
+                method=method,
+                headers=headers,
+                data=body,
+                fail_on_status_code=False,
+                max_redirects=0,
             )
         except Exception as exc:
             run_reporting.network(
@@ -215,8 +262,12 @@ class BrowserClient:
         )
         if self.verbose:
             print(f"{method} {path} -> {response.status}", file=sys.stderr)
+        if 300 <= response.status < 400 or response.status == 401:
+            raise SSOExpiredError(
+                "Helix requires a new authenticated browser session."
+            )
         if response.status >= 400:
-            if response.status in (401, 403) and is_sso_html(raw):
+            if response.status == 403 and is_sso_html(raw):
                 raise SSOExpiredError(
                     "Helix redirected to SSO. Reconnect and complete sign-in in Chrome."
                 )
@@ -234,17 +285,17 @@ class BrowserClient:
 
     def parallel_clients(self, count: int) -> list["Client"]:
         """Create short-lived in-memory HTTP clients from the signed-in Chrome session."""
-        host = urllib.parse.urlparse(self.base).hostname or ""
-        cookies = [
-            item for item in self.context.cookies()
-            if host == item.get("domain", "").lstrip(".")
-            or host.endswith(item.get("domain", "").lstrip("."))
-        ]
+        cookie_url = self.base.rstrip("/") + "/v2/carts"
+        cookies = list(self.context.cookies([cookie_url]))
+        cookies.sort(key=lambda item: len(str(item.get("path", "/"))), reverse=True)
         header = "; ".join(f"{item['name']}={item['value']}" for item in cookies)
         if not header:
             raise EUDMError("The authenticated Chrome session did not provide any Helix cookies.")
         run_reporting.event("Prepared %d in-memory clients from authenticated Chrome session", count)
-        return [Client(self.base, header, self.verbose) for _ in range(count)]
+        return [
+            Client(self.base, header, self.verbose, self.user_agent)
+            for _ in range(count)
+        ]
 
 
 class SimulationClient:
@@ -549,6 +600,7 @@ def browser_client_from_profile(
         page = context.new_page()
         run_reporting.event("Opening Chrome for EUDM SSO")
         page.goto(app_url, wait_until="domcontentloaded", timeout=60_000)
+        user_agent = str(page.evaluate("navigator.userAgent") or "auto-eudm/1.0")
         if headless:
             print("Checking the saved Chrome SSO session in the background...")
             page.wait_for_timeout(2_000)
@@ -564,10 +616,11 @@ def browser_client_from_profile(
             "Could not start Chrome or complete browser authentication. "
             "Check that Google Chrome and Playwright are installed."
         ) from exc
-    # Keep the browser context alive for every API call; do not extract/replay cookies.
+    # Keep Playwright alive while the caller verifies the browser session and
+    # captures the authenticated API cookies.
     atexit.register(playwright.stop)
     atexit.register(context.close)
-    return BrowserClient(base, context, verbose)
+    return BrowserClient(base, context, verbose, user_agent)
 
 
 def open_client(
@@ -607,9 +660,13 @@ class Client:
     base: str
     cookie: str
     verbose: bool = False
+    user_agent: str = "auto-eudm/1.0"
 
     def parallel_clients(self, count: int) -> list["Client"]:
-        return [Client(self.base, self.cookie, self.verbose) for _ in range(count)]
+        return [
+            Client(self.base, self.cookie, self.verbose, self.user_agent)
+            for _ in range(count)
+        ]
 
     def _curl_request(self, method: str, url: str, body: bytes | None, headers: dict[str, str]) -> tuple[int, str]:
         """Send an EUDM request through the operating system curl trust store."""
@@ -624,7 +681,6 @@ class Client:
                 "curl",
                 "--silent",
                 "--show-error",
-                "--location",
                 "--connect-timeout",
                 "15",
                 "--max-time",
@@ -660,15 +716,12 @@ class Client:
         else:
             url = self.base.rstrip("/") + "/" + path.lstrip("/")
         body = None if payload is None else json.dumps(payload).encode()
-        headers = {
-            "Accept": "application/json, text/plain, */*",
-            "Origin": self.base.split("/rest", 1)[0],
-            "Referer": self.base.split("/rest", 1)[0] + "/",
-            "X-Requested-By": "XMLHttpRequest",
-            "User-Agent": "auto-eudm/1.0",
-        }
-        if body is not None:
-            headers["Content-Type"] = "application/json"
+        headers = helix_request_headers(
+            self.base,
+            method,
+            has_body=body is not None,
+            user_agent=self.user_agent,
+        )
         if self.cookie:
             headers["Cookie"] = self.cookie
         try:
@@ -688,8 +741,12 @@ class Client:
         )
         if self.verbose:
             print(f"{method} {path} -> {status}", file=sys.stderr)
+        if 300 <= status < 400 or status == 401:
+            raise SSOExpiredError(
+                "Helix requires a new authenticated browser session."
+            )
         if status >= 400:
-            if status in (401, 403) and is_sso_html(raw):
+            if status == 403 and is_sso_html(raw):
                 raise SSOExpiredError(
                     "Helix redirected to SSO. Reconnect and complete sign-in in Chrome."
                 )

@@ -139,23 +139,37 @@ def authenticated_user_id(payload: Any) -> str | None:
     return None
 
 
-def session_status_is_authenticated(payload: Any) -> bool:
-    """Interpret Helix's sessionstatus response without trusting HTTP 200 alone."""
-    if not isinstance(payload, dict) or "session" not in payload:
-        return False
-    value = payload.get("session")
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return value != 0
-    return str(value or "").strip().casefold() not in {
-        "",
-        "0",
-        "false",
-        "none",
-        "null",
-        "unauthenticated",
-    }
+def helix_catalog_is_available(payload: Any) -> bool:
+    """Confirm that the authenticated EUDM service is available to this account."""
+    return bool(
+        isinstance(payload, dict)
+        and str(payload.get("id") or "").strip() == "25301"
+        and payload.get("available") is not False
+    )
+
+
+@dataclass(frozen=True)
+class VerifiedHelixSession:
+    request_for: str
+    authenticated_user: str | None
+
+
+def verify_helix_api(
+    client: Any,
+    configured_request_for: str = "",
+) -> VerifiedHelixSession:
+    """Prove that the client can read the APIs used by searches and submissions."""
+    service = client.request("GET", "v2/sbe/services/25301")
+    if not helix_catalog_is_available(service):
+        raise eudm.EUDMError(
+            "Helix did not return the EUDM service catalogue."
+        )
+    carts = client.request("GET", "v2/carts")
+    authenticated_user = authenticated_user_id(carts)
+    request_for = authenticated_user or configured_request_for.strip()
+    if not request_for:
+        raise eudm.EUDMError("Helix did not identify the signed-in user.")
+    return VerifiedHelixSession(request_for, authenticated_user)
 
 
 def open_existing_server(
@@ -447,15 +461,16 @@ class ClientManager:
                 15 if self.config.browser_headless else 120
             )
             last_error: Exception | None = None
+            request_for = ""
             while time.monotonic() < deadline:
                 try:
-                    session_status = browser.request("GET", "sessionstatus")
-                    if session_status_is_authenticated(session_status):
-                        last_error = None
-                        break
-                    last_error = eudm.EUDMError(
-                        "Helix is still waiting for the manual sign-in to finish."
+                    verified_session = verify_helix_api(
+                        browser,
+                        self.config.request_for or "",
                     )
+                    request_for = verified_session.request_for
+                    last_error = None
+                    break
                 except eudm.EUDMError as exc:
                     last_error = exc
                 time.sleep(2)
@@ -468,22 +483,32 @@ class ClientManager:
                 raise eudm.EUDMError(
                     "Helix SSO did not complete within two minutes. Try Connect again."
                 ) from last_error
-            # Capture authenticated cookies while still on Playwright's owning
-            # thread. Subsequent Helix API calls use independent system-curl clients.
-            client = browser.parallel_clients(1)[0]
-            try:
-                carts = client.request("GET", "v2/carts") or {}
-            except eudm.EUDMError as exc:
-                if eudm.is_sso_expired_error(exc):
-                    raise
-                carts = {}
-            inferred_user = authenticated_user_id(carts)
-            request_for = inferred_user or self.config.request_for or ""
-            if not request_for:
+            # Transfer the browser cookies only after the live catalogue and
+            # carts APIs work. Prove the transferred client too: it is the
+            # transport used for every later search and submission.
+            handoff_deadline = time.monotonic() + 20
+            handoff_error: Exception | None = None
+            client: Any | None = None
+            while time.monotonic() < handoff_deadline:
+                try:
+                    candidate = browser.parallel_clients(1)[0]
+                    verified_session = verify_helix_api(
+                        candidate,
+                        self.config.request_for or "",
+                    )
+                    request_for = verified_session.request_for
+                    client = candidate
+                    handoff_error = None
+                    break
+                except eudm.EUDMError as exc:
+                    handoff_error = exc
+                    time.sleep(1)
+            if client is None:
                 raise eudm.EUDMError(
-                    "Helix authenticated successfully but did not identify the signed-in user. "
-                    "Set EUDM_REQUEST_FOR in .env and connect again."
-                )
+                    "Helix opened successfully, but AutoEUDM could not establish "
+                    "an authenticated API session. Try Authenticate again."
+                ) from handoff_error
+            inferred_user = verified_session.authenticated_user or ""
             # The copied API client is independent of Playwright. Once it has
             # proven the session and inferred the user, close its private
             # authentication context.
