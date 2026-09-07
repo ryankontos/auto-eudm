@@ -11,6 +11,7 @@ const state = {
   connectionSheetEventsBound: false,
   connectionDismissTimer: null,
   connectionSheetManual: false,
+  connectionAutoStarted: false,
   diagnosticsStatusTimer: null,
   workbook: null,
   workbookInspection: null,
@@ -243,6 +244,8 @@ const elements = {
   queueSearch: $("#queueSearchInput"),
   queueFilterEmpty: $("#queueFilterEmpty"),
   connectionStatus: $("#connectionStatus"),
+  connectionStatusLabel: $("#connectionStatusLabel"),
+  connectionStatusAction: $("#connectionStatusAction"),
   queueValidationNotice: $("#queueValidationNotice"),
   queueValidationMessage: $("#queueValidationMessage"),
   submissionNotice: $("#submissionNotice"),
@@ -255,6 +258,7 @@ const elements = {
   connectionVisual: $("#connectionVisual"),
   connectionLinkIcon: $("#connectionLinkIcon"),
   connectionLoading: $("#connectionLoading"),
+  connectionErrorMessage: $("#connectionErrorMessage"),
   connectionAuthenticateButton: $("#connectionAuthenticateButton"),
   exportDiagnosticsSheetButton: $("#exportDiagnosticsSheetButton"),
   downloadDiagnosticsButton: $("#downloadDiagnosticsButton"),
@@ -2737,25 +2741,61 @@ function connectionIsReady(status = state.connection) {
   return ["connected", "simulation"].includes(status?.state);
 }
 
+function connectionHasError(status = state.connection) {
+  return ["error", "expired"].includes(status?.state);
+}
+
 function renderConnectionSheet(status = state.connection) {
   const ready = connectionIsReady(status);
   const stateName = status?.state || "checking";
+  const connecting = ["checking", "connecting"].includes(stateName);
+  const hasError = connectionHasError(status);
   const visualState = ready ? "connected" : stateName === "connecting" ? "connecting" : "disconnected";
   if (!ready && state.connectionDismissTimer) {
     window.clearTimeout(state.connectionDismissTimer);
     state.connectionDismissTimer = null;
   }
-  elements.connectionStatus.hidden = !ready;
+  elements.connectionStatus.hidden = false;
+  elements.connectionStatus.dataset.state = ready
+    ? "connected"
+    : hasError ? "error" : stateName === "connecting" ? "connecting" : "disconnected";
+  elements.connectionStatus.setAttribute("aria-busy", String(connecting));
+  elements.connectionStatusLabel.textContent = stateName === "simulation"
+    ? "Simulation"
+    : ready
+      ? "Authenticated with Helix"
+      : stateName === "connecting"
+        ? "Authenticating…"
+        : "Not authenticated";
+  elements.connectionStatusAction.hidden = stateName === "simulation";
+  elements.connectionStatusAction.disabled = connecting;
+  elements.connectionStatusAction.textContent = stateName === "connecting"
+    ? "Authenticating…"
+    : ready ? "Reauthenticate" : "Authenticate";
+  elements.connectionStatusAction.setAttribute(
+    "aria-label",
+    stateName === "connecting"
+      ? "Authenticating with Helix"
+      : ready ? "Reauthenticate with Helix" : "Authenticate with Helix",
+  );
+  elements.connectionStatus.title = stateName === "simulation"
+    ? "Simulation mode"
+    : hasError ? "Helix authentication failed"
+    : stateName === "connecting" ? "Helix authentication in progress"
+    : ready ? "Authenticated with Helix" : "Helix is not authenticated";
   elements.closeConnectionButton.hidden = !ready;
-  elements.connectionSheetTitle.textContent = ready
-    ? "Authenticated with Helix"
+  elements.connectionSheetTitle.textContent = hasError
+    ? "Helix authentication failed"
     : "Helix Authentication Required";
-  elements.connectionLoading.hidden = !["checking", "connecting"].includes(stateName);
-  const showingSuccess = ready && elements.connectionDialog.open && !state.connectionSheetManual;
-  elements.connectionAuthenticateButton.disabled = stateName === "connecting" || showingSuccess;
+  elements.connectionLoading.hidden = !connecting;
+  elements.connectionErrorMessage.hidden = !hasError;
+  elements.connectionErrorMessage.textContent = hasError
+    ? (status?.message || "Helix authentication could not be completed.")
+    : "";
+  elements.connectionAuthenticateButton.disabled = stateName === "connecting";
   elements.connectionAuthenticateButton.textContent = stateName === "connecting"
     ? "Authenticating…"
-    : showingSuccess ? "Authenticated" : ready ? "Reauthenticate" : "Authenticate in Helix";
+    : ready ? "Reauthenticate" : "Authenticate in Helix";
   elements.connectionDialog.dataset.state = visualState;
   elements.connectionVisual.dataset.state = visualState;
   elements.connectionVisual.setAttribute(
@@ -2772,17 +2812,11 @@ function renderConnectionSheet(status = state.connection) {
     elements.connectionLinkIcon.innerHTML = iconMarkup(linkIcon);
   }
   refreshIcons(elements.connectionVisual);
-  if (ready) {
-    if (elements.connectionDialog.open && !state.connectionSheetManual && !state.connectionDismissTimer) {
-      state.connectionDismissTimer = window.setTimeout(() => {
-        state.connectionDismissTimer = null;
-        if (connectionIsReady() && elements.connectionDialog.open && !state.connectionSheetManual) elements.connectionDialog.close();
-      }, 1400);
-    }
+  if (ready || connecting) {
+    if (elements.connectionDialog.open) elements.connectionDialog.close();
     return;
   }
-  state.connectionSheetManual = false;
-  if (!elements.connectionDialog.open) elements.connectionDialog.showModal();
+  if (hasError && !elements.connectionDialog.open) elements.connectionDialog.showModal();
 }
 
 function updateConnection(status) {
@@ -2845,9 +2879,9 @@ async function checkConnection() {
 }
 
 async function connect() {
-  // A deliberate reauthentication request should transition back to the
-  // normal startup flow so the sheet can dismiss after the new session works.
+  if (state.connection?.state === "connecting") return;
   state.connectionSheetManual = false;
+  if (elements.connectionDialog.open) elements.connectionDialog.close();
   try {
     const status = await api("/api/connect", { method: "POST", body: "{}" });
     updateConnection(status);
@@ -2864,6 +2898,7 @@ function bindConnectionSheetEvents() {
   if (state.connectionSheetEventsBound) return;
   state.connectionSheetEventsBound = true;
   elements.connectionAuthenticateButton.addEventListener("click", connect);
+  elements.connectionStatusAction.addEventListener("click", connect);
   elements.exportDiagnosticsSheetButton?.addEventListener("click", exportDiagnostics);
   elements.downloadDiagnosticsButton?.addEventListener("click", exportDiagnostics);
   elements.closeConnectionButton.addEventListener("click", () => {
@@ -6768,11 +6803,6 @@ function bindEvents() {
     }
   });
   bindConnectionSheetEvents();
-  elements.connectionStatus.addEventListener("click", () => {
-    // Opening this sheet is deliberately passive. Reauthentication starts
-    // only when the user chooses it from the sheet.
-    openConnectionSheet();
-  });
   bindSidebarResize(elements.railResizeHandle, "rail");
   bindSidebarResize(elements.inspectorResizeHandle, "inspector");
   elements.historyButton.addEventListener("click", openHistory);
@@ -7114,6 +7144,10 @@ async function init() {
     await refreshDiagnosticsStatus();
     renderConnectionSheet();
     await refreshConnection({ verify: true });
+    if (!state.connection?.simulation && ["disconnected", "expired"].includes(state.connection?.state)) {
+      state.connectionAutoStarted = true;
+      void connect();
+    }
     state.connectionHeartbeatTimer = window.setInterval(checkConnection, 30_000);
     state.diagnosticsStatusTimer = window.setInterval(refreshDiagnosticsStatus, 5_000);
     renderAll();

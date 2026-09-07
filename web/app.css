@@ -233,10 +233,18 @@ textarea:focus-visible {
 .product-name::before { content: ""; width: 9px; height: 9px; flex: 0 0 9px; border: 2px solid var(--header-accent); border-radius: 50%; box-shadow: 0 0 0 3px color-mix(in srgb, var(--header-accent) 18%, transparent), 0 0 15px color-mix(in srgb, var(--header-accent) 46%, transparent); }
 
 .header-actions { display: flex; align-items: center; gap: 8px; }
-.connection-status { gap: 7px; border-color: rgba(114, 224, 142, .34) !important; border-radius: var(--control-radius) !important; color: #d8f6df !important; background: rgba(114, 224, 142, .11) !important; font-size: 12px; }
-.connection-status:hover { border-color: rgba(114, 224, 142, .58); background: rgba(114, 224, 142, .17); transform: translateY(-1px); }
-.connection-status:active { transform: translateY(0); }
-.connection-status-dot { width: 8px; height: 8px; border-radius: 50%; background: #72e08e; box-shadow: 0 0 0 2px rgba(114, 224, 142, .2), 0 0 10px rgba(114, 224, 142, .42); }
+.connection-status { display: flex; align-items: center; gap: 8px; min-height: var(--control-height-compact); padding: 3px 4px 3px 10px; border: 1px solid rgba(217, 223, 228, .28); border-radius: var(--control-radius); color: var(--header-muted); background: rgba(255, 255, 255, .06); font-size: 12px; }
+.connection-status-copy { display: inline-flex; align-items: center; gap: 7px; min-height: 24px; white-space: nowrap; }
+.connection-status-dot { width: 8px; height: 8px; flex: 0 0 8px; border: 2px solid currentColor; border-radius: 50%; color: var(--header-muted); background: transparent; }
+.connection-status-action { min-height: 26px; height: 26px; padding: 4px 9px; border-color: rgba(217, 223, 228, .3) !important; color: #fff !important; background: rgba(255, 255, 255, .08) !important; font-size: 11px; }
+.connection-status-action:hover { border-color: rgba(255, 255, 255, .56) !important; background: rgba(255, 255, 255, .15) !important; }
+.connection-status[data-state="connected"] { border-color: rgba(114, 224, 142, .42); color: #d8f6df; background: rgba(114, 224, 142, .1); }
+.connection-status[data-state="connected"] .connection-status-dot { border: 0; color: #72e08e; background: #72e08e; box-shadow: 0 0 0 2px rgba(114, 224, 142, .2), 0 0 10px rgba(114, 224, 142, .42); }
+.connection-status[data-state="connecting"] { border-color: rgba(244, 130, 52, .42); color: #f7d4bb; background: rgba(244, 130, 52, .1); }
+.connection-status[data-state="connecting"] .connection-status-dot { border-color: rgba(255, 255, 255, .28); border-top-color: var(--header-accent); animation: connection-status-spin .8s linear infinite; }
+.connection-status[data-state="error"] { border-color: rgba(239, 133, 133, .48); color: #ffd0d0; background: rgba(165, 42, 42, .16); }
+.connection-status[data-state="error"] .connection-status-dot { border: 0; background: #ef8585; box-shadow: 0 0 0 2px rgba(239, 133, 133, .16); }
+.connection-status[data-state="disconnected"] .connection-status-dot { border-color: var(--header-muted); }
 .theme-button { gap: 6px; }
 #themeIcon { display: grid; width: 15px; height: 15px; place-items: center; line-height: 1; }
 #themeIcon .lucide { width: 15px; height: 15px; stroke-width: 1.8; }
@@ -672,6 +680,7 @@ input:hover, select:hover, textarea:hover { border-color: #99a8b5; }
 .connection-visual[data-state="connected"] .connection-path-line { background: currentColor; background-size: auto; opacity: 1; }
 .connection-visual[data-state="connected"] .connection-link-icon { border-color: color-mix(in srgb, var(--green) 42%, var(--line)); background: color-mix(in srgb, var(--green-soft) 78%, var(--surface)); box-shadow: 0 4px 12px color-mix(in srgb, var(--green) 15%, transparent); transform: scale(1.04); }
 .connection-loading { width: 18px; height: 18px; margin: 12px auto 0; border: 2px solid var(--control-muted); border-top-color: var(--primary-blue); border-radius: 50%; animation: activity-spin .75s linear infinite; }
+.connection-error-message { margin: 13px auto 0; max-width: 42ch; color: var(--danger-text); font-size: 12px; line-height: 1.45; text-align: center; overflow-wrap: anywhere; }
 .connection-sheet-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
 .connection-sheet-actions .button { width: 100%; }
 .diagnostics-settings { align-items: center; gap: 14px; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
@@ -684,6 +693,7 @@ input:hover, select:hover, textarea:hover { border-color: #99a8b5; }
 .diagnostics-status { margin: 9px 0 0; color: var(--muted); font-size: 10px; line-height: 1.4; }
 @keyframes connection-dash { to { background-position: 18px 0; } }
 @keyframes connection-pulse { 50% { transform: scale(1.08); box-shadow: 0 0 0 4px color-mix(in srgb, var(--blue) 12%, transparent); } }
+@keyframes connection-status-spin { to { transform: rotate(360deg); } }
 
 .queue-table-wrap { flex: 1; min-height: 0; overflow: auto; }
 .queue-toolbar {
@@ -1893,7 +1903,8 @@ input:hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var
 .history-entry:not(.failed):hover { background: var(--surface-hover); }
 
 .progress-modal { width: min(1040px, calc(100vw - 32px)); }
-.progress-card { position: relative; }
+.progress-card { position: relative; padding: 0 20px 20px; }
+.progress-modal .modal-header { position: static; top: auto; margin: 0 -20px 17px; padding: 15px 20px 13px; min-height: 56px; }
 .progress-confetti-canvas { position: absolute; inset: 0; z-index: 5; width: 100%; height: 100%; pointer-events: none; }
 .progress-card > :not(.progress-confetti-canvas):not(.progress-confetti-layer) { position: relative; z-index: 1; }
 .progress-confetti-layer { position: absolute; inset: 0; z-index: 20; overflow: hidden; pointer-events: none; }
@@ -1952,7 +1963,6 @@ input:hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var
   padding: 13px 15px;
   border-bottom: 1px solid var(--line);
 }
-.progress-modal .modal-header { padding-block: 14px 12px; }
 .progress-modal .modal-header h2 { min-width: 0; font-size: 17px; font-weight: 680; letter-spacing: -.01em; }
 .progress-row:last-child { border-bottom: 0; }
 .progress-state { width: 24px; height: 24px; display: grid; place-items: center; border-radius: 50%; color: var(--muted); background: var(--neutral-badge); font-weight: 800; font-size: 12px; }
@@ -2162,7 +2172,9 @@ input:hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var
   .modal.wide-modal,
   .progress-modal { width: calc(100vw - 16px); }
   .modal-card { padding: 15px; }
+  .progress-modal .progress-card { padding: 0 15px 15px; }
   .modal-header { top: -15px; margin: -15px -15px 15px; padding: 14px 15px 11px; }
+  .progress-modal .modal-header { top: auto; margin: 0 -15px 15px; padding: 14px 15px 11px; }
   #importDialog .modal-header { top: -15px; margin: -15px -15px 15px; padding: 14px 15px 11px; }
   .request-create-dialog #requestEditorFields,
   .request-create-dialog #locationFields { grid-template-columns: 1fr; }
@@ -2266,6 +2278,7 @@ input:hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var
   .checking-mark::after,
   .import-spinner,
   .connection-loading,
+  .connection-status-dot,
   .lookup-status.busy::before,
   .import-checking .lucide,
   .import-status-spinner,
