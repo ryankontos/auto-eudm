@@ -215,11 +215,60 @@ class BrowserClient:
         context: Any,
         verbose: bool = False,
         user_agent: str = "auto-eudm/1.0",
+        auth_page: Any | None = None,
     ) -> None:
         self.base = base
         self.context = context
         self.verbose = verbose
         self.user_agent = user_agent
+        self.auth_page = auth_page
+
+    def establish_web_session(self, payload: dict[str, Any]) -> Any:
+        """Create the DWP session within the actual signed-in Helix tab.
+
+        Helix's frontend does this through a same-origin browser fetch. Using
+        the page preserves any browser-only session state that is not exposed
+        to Playwright's standalone request context.
+        """
+        if self.auth_page is None or self.auth_page.is_closed():
+            return self.request("POST", "/dwp/restapi/users/sessions", payload)
+        parsed = urllib.parse.urlsplit(self.base)
+        url = urllib.parse.urlunsplit(
+            (parsed.scheme, parsed.netloc, "/dwp/restapi/users/sessions", "", "")
+        )
+        try:
+            response = self.auth_page.evaluate(
+                """async ({ url, payload }) => {
+                    const response = await fetch(url, {
+                        method: "POST",
+                        credentials: "include",
+                        headers: {
+                            "Accept": "application/json, text/plain, */*",
+                            "Content-Type": "application/json",
+                            "X-Requested-By": "XMLHttpRequest",
+                        },
+                        body: JSON.stringify(payload),
+                    });
+                    return { status: response.status, text: await response.text() };
+                }""",
+                {"url": url, "payload": payload},
+            )
+        except Exception as exc:
+            raise EUDMError(
+                "Could not establish the Helix browser session."
+            ) from exc
+        status = int(response.get("status", 0)) if isinstance(response, dict) else 0
+        raw = str(response.get("text", "")) if isinstance(response, dict) else ""
+        if status == 401 or status >= 300 or is_sso_html(raw):
+            raise SSOExpiredError("Helix requires a new authenticated browser session.")
+        if status >= 400 or status <= 0:
+            raise EUDMError(http_error_message(status, "Could not establish the Helix session"))
+        if not raw:
+            return None
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise EUDMError("Helix returned an invalid browser-session response.") from exc
 
     def request(self, method: str, path: str, payload: Any | None = None) -> Any:
         started = time.monotonic()
@@ -620,7 +669,7 @@ def browser_client_from_profile(
     # captures the authenticated API cookies.
     atexit.register(playwright.stop)
     atexit.register(context.close)
-    return BrowserClient(base, context, verbose, user_agent)
+    return BrowserClient(base, context, verbose, user_agent, page)
 
 
 def open_client(

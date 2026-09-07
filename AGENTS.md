@@ -25,7 +25,7 @@ AutoEUDM is a local web UI I developed to speed up device-management work in EUD
 ## Important behaviours
 
 - EUDM authentication is fail-closed. Live searches and submissions require a connected session; `EUDM_SIMULATE=true` enables local simulation.
-- Helix's `sessionstatus` response is not proof of an authenticated API session. Connection setup must first create the DWP web-client session through `/dwp/restapi/users/sessions`, verify the EUDM catalogue and carts API, and initialize a real search questionnaire on the transferred API client before reporting success. Helix API requests use the site-root origin/referrer and the authenticating Chrome user agent.
+- Helix's `sessionstatus` response is not proof of an authenticated API session. Connection setup must first create the DWP web-client session through `/dwp/restapi/users/sessions` from the real Helix browser tab, then verify the EUDM catalogue and carts APIs before reporting success. Helix API requests use the site-root origin/referrer and the authenticating Chrome user agent.
 - Queue entries, request history, ALM drafts, settings, verification cache, and backlog exclusions belong in `results/`, not browser storage.
 - Submission jobs are asynchronous. Preserve queue state, progress, request IDs, and failed rows if the UI is closed while a job runs.
 - Workbook columns are selected by heading. ALM drafts must be saved while editing and removed when their requests enter the queue; late verification must not recreate a completed draft.
