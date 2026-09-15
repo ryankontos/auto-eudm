@@ -88,6 +88,41 @@ class ImportColumnTests(unittest.TestCase):
             ("SERIAL789 XX", None),
         )
 
+    def test_returned_device_font_colours_map_to_location_statuses(self) -> None:
+        self.assertEqual(
+            inventory.returned_device_status_from_font_color(
+                ("rgb", "FF00B050", 0.0)
+            ),
+            "Pending Rebuild",
+        )
+        self.assertEqual(
+            inventory.returned_device_status_from_font_color(
+                ("rgb", "FF000080", 0.0)
+            ),
+            "Pending Decom",
+        )
+        self.assertEqual(
+            inventory.returned_device_status_from_font_color(
+                ("indexed", 17, 0.0)
+            ),
+            "Pending Rebuild",
+        )
+        self.assertEqual(
+            inventory.returned_device_status_from_font_color(
+                ("indexed", 18, 0.0)
+            ),
+            "Pending Decom",
+        )
+
+    def test_returned_device_theme_colour_uses_workbook_theme(self) -> None:
+        self.assertEqual(
+            inventory.returned_device_status_from_font_color(
+                ("theme", 4, 0.0),
+                theme_colors={4: "1F4E78"},
+            ),
+            "Pending Decom",
+        )
+
 
 class ImportActionTests(unittest.TestCase):
     def setUp(self) -> None:

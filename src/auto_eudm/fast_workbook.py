@@ -1,8 +1,9 @@
 """Small streaming XLSX reader for the web import path.
 
 The web importer only needs cell values, row numbers, styles for the date
-section fill, and the workbook's sheet names. Loading those directly from the
-XLSX XML is substantially faster than constructing an openpyxl cell object
+section fill and returned-device font hints, and the workbook's sheet names.
+Loading those directly from the XLSX XML is substantially faster than
+constructing an openpyxl cell object
 for every cell in a large ALM workbook. The normal openpyxl reader remains a
 fallback for files with an XML layout this focused reader cannot understand.
 """
@@ -111,6 +112,8 @@ class FastWorkbook:
             if not self._sheets:
                 raise FastWorkbookError("The workbook did not contain a worksheet.")
             self._style_fill_keys = self._read_style_fill_keys()
+            self._style_font_color_keys = self._read_style_font_color_keys()
+            self._theme_colors = self._read_theme_colors()
             self._shared_strings = self._read_shared_strings()
         except FastWorkbookError:
             self.close()
@@ -196,10 +199,119 @@ class FastWorkbook:
             )
         return result
 
+    def _read_style_font_color_keys(self) -> list[tuple[str, Any, float]]:
+        try:
+            root = ElementTree.fromstring(self.archive.read("xl/styles.xml"))
+        except KeyError:
+            return [("none", None, 0.0)]
+        except (OSError, ElementTree.ParseError) as exc:
+            raise FastWorkbookError("The workbook styles could not be read.") from exc
+        fonts: list[ElementTree.Element] = []
+        cell_xfs: list[ElementTree.Element] = []
+        for element in root.iter():
+            name = _local_name(element.tag)
+            if name == "fonts":
+                fonts = [
+                    child for child in element if _local_name(child.tag) == "font"
+                ]
+            elif name == "cellXfs":
+                cell_xfs = [
+                    child for child in element if _local_name(child.tag) == "xf"
+                ]
+        result: list[tuple[str, Any, float]] = []
+        for xf in cell_xfs or [ElementTree.Element("xf")]:
+            try:
+                font_id = int(xf.attrib.get("fontId", "0"))
+            except ValueError:
+                font_id = 0
+            font = fonts[font_id] if 0 <= font_id < len(fonts) else None
+            color = next(
+                (
+                    child
+                    for child in (list(font) if font is not None else [])
+                    if _local_name(child.tag) == "color"
+                ),
+                None,
+            )
+            if color is None:
+                result.append(("none", None, 0.0))
+                continue
+            attributes = color.attrib
+            if "rgb" in attributes:
+                result.append(("rgb", attributes.get("rgb"), 0.0))
+            elif "indexed" in attributes:
+                try:
+                    indexed: Any = int(attributes["indexed"])
+                except (TypeError, ValueError):
+                    indexed = None
+                result.append(("indexed", indexed, 0.0))
+            elif "theme" in attributes:
+                try:
+                    theme: Any = int(attributes["theme"])
+                except (TypeError, ValueError):
+                    theme = None
+                try:
+                    tint = float(attributes.get("tint", "0") or 0)
+                except (TypeError, ValueError):
+                    tint = 0.0
+                result.append(("theme", theme, tint))
+            elif "auto" in attributes:
+                result.append(("auto", attributes.get("auto"), 0.0))
+            else:
+                result.append(("none", None, 0.0))
+        return result
+
+    def _read_theme_colors(self) -> dict[int, str]:
+        try:
+            root = ElementTree.fromstring(self.archive.read("xl/theme/theme1.xml"))
+        except KeyError:
+            return {}
+        except (OSError, ElementTree.ParseError) as exc:
+            raise FastWorkbookError("The workbook theme could not be read.") from exc
+        scheme = next(
+            (
+                element
+                for element in root.iter()
+                if _local_name(element.tag) == "clrScheme"
+            ),
+            None,
+        )
+        if scheme is None:
+            return {}
+        colours: dict[int, str] = {}
+        for index, scheme_colour in enumerate(list(scheme)):
+            colour = next(
+                (
+                    child
+                    for child in list(scheme_colour)
+                    if _local_name(child.tag) in {"srgbClr", "sysClr"}
+                ),
+                None,
+            )
+            if colour is None:
+                continue
+            raw = colour.attrib.get("val") or colour.attrib.get("lastClr")
+            if raw:
+                value = str(raw).strip().lstrip("#").upper()
+                if len(value) == 8:
+                    value = value[2:]
+                if len(value) == 6:
+                    colours[index] = value
+        return colours
+
     def fill_key(self, style_index: int) -> tuple[str, str | int]:
         if 0 <= style_index < len(self._style_fill_keys):
             return self._style_fill_keys[style_index]
         return ("style", style_index)
+
+    @property
+    def theme_colors(self) -> dict[int, str]:
+        return self._theme_colors
+
+    def font_color_key(self, style_index: int) -> tuple[str, Any, float]:
+        if 0 <= style_index < len(self._style_font_color_keys):
+            return self._style_font_color_keys[style_index]
+        return ("none", None, 0.0)
 
     def sheet_max_row(self, name: str) -> int:
         path = self._sheets.get(name)

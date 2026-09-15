@@ -298,6 +298,27 @@ class WorkbookUploadTests(unittest.TestCase):
         self.assertEqual(request["serials"], ["SERIAL123"])
         self.assertEqual(request["status"], "Deployed - Existing Stock")
 
+    def test_returned_device_suffix_sets_status_without_submitting_suffix(self) -> None:
+        row = inventory.SheetRow(
+            row_number=2,
+            deployment_date=date(2025, 2, 3),
+            username="valid.user",
+            deployment_serial=None,
+            returned_device_serial="RETURN123 PD",
+            pending_return_serial=None,
+            marked_red=False,
+            enabled=True,
+        )
+        workbook = WorkbookImport("import-returned-suffix", "tracking.xlsx", {"Sheet": [row]})
+        location = web_models.Location("Sydney, AU", "Building", "1", "Store")
+
+        request = workbook.prepare(
+            "Sheet", "2025-02-03", "returned_devices", location
+        )["requests"][0]
+
+        self.assertEqual(request["serials"], ["RETURN123"])
+        self.assertEqual(request["status"], "Pending Decom")
+
     def test_workbook_prepare_persists_new_joiner_marker(self) -> None:
         row = inventory.SheetRow(
             row_number=2,
@@ -628,6 +649,42 @@ class WorkbookUploadTests(unittest.TestCase):
             [row.date_group for row in workbook.sheets["Bookings 2026"]],
             [1, 2],
         )
+
+    def test_workbook_preserves_returned_device_font_status_for_both_readers(self) -> None:
+        from openpyxl import Workbook as OpenPyXLWorkbook
+        from openpyxl.styles import Font
+
+        source = OpenPyXLWorkbook()
+        source.active.title = "Bookings 2026"
+        sheet = source.active
+        sheet.append(["Date", "Username", "SN", "Returned Device SN", "OLD Device SN", "Attend"])
+        sheet.append([date(2025, 2, 3), "green.user", "DEPLOY123", "RETURN123", "", True])
+        sheet.append([date(2025, 2, 3), "blue.user", "DEPLOY456", "RETURN456", "", True])
+        sheet["D2"].font = Font(color="FF00B050")
+        sheet["D3"].font = Font(color="FF000080")
+        buffer = BytesIO()
+        source.save(buffer)
+        payload = buffer.getvalue()
+
+        fast = WorkbookImport._from_fast_payload("tracking.xlsx", payload)
+        compatibility = WorkbookImport._from_openpyxl_payload("tracking.xlsx", payload)
+
+        for workbook in (fast, compatibility):
+            rows = workbook.sheets["Bookings 2026"]
+            self.assertEqual(
+                [row.returned_device_status_hint for row in rows],
+                ["Pending Rebuild", "Pending Decom"],
+            )
+            prepared = workbook.prepare(
+                "Bookings 2026",
+                "2025-02-03",
+                "returned_devices",
+                web_models.Location("Sydney, AU", "Building", "1", "Store"),
+            )
+            self.assertEqual(
+                [(item["serials"][0], item["status"]) for item in prepared["requests"]],
+                [("RETURN123", "Pending Rebuild"), ("RETURN456", "Pending Decom")],
+            )
 
 
 if __name__ == "__main__":

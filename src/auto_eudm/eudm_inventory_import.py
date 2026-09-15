@@ -18,6 +18,7 @@ import re
 import sys
 from typing import Any, Iterable
 import unicodedata
+from xml.etree import ElementTree
 
 from .bootstrap import browser_runtime_required, ensure_runtime
 from . import eudm_request as eudm
@@ -53,6 +54,68 @@ RETURNED_SERIAL_STATUS_CODES: dict[str, str] = {
     "PR": "Pending Rebuild",
     "PD": "Pending Decom",
     "US": "Used Stock",
+}
+
+# Excel workbooks can store a font colour as an RGB value, an indexed palette
+# entry, or a theme colour with a tint. These are the common Excel green and
+# dark-blue choices used in the ALM workbook. Keep the matching deliberately
+# narrow so ordinary coloured notes do not change an import status.
+_RETURNED_FONT_STATUS_RGBS: dict[str, set[str]] = {
+    "Pending Rebuild": {
+        "00FF00",  # Excel green
+        "008000",  # Excel dark green
+        "00B050",  # Office green
+        "70AD47",  # Office accent green
+        "92D050",  # Office light green
+        "548235",  # Office dark green
+        "006100",  # Excel conditional-format green
+        "9BBB59",  # Older Office accent green
+        "A9D18E",
+        "C6E0B4",
+    },
+    "Pending Decom": {
+        "000080",  # Excel dark blue / navy
+        "1F4E78",  # Office dark blue
+        "17365D",  # Older Office dark blue
+        "002060",  # Office darker blue
+        "203864",
+        "2F5597",
+        "1F4E79",
+        "1F3864",
+        "0F243E",
+        "1F497D",
+        "4F81BD",
+        "4472C4",  # Modern Office accent blue
+        "003366",
+    },
+}
+
+_INDEXED_FONT_COLORS: dict[int, str] = {
+    # The duplicated 0-7 and 8-15 ranges are both used by Excel files.
+    3: "00FF00",
+    4: "0000FF",
+    10: "FF0000",
+    11: "00FF00",
+    12: "0000FF",
+    17: "008000",
+    18: "000080",
+    32: "000080",
+    56: "003366",
+}
+
+_DEFAULT_THEME_COLORS: dict[int, str] = {
+    0: "000000",
+    1: "FFFFFF",
+    2: "1F497D",
+    3: "EEECE1",
+    4: "4F81BD",
+    5: "C0504D",
+    6: "9BBB59",
+    7: "8064A2",
+    8: "4BACC6",
+    9: "F79646",
+    10: "0000FF",
+    11: "800080",
 }
 
 
@@ -262,6 +325,137 @@ def serial_and_status_hint(
     return (serial or text), status
 
 
+def _normalise_rgb(value: Any) -> str | None:
+    raw = str(value or "").strip().lstrip("#").upper()
+    if len(raw) == 8:
+        raw = raw[2:]
+    if len(raw) != 6 or any(character not in "0123456789ABCDEF" for character in raw):
+        return None
+    return raw
+
+
+def _safe_tint(value: Any) -> float:
+    try:
+        tint = float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(-1.0, min(1.0, tint))
+
+
+def font_color_key(color: Any) -> tuple[str, Any, float]:
+    """Return a compact colour descriptor for openpyxl or the fast reader."""
+    if isinstance(color, (tuple, list)):
+        color_type = color[0] if color else None
+        value = color[1] if len(color) > 1 else None
+        tint = color[2] if len(color) > 2 else 0.0
+    else:
+        color_type = getattr(color, "type", None) if color is not None else None
+        value = None
+        tint = 0.0
+        if color is not None:
+            try:
+                value = getattr(color, color_type, None)
+            except Exception:
+                value = None
+            try:
+                tint = getattr(color, "tint", 0.0)
+            except Exception:
+                tint = 0.0
+    kind = str(color_type or "none").casefold()
+    if kind == "rgb":
+        return ("rgb", str(value or ""), _safe_tint(tint))
+    if kind == "indexed":
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            value = None
+        return ("indexed", value, _safe_tint(tint))
+    if kind == "theme":
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            value = None
+        return ("theme", value, _safe_tint(tint))
+    return (kind, value, _safe_tint(tint))
+
+
+def theme_colors_from_xml(theme_xml: Any) -> dict[int, str]:
+    """Read the workbook theme's indexed colour scheme when it is available."""
+    if not theme_xml:
+        return {}
+    try:
+        root = ElementTree.fromstring(theme_xml)
+    except (TypeError, ValueError, ElementTree.ParseError):
+        return {}
+    scheme = next(
+        (element for element in root.iter() if str(element.tag).rsplit("}", 1)[-1] == "clrScheme"),
+        None,
+    )
+    if scheme is None:
+        return {}
+    colours: dict[int, str] = {}
+    for index, scheme_colour in enumerate(list(scheme)):
+        colour = next(
+            (
+                child
+                for child in list(scheme_colour)
+                if str(child.tag).rsplit("}", 1)[-1] in {"srgbClr", "sysClr"}
+            ),
+            None,
+        )
+        if colour is None:
+            continue
+        raw = colour.attrib.get("val") or colour.attrib.get("lastClr")
+        normalised = _normalise_rgb(raw)
+        if normalised:
+            colours[index] = normalised
+    return colours
+
+
+def _apply_tint(rgb: str, tint: float) -> str:
+    if not tint:
+        return rgb
+    channels = [int(rgb[index : index + 2], 16) for index in (0, 2, 4)]
+    if tint > 0:
+        channels = [round(channel + (255 - channel) * tint) for channel in channels]
+    else:
+        channels = [round(channel * (1 + tint)) for channel in channels]
+    return "".join(f"{max(0, min(255, channel)):02X}" for channel in channels)
+
+
+def _rgb_from_font_color(
+    color: Any,
+    *,
+    theme_colors: dict[int, str] | None = None,
+) -> str | None:
+    kind, value, tint = font_color_key(color)
+    if kind == "rgb":
+        rgb = _normalise_rgb(value)
+    elif kind == "indexed":
+        rgb = _INDEXED_FONT_COLORS.get(value)
+    elif kind == "theme":
+        colours = theme_colors or {}
+        rgb = colours.get(value) or _DEFAULT_THEME_COLORS.get(value)
+    else:
+        rgb = None
+    return _apply_tint(rgb, tint) if rgb else None
+
+
+def returned_device_status_from_font_color(
+    color: Any,
+    *,
+    theme_colors: dict[int, str] | None = None,
+) -> str | None:
+    """Map the ALM returned-device font colour to its location status."""
+    rgb = _rgb_from_font_color(color, theme_colors=theme_colors)
+    if not rgb:
+        return None
+    for status, candidates in _RETURNED_FONT_STATUS_RGBS.items():
+        if rgb in candidates:
+            return status
+    return None
+
+
 def enabled_column_allows(value: Any) -> bool:
     """Treat explicit non-attendance markers as excluded rows."""
     if value is False:
@@ -413,6 +607,7 @@ def load_sheet(path: Path, columns: ImportColumns | None = None) -> tuple[str, l
     try:
         sheet = select_workbook_sheet(workbook)
         header_row, indexes, date_index = find_column_indexes(sheet, columns or ImportColumns())
+        theme_colors = theme_colors_from_xml(getattr(workbook, "loaded_theme", None))
         # The new-joiner marker can appear in any column, so keep the full
         # reported worksheet width while reading rows. The values are reduced
         # to a boolean below rather than retained in each SheetRow.
@@ -464,6 +659,22 @@ def load_sheet(path: Path, columns: ImportColumns | None = None) -> tuple[str, l
                 else None,
                 returned_device=True,
             )
+            if indexes["returned_device"]:
+                returned_device_status_hint = (
+                    returned_device_status_hint
+                    or returned_device_status_from_font_color(
+                        getattr(
+                            getattr(
+                                values[indexes["returned_device"] - 1],
+                                "font",
+                                None,
+                            ),
+                            "color",
+                            None,
+                        ),
+                        theme_colors=theme_colors,
+                    )
+                )
             rows.append(
                 SheetRow(
                     row_number=row_number,

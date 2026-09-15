@@ -835,6 +835,16 @@ class WorkbookImport:
                         else None,
                         returned_device=True,
                     )
+                    if indexes["returned_device"]:
+                        returned_device_status_hint = (
+                            returned_device_status_hint
+                            or inventory.returned_device_status_from_font_color(
+                                workbook.font_color_key(
+                                    row.cells.get(indexes["returned_device"], (None, 0))[1]
+                                ),
+                                theme_colors=workbook.theme_colors,
+                            )
+                        )
                     rows.append(
                         inventory.SheetRow(
                             row_number=row.row_number,
@@ -847,8 +857,9 @@ class WorkbookImport:
                             pending_return_serial=inventory.clean_text(
                                 cls._fast_cell_value(row, indexes["pending_return"])
                             ) if indexes["pending_return"] else None,
-                            # Font colour is presentation only. Eligibility is
-                            # controlled by the configured TRUE/FALSE column.
+                            # Font colour is not an eligibility marker. Eligibility
+                            # is controlled by the configured TRUE/FALSE column;
+                            # the returned-device colour is only a status hint.
                             marked_red=False,
                             enabled=inventory.enabled_column_allows(
                                 cls._fast_cell_value(row, indexes["enabled"])
@@ -915,6 +926,9 @@ class WorkbookImport:
             ) from exc
         sheets: dict[str, list[inventory.SheetRow]] = {}
         try:
+            theme_colors = inventory.theme_colors_from_xml(
+                getattr(workbook, "loaded_theme", None)
+            )
             # Bookings 2026 is the established source. Avoid scanning every
             # archival/notes tab in a large tracking workbook when it exists;
             # otherwise keep every sheet available for the user to choose.
@@ -994,6 +1008,22 @@ class WorkbookImport:
                         else None,
                         returned_device=True,
                     )
+                    if indexes["returned_device"]:
+                        returned_device_status_hint = (
+                            returned_device_status_hint
+                            or inventory.returned_device_status_from_font_color(
+                                getattr(
+                                    getattr(
+                                        values[indexes["returned_device"] - 1],
+                                        "font",
+                                        None,
+                                    ),
+                                    "color",
+                                    None,
+                                ),
+                                theme_colors=theme_colors,
+                            )
+                        )
                     rows.append(
                         inventory.SheetRow(
                             row_number=row_number,
@@ -1002,8 +1032,9 @@ class WorkbookImport:
                             deployment_serial=deployment_serial,
                             returned_device_serial=returned_device_serial,
                             pending_return_serial=inventory.clean_text(values[indexes["pending_return"] - 1].value) if indexes["pending_return"] else None,
-                            # Font colour is presentation only. Eligibility is
-                            # controlled by the configured TRUE/FALSE column.
+                            # Font colour is not an eligibility marker. Eligibility
+                            # is controlled by the configured TRUE/FALSE column;
+                            # the returned-device colour is only a status hint.
                             marked_red=False,
                             enabled=inventory.enabled_column_allows(
                                 values[indexes["enabled"] - 1].value

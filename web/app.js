@@ -4701,6 +4701,116 @@ function importPersonMarkup(request) {
   return `<div><small class="import-field-title">User</small>${fullName ? `<strong class="import-person-name">${escapeHtml(fullName)}</strong>` : ""}${username ? `<small class="import-person-username">${escapeHtml(username)}</small>` : `<small class="import-person-username">No username</small>`}</div>`;
 }
 
+function importDeploymentNeedsManualReturn(request, payload) {
+  if (request.group !== "Deployments") return false;
+  if (request.included === false) return false;
+  if (request.manual_return_id && payload.requests.some((item) => item.id === request.manual_return_id)) {
+    return false;
+  }
+  return !request.has_returned_device_serial && !request.has_pending_return_serial;
+}
+
+function manualReturnStatusOptions() {
+  return ALM_IMPORT_STATUS_OPTIONS["Returned devices"] || [];
+}
+
+function manualReturnTypeLabel(type) {
+  return type === "pending_returns" ? "Pending return" : "Returned device";
+}
+
+function manualReturnSerialIsValid(serial) {
+  return /^[A-Za-z0-9._-]{6,}$/.test(String(serial || "").trim());
+}
+
+function manualReturnSerialAlreadyInReview(payload, serial) {
+  const wanted = String(serial || "").trim().toLowerCase();
+  return Boolean(wanted) && (payload.requests || []).some((request) =>
+    (request.serials || []).some((value) => String(value || "").trim().toLowerCase() === wanted),
+  );
+}
+
+function manualReturnRequest(source, serial, type, status) {
+  const pendingReturn = type === "pending_returns";
+  const username = String(source.user || source.username || "").trim();
+  const sourceUserInfo = source.user_info || (username
+    ? { login: username, columns: [username] }
+    : null);
+  return {
+    id: uid(),
+    kind: pendingReturn ? "user" : "location",
+    serials: [serial],
+    status: pendingReturn ? "Pending Return" : status,
+    user: pendingReturn ? username : "",
+    returning: !pendingReturn,
+    returning_user: pendingReturn ? "" : username,
+    returning_user_selected: !pendingReturn && Boolean(username),
+    returning_user_info: pendingReturn ? null : sourceUserInfo,
+    returning_user_validation: pendingReturn ? "empty" : sourceUserInfo ? "valid" : "pending",
+    returning_user_validation_error: "",
+    user_info: pendingReturn ? sourceUserInfo : null,
+    user_validation: pendingReturn ? (sourceUserInfo ? "valid" : "pending") : "empty",
+    user_validation_error: "",
+    location: pendingReturn ? null : structuredClone(state.importLocation || preferredImportLocation()),
+    group: pendingReturn ? "Pending returns" : "Returned devices",
+    source: `${state.workbook?.filename || "ALM Workbook"} · ${$("#sheetInput")?.value || "Workbook"} · missing return for row ${source.row_number}`,
+    device_allocation: source.device_allocation || "",
+    first_name: source.first_name || "",
+    last_name: source.last_name || "",
+    included: true,
+    import_validation: "pending",
+    import_error: "",
+    import_failed_fields: [],
+    serial_validation: "pending",
+    serial_validation_error: "",
+    import_validation_epoch: 0,
+    backlog_validation_epoch: 0,
+    returning_user_loading: false,
+    cached_serial_verification: false,
+    cached_user_verification: false,
+    manual_return_source_id: source.id,
+  };
+}
+
+function manualReturnEditorMarkup(source, payload) {
+  const type = source.manual_return_type === "pending_returns"
+    ? "pending_returns"
+    : "returned_devices";
+  const status = source.manual_return_status || "";
+  const added = source.manual_return_id
+    ? payload.requests.find((request) => request.id === source.manual_return_id)
+    : null;
+  const username = String(source.user || source.username || "").trim();
+  const name = [source.first_name, source.last_name]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)
+    .join(" ") || username || "User";
+  const statusOptions = manualReturnStatusOptions();
+  const statusControl = type === "returned_devices"
+    ? `<label>Status<select data-import-manual-status="${escapeHtml(source.id)}">
+        <option value="">Choose a location status</option>
+        ${statusOptions.map((option) => `<option value="${escapeHtml(option.value)}" ${status === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
+      </select></label>`
+    : `<div class="import-manual-return-fixed-status"><small>Status</small><strong>Pending Return</strong></div>`;
+  const error = source.manual_return_error
+    ? `<small class="import-manual-return-error">${escapeHtml(source.manual_return_error)}</small>`
+    : "";
+  const addedMarkup = added
+    ? `<div class="import-manual-return-added"><div><small>Added to review</small><strong>${escapeHtml(added.serials?.[0] || "")}</strong><span>${escapeHtml(manualReturnTypeLabel(type))}${added.status ? ` · ${escapeHtml(added.status)}` : ""}</span></div><button class="text-button" type="button" data-import-manual-remove="${escapeHtml(source.id)}">Remove</button></div>`
+    : `<div class="import-manual-return-fields">
+        <label>Serial number<input type="text" data-import-manual-serial="${escapeHtml(source.id)}" value="${escapeHtml(source.manual_return_serial || "")}" placeholder="Enter serial number" autocomplete="off"></label>
+        <label>Record as<select data-import-manual-type="${escapeHtml(source.id)}">
+          <option value="returned_devices" ${type === "returned_devices" ? "selected" : ""}>Returned device</option>
+          <option value="pending_returns" ${type === "pending_returns" ? "selected" : ""}>Pending return</option>
+        </select></label>
+        ${statusControl}
+        <button class="button secondary compact" type="button" data-import-manual-add="${escapeHtml(source.id)}">Add to review</button>
+      </div>${error}`;
+  return `<div class="import-manual-return-entry" data-import-manual-source="${escapeHtml(source.id)}">
+    <div class="import-manual-return-entry-heading"><div><strong>${escapeHtml(name)}</strong><small>${escapeHtml(username || "No username")} · row ${escapeHtml(source.row_number)}</small></div><span>Neither return serial is listed</span></div>
+    ${addedMarkup}
+  </div>`;
+}
+
 const IMPORT_HISTORY_FIELDS = [
   "status",
   "included",
@@ -4728,6 +4838,12 @@ const IMPORT_HISTORY_FIELDS = [
   "cached_serial_verification",
   "cached_user_verification",
   "backlog_ignored",
+  "manual_return_id",
+  "manual_return_serial",
+  "manual_return_type",
+  "manual_return_status",
+  "manual_return_error",
+  "manual_return_source_id",
 ];
 
 function cloneImportHistoryValue(value) {
@@ -4739,6 +4855,9 @@ function importReviewSnapshot(payload = state.importPreview) {
   return {
     requests: (payload.requests || []).map((request) => ({
       id: request.id,
+      // A manually added return is a new request, so retain its complete
+      // object for undo/redo rather than only retaining the editable fields.
+      request: request.manual_return_source_id ? cloneImportHistoryValue(request) : null,
       values: Object.fromEntries(
         IMPORT_HISTORY_FIELDS
           .filter((field) => Object.prototype.hasOwnProperty.call(request, field))
@@ -4770,14 +4889,19 @@ function recordImportEdit() {
 function restoreImportReviewSnapshot(snapshot) {
   const payload = state.importPreview;
   if (!payload || !snapshot) return;
-  const valuesById = new Map((snapshot.requests || []).map((item) => [item.id, item.values || {}]));
-  (payload.requests || []).forEach((request) => {
-    const values = valuesById.get(request.id);
-    if (!values) return;
+  const currentById = new Map((payload.requests || []).map((request) => [request.id, request]));
+  const restoredRequests = [];
+  const snapshotIds = new Set();
+  (snapshot.requests || []).forEach((item) => {
+    snapshotIds.add(item.id);
+    const request = currentById.get(item.id) || (item.request ? cloneImportHistoryValue(item.request) : null);
+    if (!request) return;
+    const values = item.values || {};
+    const isManualReturn = Boolean(request.manual_return_source_id || item.request?.manual_return_source_id);
     const wasBacklogIgnored = request.backlog_ignored === true;
     IMPORT_HISTORY_FIELDS.forEach((field) => {
       if (Object.prototype.hasOwnProperty.call(values, field)) request[field] = cloneImportHistoryValue(values[field]);
-      else delete request[field];
+      else if (!isManualReturn) delete request[field];
     });
     if (payload.mode === "backlog" && wasBacklogIgnored !== (request.backlog_ignored === true)) {
       persistBacklogIgnore(request, request.backlog_ignored === true);
@@ -4786,7 +4910,18 @@ function restoreImportReviewSnapshot(snapshot) {
     request.backlog_validation_epoch = Number(request.backlog_validation_epoch || 0) + 1;
     if (request.import_validation === "checking") request.import_validation = "pending";
     if (request.included === false) request.import_validation = "idle";
+    restoredRequests.push(request);
   });
+  // In particular, remove manually added rows when undoing their creation.
+  // Invalidate their epoch first so a late verification response cannot revive
+  // a request that is no longer part of the review.
+  (payload.requests || []).forEach((request) => {
+    if (snapshotIds.has(request.id)) return;
+    request.included = false;
+    request.import_validation_epoch = Number(request.import_validation_epoch || 0) + 1;
+    request.backlog_validation_epoch = Number(request.backlog_validation_epoch || 0) + 1;
+  });
+  payload.requests = restoredRequests;
   state.backlogValidationIds.clear();
   renderImportPreview();
   updateImportPrepareButton(payload);
@@ -5022,6 +5157,9 @@ function renderImportPreview() {
     const selectedCount = requests.filter((request) => request.included !== false).length;
     const expanded = state.importExpandedGroups.has(group.key);
     const visibleRequests = expanded ? requests : requests.slice(0, IMPORT_PREVIEW_ROW_LIMIT);
+    const manualReturnEntries = group.key === "Deployments"
+      ? requests.filter((request) => importDeploymentNeedsManualReturn(request, payload))
+      : [];
     const rows = visibleRequests.map((request, index) => {
       const isDeployment = request.group === "Deployments";
       const isReturnedDevice = request.group === "Returned devices";
@@ -5064,6 +5202,12 @@ function renderImportPreview() {
         <div>${statusControl}${isIncluded ? validation : "<small>Do not deploy</small>"}${editable}</div>
       </div>`;
     }).join("");
+    const manualReturnSection = manualReturnEntries.length
+      ? `<div class="import-manual-return-section">
+          <div class="import-manual-return-heading"><div><strong>Missing return details</strong><small>These users have no returned or pending-return serial in the workbook. Add one here if you have it.</small></div><span>${manualReturnEntries.length}</span></div>
+          <div class="import-manual-return-list">${manualReturnEntries.map((request) => manualReturnEditorMarkup(request, payload)).join("")}</div>
+        </div>`
+      : "";
     const missingUsernameWarning = missingUsernameWarnings.length
       ? `<div class="import-data-warning" role="status"><div class="import-data-warning-heading">${iconMarkup("user-round-x")}<strong>Deployment serial${missingUsernameWarnings.length === 1 ? "" : "s"} without a username</strong></div><small>These rows have no username in the Username column.</small><ul>${missingUsernameWarnings.map((warning) => `<li>${escapeHtml(warning.serial)} · row ${escapeHtml(warning.row_number)} · ${escapeHtml(warning.date)}</li>`).join("")}</ul></div>`
       : "";
@@ -5084,6 +5228,7 @@ function renderImportPreview() {
       </div>
       ${missingUsernameWarning}
       ${rows}
+      ${manualReturnSection}
       ${visibleRequests.length < requests.length ? `<button class="import-show-more" type="button" data-import-expand="${escapeHtml(group.key)}">${iconMarkup("chevron-down")}<span>Show ${requests.length - visibleRequests.length} more</span></button>` : ""}
     </section>`;
   }).join("");
@@ -5109,6 +5254,96 @@ function renderImportPreview() {
     if (!requests.length) return;
     recordImportEdit();
     requests.forEach((request) => { request.status = status; });
+    renderImportPreview();
+    updateImportPrepareButton(payload);
+    saveCurrentImportDraft();
+  }));
+  $("#importPreviewList").querySelectorAll("[data-import-manual-serial]").forEach((input) => input.addEventListener("input", () => {
+    const source = payload.requests.find((request) => request.id === input.dataset.importManualSerial);
+    if (!source) return;
+    source.manual_return_serial = input.value;
+    source.manual_return_error = "";
+    input.closest("[data-import-manual-source]")?.querySelector(".import-manual-return-error")?.remove();
+    scheduleImportDraftSave();
+  }));
+  $("#importPreviewList").querySelectorAll("[data-import-manual-type]").forEach((select) => select.addEventListener("change", () => {
+    const source = payload.requests.find((request) => request.id === select.dataset.importManualType);
+    if (!source) return;
+    recordImportEdit();
+    source.manual_return_type = select.value;
+    source.manual_return_status = "";
+    source.manual_return_error = "";
+    renderImportPreview();
+    updateImportPrepareButton(payload);
+    saveCurrentImportDraft();
+  }));
+  $("#importPreviewList").querySelectorAll("[data-import-manual-status]").forEach((select) => select.addEventListener("change", () => {
+    const source = payload.requests.find((request) => request.id === select.dataset.importManualStatus);
+    if (!source) return;
+    recordImportEdit();
+    source.manual_return_status = select.value;
+    source.manual_return_error = "";
+    saveCurrentImportDraft();
+  }));
+  $("#importPreviewList").querySelectorAll("[data-import-manual-add]").forEach((button) => button.addEventListener("click", () => {
+    const source = payload.requests.find((request) => request.id === button.dataset.importManualAdd);
+    if (!source) return;
+    const serial = String($(`[data-import-manual-serial="${button.dataset.importManualAdd}"]`)?.value || source.manual_return_serial || "").trim();
+    const type = $(`[data-import-manual-type="${button.dataset.importManualAdd}"]`)?.value || source.manual_return_type || "returned_devices";
+    const status = type === "returned_devices"
+      ? $(`[data-import-manual-status="${button.dataset.importManualAdd}"]`)?.value || source.manual_return_status || ""
+      : "";
+    let error = "";
+    if (!manualReturnSerialIsValid(serial)) {
+      error = "Enter a valid serial number (at least 6 letters or numbers).";
+    } else if (manualReturnSerialAlreadyInReview(payload, serial)) {
+      error = "That serial is already listed elsewhere in this review.";
+    } else if (type === "returned_devices" && !manualReturnStatusOptions().some((option) => option.value === status)) {
+      error = "Choose the returned-device deployment status.";
+    } else if (type === "returned_devices" && !hasCompleteLocation(state.importLocation || preferredImportLocation())) {
+      error = "Choose a complete destination in Options before adding a returned device.";
+    }
+    if (error) {
+      source.manual_return_serial = serial;
+      source.manual_return_type = type;
+      source.manual_return_status = status;
+      source.manual_return_error = error;
+      renderImportPreview();
+      updateImportPrepareButton(payload);
+      saveCurrentImportDraft();
+      return;
+    }
+    recordImportEdit();
+    source.manual_return_serial = serial;
+    source.manual_return_type = type;
+    source.manual_return_status = status;
+    source.manual_return_error = "";
+    const added = manualReturnRequest(source, serial, type, status);
+    payload.requests.push(added);
+    source.manual_return_id = added.id;
+    renderImportPreview();
+    updateImportPrepareButton(payload);
+    saveCurrentImportDraft();
+    void validateImportPreview([added]);
+  }));
+  $("#importPreviewList").querySelectorAll("[data-import-manual-remove]").forEach((button) => button.addEventListener("click", () => {
+    const source = payload.requests.find((request) => request.id === button.dataset.importManualRemove);
+    if (!source || !source.manual_return_id) return;
+    const index = payload.requests.findIndex((request) => request.id === source.manual_return_id);
+    if (index < 0) {
+      source.manual_return_id = "";
+      renderImportPreview();
+      saveCurrentImportDraft();
+      return;
+    }
+    recordImportEdit();
+    const added = payload.requests[index];
+    added.included = false;
+    added.import_validation_epoch = Number(added.import_validation_epoch || 0) + 1;
+    added.backlog_validation_epoch = Number(added.backlog_validation_epoch || 0) + 1;
+    payload.requests.splice(index, 1);
+    source.manual_return_id = "";
+    source.manual_return_error = "";
     renderImportPreview();
     updateImportPrepareButton(payload);
     saveCurrentImportDraft();
