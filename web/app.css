@@ -2138,9 +2138,12 @@ input:hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var
 .settings-checkbox input { width: 16px !important; min-height: 16px; margin: 0; accent-color: var(--primary-blue); }
 .settings-checkbox span { line-height: 1.35; }
 .pc-toolkit-connection { align-items: center; padding: 12px 13px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-alt); }
+.pc-toolkit-log-action { align-items: center; padding: 10px 13px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
 .pc-toolkit-connection > div,
+.pc-toolkit-log-action > div,
 .pc-toolkit-mapping-heading > div { display: grid; gap: 3px; min-width: 0; }
 .pc-toolkit-connection small,
+.pc-toolkit-log-action small,
 .pc-toolkit-mapping-heading small { color: var(--muted); font-size: 11px; font-weight: 500; }
 .pc-toolkit-mapping-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .pc-toolkit-mappings { display: grid; gap: 8px; }
@@ -2164,6 +2167,11 @@ input:hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var
 .pc-toolkit-import-actions .text-button { min-height: 22px; padding: 0; font-size: 11px; }
 .pc-toolkit-import-facts { display: grid; gap: 2px; margin-top: 5px; }
 .pc-toolkit-import-facts > small { color: var(--muted); font-size: 10px; line-height: 1.3; overflow-wrap: anywhere; }
+.pc-toolkit-import-summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0 0 12px; padding: 9px 12px; border: 1px solid color-mix(in srgb, var(--blue) 24%, var(--line)); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--blue-soft) 34%, var(--surface)); }
+.pc-toolkit-import-summary > div { display: grid; gap: 2px; min-width: 0; }
+.pc-toolkit-import-summary strong { font-size: 12px; }
+.pc-toolkit-import-summary small { color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.pc-toolkit-import-summary .import-status-spinner { flex: 0 0 auto; }
 .pc-toolkit-import-warning,
 .pc-toolkit-import-danger,
 .pc-toolkit-import-complete { font-size: 10px; font-weight: 750; line-height: 1.3; }

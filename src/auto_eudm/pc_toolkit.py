@@ -35,6 +35,13 @@ DEFAULT_PORTAL_URL = (
 DEFAULT_ROLE_URL = (
     "https://portal.platform.infraportal.syd.c1.macquarie.com/auth/session/maxroles"
 )
+# The production PC Toolkit client sends this role on its read requests.  It
+# is also returned by the portal's maxroles endpoint for the normal personal
+# session.  Keeping it as a default means enrichment works immediately after
+# Helix/PC Toolkit authentication instead of requiring a separate role
+# discovery browser pass.  PC_TOOLKIT_ROLE still overrides it for accounts
+# with a different elevated role.
+DEFAULT_PC_TOOLKIT_ROLE = "maxrole:personal"
 ACTIVE_CACHE_SECONDS = 10 * 60
 STALE_CACHE_SECONDS = 30 * 24 * 60 * 60
 MAX_CACHE_ENTRIES = 10_000
@@ -202,7 +209,12 @@ def normalise_lookup(payload: Any, query: str) -> dict[str, Any]:
 
 
 class PCToolkitClient:
-    def __init__(self, base_url: str = DEFAULT_DEVICE_URL, role: str = "", timeout: float = 18.0) -> None:
+    def __init__(
+        self,
+        base_url: str = DEFAULT_DEVICE_URL,
+        role: str = DEFAULT_PC_TOOLKIT_ROLE,
+        timeout: float = 18.0,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.role = role.strip()
         self.timeout = timeout
@@ -225,14 +237,35 @@ class PCToolkitClient:
             headers["X-Max-Elevated-Role"] = self.role
         started = time.monotonic()
         request = urllib.request.Request(url, headers=headers)
+        response_status: int | None = None
+        response_headers: dict[str, str] | None = None
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 raw = response.read()
+                response_status = int(getattr(response, "status", 200))
+                raw_headers = getattr(response, "headers", None)
+                if raw_headers is not None and hasattr(raw_headers, "items"):
+                    response_headers = {
+                        str(key): str(value) for key, value in raw_headers.items()
+                    }
         except urllib.error.HTTPError as exc:
+            try:
+                error_body = exc.read()
+            except OSError:
+                error_body = None
+            raw_headers = getattr(exc, "headers", None)
+            if raw_headers is not None and hasattr(raw_headers, "items"):
+                response_headers = {
+                    str(key): str(value) for key, value in raw_headers.items()
+                }
             run_reporting.network(
                 "GET", f"pc-toolkit/v1/Computers/{value}", status=exc.code,
                 duration_ms=round((time.monotonic() - started) * 1000),
                 transport="pc-toolkit", error="HTTPError",
+                request_url=url,
+                request_headers=headers,
+                response_headers=response_headers,
+                response_body=error_body,
             )
             if exc.code in {401, 403}:
                 raise PCToolkitError("PC Toolkit authentication is required.") from exc
@@ -242,22 +275,32 @@ class PCToolkitClient:
                 "GET", f"pc-toolkit/v1/Computers/{value}",
                 duration_ms=round((time.monotonic() - started) * 1000),
                 transport="pc-toolkit", error=type(exc).__name__,
+                request_url=url,
+                request_headers=headers,
             )
             raise PCToolkitError("PC Toolkit could not be reached.") from exc
         try:
             payload = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            run_reporting.network(
+                "GET", f"pc-toolkit/v1/Computers/{value}", status=response_status or 200,
+                duration_ms=round((time.monotonic() - started) * 1000),
+                transport="pc-toolkit", error="InvalidJSON",
+                request_url=url,
+                request_headers=headers,
+                response_headers=response_headers,
+                response_body=raw,
+            )
             raise PCToolkitError("PC Toolkit returned an unreadable response.") from exc
         result = normalise_lookup(payload, value)
         result["duration_ms"] = round((time.monotonic() - started) * 1000)
         run_reporting.network(
-            "GET", f"pc-toolkit/v1/Computers/{value}", status=200,
+            "GET", f"pc-toolkit/v1/Computers/{value}", status=response_status or 200,
             duration_ms=result["duration_ms"], transport="pc-toolkit",
-            response_body={
-                "found": result["found"],
-                "record_count": result["record_count"],
-                "ambiguous": result["ambiguous"],
-            },
+            request_url=url,
+            request_headers=headers,
+            response_headers=response_headers,
+            response_body=payload,
         )
         return result
 
@@ -286,7 +329,7 @@ class PCToolkitService:
         self.models = self._load_models()
         self.cache_write_timer: threading.Timer | None = None
         self.inflight: set[str] = set()
-        self.role = os.getenv("PC_TOOLKIT_ROLE", "").strip()
+        self.role = os.getenv("PC_TOOLKIT_ROLE", DEFAULT_PC_TOOLKIT_ROLE).strip()
         self.state = "simulation" if simulate else "idle"
         self.message = "Simulation data available." if simulate else "Not connected."
         self.last_error = ""
@@ -364,7 +407,7 @@ class PCToolkitService:
 
     def status(self) -> dict[str, Any]:
         with self.lock:
-            return {
+            status = {
                 "enabled": self.enabled(),
                 "state": self.state,
                 "message": self.message,
@@ -373,6 +416,8 @@ class PCToolkitService:
                 "models": sorted(self.models, key=str.casefold),
                 "last_error": self.last_error,
             }
+        status["log"] = run_reporting.pc_toolkit_log_status()
+        return status
 
     def clear_cache(self) -> None:
         with self.lock:
@@ -437,6 +482,13 @@ class PCToolkitService:
             self.message = "PC Toolkit enrichment is ready."
             self.last_error = ""
             self.connected_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        run_reporting.pc_toolkit_event(
+            "lookup_stored",
+            query=clean(query),
+            cached=False,
+            found=bool(result.get("found")),
+            record_count=int(result.get("record_count", 0) or 0),
+        )
         return deepcopy(result)
 
     def _refresh(self, query: str) -> None:
@@ -444,6 +496,9 @@ class PCToolkitService:
         try:
             self._fetch(query)
         except PCToolkitError as exc:
+            run_reporting.pc_toolkit_event(
+                "background_lookup_failed", query=clean(query), error=str(exc)
+            )
             with self.lock:
                 self.last_error = str(exc)
                 if not self.cache.get(key):
@@ -469,6 +524,12 @@ class PCToolkitService:
                 result["cached"] = True
                 result["stale"] = age > ACTIVE_CACHE_SECONDS
                 result["age_seconds"] = round(age)
+                run_reporting.pc_toolkit_event(
+                    "cache_hit",
+                    query=clean(query),
+                    age_seconds=round(age),
+                    stale=bool(result["stale"]),
+                )
                 if age > ACTIVE_CACHE_SECONDS:
                     with self.lock:
                         if key not in self.inflight:
@@ -494,6 +555,13 @@ class PCToolkitService:
                     results[key] = future.result()
                 except PCToolkitError as exc:
                     errors[key] = str(exc)
+        run_reporting.pc_toolkit_event(
+            "bulk_lookup_complete",
+            query_count=len(unique),
+            result_count=len(results),
+            error_count=len(errors),
+            fresh=bool(fresh),
+        )
         return {"results": results, "errors": errors, "status": self.status()}
 
     def connect_async(self) -> None:
@@ -501,6 +569,7 @@ class PCToolkitService:
             with self.lock:
                 self.state = "simulation"
                 self.message = "Simulation data available."
+            run_reporting.pc_toolkit_event("connect_simulation")
             return
         with self.lock:
             if self.state == "connecting":
@@ -508,19 +577,28 @@ class PCToolkitService:
             self.state = "connecting"
             self.message = "Connecting to PC Toolkit…"
             self.last_error = ""
+        run_reporting.pc_toolkit_event("connect_started")
         threading.Thread(target=self._connect, daemon=True).start()
 
     def _connect(self) -> None:
         try:
-            # Most installations accept the role-less read request.  Use a
-            # harmless query so connecting does not expose a real user/device.
+            # Use a harmless query so connecting does not expose a real
+            # user/device. The client includes the production portal role by
+            # default, then role discovery remains available for accounts
+            # whose session exposes a different role.
             self._client().lookup("auto-eudm-health-check")
         except PCToolkitError as first_error:
+            run_reporting.pc_toolkit_event(
+                "connect_probe_failed", error=str(first_error)
+            )
             if "authentication" not in str(first_error).casefold():
                 with self.lock:
                     self.state = "error"
                     self.message = str(first_error)
                     self.last_error = str(first_error)
+                run_reporting.pc_toolkit_event(
+                    "connect_failed", error=str(first_error), phase="health_check"
+                )
                 return
             try:
                 self.role = self._discover_role()
@@ -529,15 +607,24 @@ class PCToolkitService:
                     self.state = "error"
                     self.message = str(exc)
                     self.last_error = str(exc)
+                run_reporting.pc_toolkit_event(
+                    "connect_failed", error=str(exc), phase="role_discovery"
+                )
                 return
         with self.lock:
             self.state = "connected"
             self.message = "PC Toolkit enrichment is ready."
             self.connected_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        run_reporting.pc_toolkit_event("connect_succeeded", role=self.role)
 
     def _discover_role(self) -> str:
         if not self.browser_profile:
             raise PCToolkitError("Open PC Toolkit once, then connect again.")
+        run_reporting.pc_toolkit_event(
+            "role_discovery_started",
+            portal_url=DEFAULT_PORTAL_URL,
+            role_url=DEFAULT_ROLE_URL,
+        )
         try:
             from playwright.sync_api import sync_playwright
         except ImportError as exc:
@@ -562,11 +649,33 @@ class PCToolkitService:
                     response = context.request.get(DEFAULT_ROLE_URL, timeout=5_000)
                     if response.ok:
                         payload = response.json()
+                        raw_response_headers = getattr(response, "headers", {})
+                        if callable(raw_response_headers):
+                            raw_response_headers = raw_response_headers()
+                        if not hasattr(raw_response_headers, "items"):
+                            raw_response_headers = {}
+                        run_reporting.pc_toolkit_event(
+                            "role_probe",
+                            request_url=DEFAULT_ROLE_URL,
+                            status=response.status,
+                            response_headers=raw_response_headers,
+                            response_body=payload,
+                        )
                         roles = payload.get("maxRoles", []) if isinstance(payload, dict) else []
                         if isinstance(roles, list) and roles and clean(roles[0]):
+                            run_reporting.pc_toolkit_event(
+                                "role_discovered", role=clean(roles[0])
+                            )
                             return clean(roles[0])
-                except Exception:
-                    pass
+                    run_reporting.pc_toolkit_event(
+                        "role_probe", request_url=DEFAULT_ROLE_URL, status=response.status
+                    )
+                except Exception as exc:
+                    run_reporting.pc_toolkit_event(
+                        "role_probe_failed",
+                        request_url=DEFAULT_ROLE_URL,
+                        error=type(exc).__name__,
+                    )
                 # Some SSO flows finish in a newly opened tab. Refresh the
                 # list so a successful login in that tab is observed too.
                 pages = context.pages or [page]
@@ -575,6 +684,9 @@ class PCToolkitService:
         except PCToolkitError:
             raise
         except Exception as exc:
+            run_reporting.pc_toolkit_event(
+                "role_discovery_failed", error=type(exc).__name__
+            )
             raise PCToolkitError("PC Toolkit authentication could not be opened.") from exc
         finally:
             if context is not None:

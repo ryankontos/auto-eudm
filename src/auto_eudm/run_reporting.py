@@ -21,6 +21,11 @@ _LOG_LOCK = threading.Lock()
 _DIAGNOSTIC_EVENTS: deque[tuple[float, str]] = deque(maxlen=12000)
 DIAGNOSTIC_WINDOW_SECONDS = 5 * 60
 _SESSION_STAMP = datetime.now()
+_PC_TOOLKIT_LOG_DIR = PROJECT_DIR / "results" / "pc-toolkit-logs"
+_PC_TOOLKIT_LOG_PATH: Path | None = None
+_PC_TOOLKIT_LOG_PART = 1
+PC_TOOLKIT_LOG_MAX_BYTES = 8 * 1024 * 1024
+PC_TOOLKIT_LOG_MAX_FILES = 20
 
 _SENSITIVE_NAME = re.compile(
     r"(?:authorization|cookie|password|passwd|secret|token|jwt|accesskey|refreshkey)",
@@ -78,9 +83,11 @@ def configure_logging(*, enabled: bool, command: str) -> Path | None:
     for handler in list(LOGGER.handlers):
         LOGGER.removeHandler(handler)
         handler.close()
-    global _LOG_PATH, _SESSION_STAMP
+    global _LOG_PATH, _PC_TOOLKIT_LOG_PATH, _PC_TOOLKIT_LOG_PART, _SESSION_STAMP
     with _LOG_LOCK:
         _LOG_PATH = None
+        _PC_TOOLKIT_LOG_PATH = None
+        _PC_TOOLKIT_LOG_PART = 1
         _SESSION_STAMP = datetime.now()
         _DIAGNOSTIC_EVENTS.clear()
     LOGGER.setLevel(logging.DEBUG)
@@ -169,6 +176,7 @@ def network(
     response_body: Any = None,
     request_headers: Mapping[str, Any] | None = None,
     response_headers: Mapping[str, Any] | None = None,
+    request_url: str | None = None,
 ) -> None:
     if not diagnostics_enabled():
         return
@@ -184,6 +192,8 @@ def network(
         entry["duration_ms"] = duration_ms
     if error:
         entry["error"] = error
+    if request_url:
+        entry["request_url"] = request_url
     compact_request = _compact_body(request_body)
     compact_response = _compact_body(response_body)
     safe_request_headers = _safe_headers(request_headers)
@@ -197,7 +207,142 @@ def network(
     if safe_response_headers:
         entry["response_headers"] = safe_response_headers
     _record_diagnostic(entry)
+    if transport == "pc-toolkit":
+        _write_pc_toolkit_entry(entry)
     LOGGER.info("API %s", json.dumps(entry, ensure_ascii=False, separators=(",", ":")))
+
+
+def _pc_toolkit_safe_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
+    """Make a compact, credential-safe copy for the persisted PC Toolkit log."""
+    safe: dict[str, Any] = {}
+    for key, value in entry.items():
+        if key in {"request_body", "response_body"}:
+            safe[key] = _compact_body(value)
+        else:
+            safe[key] = _redact_value(value)
+    return safe
+
+
+def _pc_toolkit_path_locked() -> Path:
+    global _PC_TOOLKIT_LOG_PATH
+    if _PC_TOOLKIT_LOG_PATH is None:
+        _PC_TOOLKIT_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        _PC_TOOLKIT_LOG_PATH = _PC_TOOLKIT_LOG_DIR / (
+            f"{_SESSION_STAMP:%Y%m%d-%H%M%S-%f}-pc-toolkit.log"
+        )
+    return _PC_TOOLKIT_LOG_PATH
+
+
+def _pc_toolkit_session_paths_locked() -> list[Path]:
+    prefix = f"{_SESSION_STAMP:%Y%m%d-%H%M%S-%f}-pc-toolkit"
+    try:
+        paths = sorted(_PC_TOOLKIT_LOG_DIR.glob(f"{prefix}*.log"))
+    except OSError:
+        paths = []
+    if _PC_TOOLKIT_LOG_PATH is not None and _PC_TOOLKIT_LOG_PATH not in paths:
+        paths.append(_PC_TOOLKIT_LOG_PATH)
+    return paths
+
+
+def _rotate_pc_toolkit_log_locked(next_line_bytes: int) -> Path:
+    global _PC_TOOLKIT_LOG_PART, _PC_TOOLKIT_LOG_PATH
+    path = _pc_toolkit_path_locked()
+    try:
+        current_size = path.stat().st_size
+    except OSError:
+        current_size = 0
+    if current_size and current_size + next_line_bytes > PC_TOOLKIT_LOG_MAX_BYTES:
+        _PC_TOOLKIT_LOG_PART += 1
+        _PC_TOOLKIT_LOG_PATH = _PC_TOOLKIT_LOG_DIR / (
+            f"{_SESSION_STAMP:%Y%m%d-%H%M%S-%f}-pc-toolkit-"
+            f"part-{_PC_TOOLKIT_LOG_PART}.log"
+        )
+        path = _PC_TOOLKIT_LOG_PATH
+    return path
+
+
+def _prune_pc_toolkit_logs_locked() -> None:
+    try:
+        paths = sorted(
+            _PC_TOOLKIT_LOG_DIR.glob("*-pc-toolkit*.log"),
+            key=lambda candidate: candidate.stat().st_mtime,
+        )
+    except OSError:
+        return
+    current_prefix = f"{_SESSION_STAMP:%Y%m%d-%H%M%S-%f}-pc-toolkit"
+    old_paths = [path for path in paths if not path.name.startswith(current_prefix)]
+    for old_path in old_paths[:-PC_TOOLKIT_LOG_MAX_FILES]:
+        try:
+            old_path.unlink()
+        except OSError:
+            pass
+
+
+def _write_pc_toolkit_entry(entry: Mapping[str, Any]) -> None:
+    record = {
+        "time": datetime.now().isoformat(timespec="milliseconds"),
+        "source": "pc-toolkit",
+        **_pc_toolkit_safe_entry(entry),
+    }
+    line = json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
+    encoded = line.encode("utf-8")
+    with _LOG_LOCK:
+        path = _rotate_pc_toolkit_log_locked(len(encoded))
+        try:
+            with path.open("ab") as handle:
+                handle.write(encoded)
+            _prune_pc_toolkit_logs_locked()
+        except OSError:
+            # Diagnostics must never interrupt a lookup or submission.
+            return
+
+
+def pc_toolkit_event(event_name: str, **details: Any) -> None:
+    """Persist a lifecycle event alongside PC Toolkit API traffic."""
+    entry = {"event": event_name, **details}
+    _record_diagnostic({"event": "pc_toolkit", **_pc_toolkit_safe_entry(entry)})
+    _write_pc_toolkit_entry(entry)
+    LOGGER.info("PC Toolkit %s", json.dumps(_pc_toolkit_safe_entry(entry), ensure_ascii=False, separators=(",", ":")))
+
+
+def pc_toolkit_log_status() -> dict[str, Any]:
+    with _LOG_LOCK:
+        path = _pc_toolkit_path_locked()
+        size = 0
+        for session_path in _pc_toolkit_session_paths_locked():
+            try:
+                size += session_path.stat().st_size
+            except OSError:
+                pass
+    try:
+        relative_path = str(path.relative_to(PROJECT_DIR))
+    except ValueError:
+        # Tests and embedders may redirect the diagnostic directory outside
+        # the checkout; retain a useful path rather than failing status calls.
+        relative_path = str(path)
+    return {
+        "path": str(path),
+        "relative_path": relative_path,
+        "available": size > 0,
+        "size_bytes": size,
+    }
+
+
+def pc_toolkit_log_download() -> tuple[bytes, str] | None:
+    with _LOG_LOCK:
+        path = _PC_TOOLKIT_LOG_PATH
+        if path is None:
+            return None
+        chunks: list[bytes] = []
+        for session_path in _pc_toolkit_session_paths_locked():
+            try:
+                chunks.append(session_path.read_bytes())
+            except OSError:
+                pass
+        content = b"".join(chunks)
+    if not content:
+        return None
+    return gzip.compress(content, compresslevel=9, mtime=0), f"{path.stem}.log.gz"
 
 
 def write_result_file(command: str, lines: Iterable[str]) -> Path:

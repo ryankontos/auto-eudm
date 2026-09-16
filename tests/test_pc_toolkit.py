@@ -7,7 +7,9 @@ import time
 import unittest
 from unittest import mock
 
+from auto_eudm import run_reporting
 from auto_eudm.pc_toolkit import (
+    DEFAULT_PC_TOOLKIT_ROLE,
     PCToolkitClient,
     PCToolkitService,
     normalise_lookup,
@@ -92,6 +94,46 @@ class PCToolkitNormalisationTests(unittest.TestCase):
 
 
 class PCToolkitCacheTests(unittest.TestCase):
+    def test_client_uses_portal_role_and_persists_full_safe_api_trace(self) -> None:
+        payload = {"searchTerm": "ABC123", "devices": [
+            device("ABC123", status="In Inventory", model="MacBook Pro (14-inch, 2023)")
+        ]}
+
+        class Response:
+            status = 200
+            headers = {
+                "Content-Type": "application/json",
+                "Set-Cookie": "private-cookie",
+            }
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self) -> bytes:
+                return json.dumps(payload).encode("utf-8")
+
+        with tempfile.TemporaryDirectory() as folder:
+            with mock.patch.object(run_reporting, "_PC_TOOLKIT_LOG_DIR", Path(folder)):
+                run_reporting.configure_logging(enabled=False, command="test")
+                with mock.patch("auto_eudm.pc_toolkit.urllib.request.urlopen", return_value=Response()) as urlopen:
+                    result = PCToolkitClient(base_url="https://example.test/Computers").lookup("ABC123")
+
+                request = urlopen.call_args.args[0]
+                self.assertEqual(request.get_header("X-max-elevated-role"), DEFAULT_PC_TOOLKIT_ROLE)
+                self.assertEqual(result["primary"]["model"], "MacBook Pro (14-inch, 2023)")
+                log_status = run_reporting.pc_toolkit_log_status()
+                log_text = Path(log_status["path"]).read_text(encoding="utf-8")
+
+            self.assertTrue(log_status["available"])
+            self.assertIn("MacBook Pro (14-inch, 2023)", log_text)
+            self.assertIn("example.test/Computers/ABC123", log_text)
+            self.assertNotIn("private-cookie", log_text)
+
+        run_reporting.configure_logging(enabled=False, command="test")
+
     def test_file_cache_is_used_and_stale_results_refresh_in_background(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             cache_path = Path(folder) / "pc-toolkit-cache.json"

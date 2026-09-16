@@ -402,6 +402,7 @@
         <div class="import-verification-warning-heading"><i data-lucide="shield-alert" aria-hidden="true"></i><strong>Verification needs attention</strong></div>
         <ul id="importVerificationWarningList"></ul>
       </div>
+      <div id="pcToolkitImportStatus" class="pc-toolkit-import-summary" role="status" aria-live="polite" hidden></div>
       <div id="importStage" class="import-stage">
         <div id="importBusy" class="import-busy" role="status" aria-live="polite" hidden>
           <span class="import-spinner" aria-hidden="true"></span>
@@ -602,6 +603,10 @@
         <div class="settings-inline-action pc-toolkit-connection">
           <div><strong id="pcToolkitStatusTitle">Not connected</strong><small id="pcToolkitStatusDetail">PC Toolkit is optional and never blocks Helix submissions.</small></div>
           <button id="connectPcToolkitButton" class="button secondary compact" type="button">Connect</button>
+        </div>
+        <div class="settings-inline-action pc-toolkit-log-action">
+          <div><strong>PC Toolkit activity log</strong><small id="pcToolkitLogDetail">A detailed session log will be saved here after PC Toolkit activity.</small></div>
+          <button id="downloadPcToolkitLogButton" class="button secondary compact" type="button" disabled>Download log</button>
         </div>
         <div class="pc-toolkit-mapping-heading">
           <div><strong>Device model suggestions</strong><small>Every model seen in PC Toolkit is added here. Suggestions are optional for either destination.</small></div>

@@ -257,6 +257,20 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
         if path == "/api/pc-toolkit/status":
             self._json(self.app.pc_toolkit.status())
             return
+        if path == "/api/pc-toolkit/log":
+            downloaded = run_reporting.pc_toolkit_log_download()
+            if downloaded is None:
+                self._error("No PC Toolkit activity has been captured yet.", 404)
+                return
+            body, filename = downloaded
+            self._bytes(
+                body,
+                content_type="application/gzip",
+                headers={
+                    "Content-Disposition": f'attachment; filename="{filename}"',
+                },
+            )
+            return
         if path == "/api/diagnostics":
             self._json(run_reporting.diagnostics_status())
             return
