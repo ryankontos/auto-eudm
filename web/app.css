@@ -1527,9 +1527,11 @@ input:hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var
 .import-file-row strong { overflow-wrap: anywhere; }
 .import-file-row small { margin-top: 2px; color: var(--muted); }
 .import-file-actions { display: flex; align-items: center; gap: 12px; }
+.import-format-note { margin: 12px 0 0; padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px; color: var(--muted); background: var(--surface-alt); font-size: 12px; line-height: 1.45; }
 .two-column-form { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 16px; }
 .two-column-form label { color: var(--muted); font-size: 13px; font-weight: 650; }
 .two-column-form select { width: 100%; margin-top: 6px; color: var(--ink); font-size: 14px; }
+#importSheetField[hidden] + #importDatePicker { grid-column: 1 / -1; }
 .import-date-picker { min-width: 0; color: var(--muted); font-size: 13px; font-weight: 650; }
 .import-date-picker > strong,
 .import-date-picker > small { display: block; }

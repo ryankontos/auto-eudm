@@ -1840,6 +1840,8 @@ class Application:
             filename, payload, _ = restored
         else:
             filename, payload = pending
+        debug.filename = filename
+        debug.event("resolved mapped import source", stage="restore", source_filename=filename)
         job = ImportJob(job_id=attempt_id, filename=filename, debug_log_path=str(debug.path))
         self._register_import_job(job)
         threading.Thread(

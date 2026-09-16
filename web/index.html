@@ -85,7 +85,7 @@
       <div id="queueWorkbookDrop" class="queue-workbook-drop" aria-hidden="true" hidden>
         <span class="tool-icon import-icon" aria-hidden="true"><i data-lucide="file-up"></i></span>
         <strong>Import ALM Workbook</strong>
-        <small>Drop an .xlsx or .xlsm file into the queue</small>
+        <small>Drop an .xlsx, .xlsm, or .csv file into the queue</small>
       </div>
 
       <div id="queueValidationNotice" class="queue-validation-notice queue-alert" role="alert" hidden>
@@ -417,18 +417,18 @@
             <div id="importFileChooser">
               <label class="file-drop" for="workbookInput">
                 <span class="file-symbol" aria-hidden="true"><i data-lucide="file-spreadsheet"></i></span>
-                <strong>Drop an ALM Workbook here</strong>
-                <small>or choose .xlsx or .xlsm · up to 100 MB</small>
-                <input id="workbookInput" type="file" accept=".xlsx,.xlsm">
+                <strong>Drop an ALM inventory file here</strong>
+                <small>or choose .xlsx, .xlsm, or .csv · up to 100 MB</small>
+                <input id="workbookInput" type="file" accept=".xlsx,.xlsm,.csv,text/csv">
               </label>
             </div>
             <div id="importMapColumns" hidden>
               <div class="import-file-row">
-                <div><strong id="importMapFilename"></strong><small>Choose the columns in this workbook.</small></div>
+                <div><strong id="importMapFilename"></strong><small>Choose the inventory columns.</small></div>
                 <button id="changeMappedFileButton" class="text-button" type="button"><i data-lucide="file-up"></i><span>Change file</span></button>
               </div>
               <div class="column-map">
-                <label class="column-map-sheet">Sheet
+                <label id="importMapSheetField" class="column-map-sheet">Sheet
                   <select id="importMapSheet"></select>
                 </label>
                 <label>Username <em>Required</em><select id="importMapUsername"></select></label>
@@ -451,8 +451,9 @@
                 <button id="changeFileButton" class="text-button" type="button"><i data-lucide="file-up"></i><span>Change file</span></button>
               </div>
             </div>
+            <p id="importFormatNote" class="import-format-note" hidden>CSV imports use cell values only. Colour-based status hints and date sections are unavailable.</p>
             <div class="two-column-form">
-              <label>Sheet
+              <label id="importSheetField">Sheet
                 <select id="sheetInput"></select>
               </label>
               <div id="importDatePicker" class="import-date-picker">

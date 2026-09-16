@@ -597,7 +597,57 @@ class WorkbookUploadTests(unittest.TestCase):
         with self.assertRaisesRegex(eudm.EUDMError, "empty"):
             WorkbookImport.decode_upload("tracking.xlsx", "")
         with self.assertRaisesRegex(eudm.EUDMError, "xlsx"):
-            WorkbookImport.decode_upload("tracking.csv", "anything")
+            WorkbookImport.decode_upload("tracking.txt", "anything")
+
+    def test_csv_and_csv_utf8_uploads_use_the_workbook_column_mapping(self) -> None:
+        payload = (
+            "\ufeffDate,Username,SN,Returned Device SN,OLD Device SN,Attend,"
+            "Device(s) Allocation,New Asset Status,First Name,Last Name,Notes\r\n"
+            "03/02/2025,café.user,DEPLOY123 U,RETURN123 PR,PENDING123,TRUE,"
+            'MacBook Air,In Inventory,Café,User,"New   Starter"\r\n'
+            ",second.user,DEPLOY456,RETURN456,PENDING456,FALSE,"
+            "Dell 7420,In Inventory,Second,User,\r\n"
+        ).encode("utf-8")
+        encoded = base64.b64encode(payload).decode("ascii")
+
+        self.assertEqual(
+            WorkbookImport.decode_upload("tracking.csv", encoded),
+            payload,
+        )
+        inspection = WorkbookImport.inspect_payload("tracking.csv", payload)
+        workbook = WorkbookImport.from_payload("tracking.csv", payload)
+
+        self.assertEqual(inspection["format"], "csv")
+        self.assertFalse(inspection["has_sheets"])
+        self.assertFalse(inspection["supports_formatting"])
+        self.assertEqual(inspection["default_sheet"], "Inventory")
+        self.assertIn("Device(s) Allocation", inspection["sheets"][0]["headings"])
+        self.assertEqual(workbook.summary()["format"], "csv")
+        self.assertFalse(workbook.summary()["has_sheets"])
+
+        rows = workbook.sheets["Inventory"]
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0].username, "café.user")
+        self.assertEqual(rows[0].deployment_serial, "DEPLOY123")
+        self.assertEqual(rows[0].deployment_status_hint, "Deployed - Existing Stock")
+        self.assertEqual(rows[0].returned_device_serial, "RETURN123")
+        self.assertEqual(rows[0].returned_device_status_hint, "Pending Rebuild")
+        self.assertTrue(rows[0].new_joiner)
+        self.assertEqual(rows[0].date_group, 1)
+        self.assertEqual(rows[1].deployment_date, date(2025, 2, 3))
+        self.assertIsNone(rows[1].returned_device_status_hint)
+        self.assertEqual({row.date_group for row in rows}, {1})
+        self.assertFalse(rows[1].enabled)
+
+    def test_excel_csv_legacy_encoding_is_supported(self) -> None:
+        payload = (
+            "Date,Username,SN,OLD Device SN,First Name,Last Name\r\n"
+            "03/02/2025,rene.user,SERIAL123,PENDING123,René,User\r\n"
+        ).encode("cp1252")
+
+        workbook = WorkbookImport.from_payload("tracking.csv", payload)
+
+        self.assertEqual(workbook.sheets["Inventory"][0].first_name, "René")
 
     def test_oversized_upload_is_rejected_before_parsing(self) -> None:
         encoded = base64.b64encode(b"1234").decode("ascii")

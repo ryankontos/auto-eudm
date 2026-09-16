@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import base64
 import binascii
+import csv
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
-from io import BytesIO
+from io import BytesIO, StringIO
 import re
 from typing import Any, Callable
 import uuid
@@ -430,6 +431,12 @@ class WorkbookImport:
     _summary_cache: dict[str, Any] | None = field(default=None, repr=False)
     _inspection_cache: dict[str, Any] | None = field(default=None, repr=False)
 
+    CSV_TABLE_NAME = "Inventory"
+
+    @staticmethod
+    def _source_format(filename: str) -> str:
+        return "csv" if str(filename).lower().endswith(".csv") else "excel"
+
     @staticmethod
     def decode_upload(
         filename: str,
@@ -439,8 +446,8 @@ class WorkbookImport:
     ) -> bytes:
         """Validate and decode one browser workbook upload exactly once."""
         _workbook_debug(debug, "record_upload", encoded)
-        if not filename.lower().endswith((".xlsx", ".xlsm")):
-            raise eudm.EUDMError("Choose an .xlsx or .xlsm workbook.")
+        if not filename.lower().endswith((".xlsx", ".xlsm", ".csv")):
+            raise eudm.EUDMError("Choose an .xlsx, .xlsm, or .csv inventory file.")
         try:
             payload = base64.b64decode(encoded, validate=True)
         except (binascii.Error, ValueError) as exc:
@@ -460,8 +467,13 @@ class WorkbookImport:
         debug: WorkbookLoadLog | None = None,
     ) -> dict[str, Any]:
         """Return selectable headings before committing to a column mapping."""
-        _workbook_debug(debug, "event", "starting workbook heading inspection", stage="inspect", byte_count=len(payload))
+        source_format = WorkbookImport._source_format(filename)
+        _workbook_debug(debug, "event", "starting workbook heading inspection", stage="inspect", byte_count=len(payload), source_format=source_format)
         _workbook_debug(debug, "record_payload", payload)
+        if source_format == "csv":
+            result = WorkbookImport._inspect_csv_payload(filename, payload)
+            _workbook_debug(debug, "event", "CSV heading inspection succeeded", stage="inspect", column_count=len(result["sheets"][0]["headings"]))
+            return result
         try:
             with FastWorkbook(payload) as workbook:
                 result = WorkbookImport._inspect_fast_workbook(filename, workbook)
@@ -517,6 +529,9 @@ class WorkbookImport:
             "default_sheet": sheets[0]["name"],
             "sheets": sheets,
             "needs_mapping": True,
+            "format": "excel",
+            "has_sheets": True,
+            "supports_formatting": True,
         }
 
     @staticmethod
@@ -569,6 +584,64 @@ class WorkbookImport:
             "default_sheet": default_sheet,
             "sheets": sheets,
             "needs_mapping": True,
+            "format": "excel",
+            "has_sheets": True,
+            "supports_formatting": True,
+        }
+
+    @staticmethod
+    def _decode_csv_text(payload: bytes) -> tuple[str, str]:
+        """Decode Excel CSV and CSV UTF-8 exports without losing identifiers."""
+        encodings = ["utf-8-sig", "cp1252"]
+        if payload.startswith((b"\xff\xfe", b"\xfe\xff")):
+            encodings.insert(0, "utf-16")
+        for encoding in encodings:
+            try:
+                return payload.decode(encoding), encoding
+            except UnicodeDecodeError:
+                continue
+        raise eudm.EUDMError(
+            "Could not read the CSV text. Save it as CSV UTF-8 and try again."
+        )
+
+    @staticmethod
+    def _csv_reader(payload: bytes) -> tuple[Any, str, str]:
+        text, encoding = WorkbookImport._decode_csv_text(payload)
+        sample = text[:65536]
+        try:
+            dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
+            delimiter = dialect.delimiter
+        except csv.Error:
+            delimiter = ","
+        return csv.reader(StringIO(text, newline=""), delimiter=delimiter), encoding, delimiter
+
+    @staticmethod
+    def _inspect_csv_payload(filename: str, payload: bytes) -> dict[str, Any]:
+        reader, _encoding, _delimiter = WorkbookImport._csv_reader(payload)
+        headings: list[str] = []
+        for row_number, row in enumerate(reader, start=1):
+            if row_number > 25:
+                break
+            values = [inventory.clean_text(value) for value in row]
+            if any(
+                inventory.normalized_header(value)
+                in {"date", "deployment date", "booking date"}
+                for value in values
+            ):
+                headings = [value for value in values if value]
+                break
+        if not headings:
+            raise eudm.EUDMError("No CSV row with a Date heading was found.")
+        return {
+            "filename": filename,
+            "default_sheet": WorkbookImport.CSV_TABLE_NAME,
+            "sheets": [
+                {"name": WorkbookImport.CSV_TABLE_NAME, "headings": headings}
+            ],
+            "needs_mapping": True,
+            "format": "csv",
+            "has_sheets": False,
+            "supports_formatting": False,
         }
 
     @staticmethod
@@ -771,8 +844,18 @@ class WorkbookImport:
         debug: WorkbookLoadLog | None = None,
     ) -> "WorkbookImport":
         """Parse an ALM workbook, using the streaming reader when possible."""
-        _workbook_debug(debug, "event", "starting workbook row parse", stage="parse", byte_count=len(payload))
+        source_format = cls._source_format(filename)
+        _workbook_debug(debug, "event", "starting workbook row parse", stage="parse", byte_count=len(payload), source_format=source_format)
         _workbook_debug(debug, "record_payload", payload)
+        if source_format == "csv":
+            result = cls._from_csv_payload(
+                filename,
+                payload,
+                columns=columns,
+                on_progress=on_progress,
+            )
+            _workbook_debug(debug, "event", "CSV row parse succeeded", stage="parse", row_count=sum(len(rows) for rows in result.sheets.values()))
+            return result
         try:
             result = cls._from_fast_payload(
                 filename,
@@ -798,6 +881,143 @@ class WorkbookImport:
             except Exception as fallback_exc:
                 _workbook_debug(debug, "exception", "openpyxl workbook row parse failed", fallback_exc, stage="parse-openpyxl")
                 raise
+
+    @classmethod
+    def _from_csv_payload(
+        cls,
+        filename: str,
+        payload: bytes,
+        *,
+        columns: inventory.ImportColumns | None = None,
+        on_progress: Callable[[str, int, int], None] | None = None,
+    ) -> "WorkbookImport":
+        """Parse a value-only CSV export into the normal inventory row model."""
+        reader, _encoding, _delimiter = cls._csv_reader(payload)
+        selected_columns = columns or inventory.ImportColumns()
+        desired = {
+            "username": selected_columns.username,
+            "deployment_serial": selected_columns.deployment_serial,
+            "returned_device": selected_columns.returned_device,
+            "pending_return": selected_columns.pending_return,
+            "enabled": selected_columns.enabled,
+            "device_allocation": selected_columns.device_allocation,
+            "new_asset_status": selected_columns.new_asset_status,
+            "first_name": selected_columns.first_name,
+            "last_name": selected_columns.last_name,
+        }
+        targets = {
+            key: inventory.normalized_header(value) for key, value in desired.items()
+        }
+        date_titles = {"date", "deployment date", "booking date"}
+        header_row = 0
+        indexes: dict[str, int | None] = {}
+        date_index: int | None = None
+        rows: list[inventory.SheetRow] = []
+        current_date: date | None = None
+        total_rows = max(0, payload.count(b"\n") - 1)
+
+        def value_at(values: list[str], index: int | None) -> str | None:
+            if index is None or index >= len(values):
+                return None
+            return inventory.clean_text(values[index])
+
+        for record_number, values in enumerate(reader, start=1):
+            if not header_row:
+                if record_number > 25:
+                    break
+                found = {
+                    inventory.normalized_header(value): index
+                    for index, value in enumerate(values)
+                    if inventory.normalized_header(value)
+                }
+                candidate_indexes = {
+                    key: found.get(title) if title else None
+                    for key, title in targets.items()
+                }
+                if (
+                    candidate_indexes["username"] is None
+                    or candidate_indexes["deployment_serial"] is None
+                    or candidate_indexes["pending_return"] is None
+                ):
+                    continue
+                if candidate_indexes["enabled"] is None and not selected_columns.enabled:
+                    candidate_indexes["enabled"] = next(
+                        (
+                            found[title]
+                            for title in ("attend", "attended", "attendance", "eligible", "enabled")
+                            if title in found
+                        ),
+                        None,
+                    )
+                date_index = next(
+                    (found[title] for title in date_titles if title in found),
+                    None,
+                )
+                if date_index is None:
+                    continue
+                header_row = record_number
+                indexes = candidate_indexes
+                continue
+
+            explicit_date = inventory.normalize_date(value_at(values, date_index), datetime(1899, 12, 30))
+            if explicit_date is not None:
+                current_date = explicit_date
+                deployment_date = explicit_date
+            elif current_date is not None and any(
+                inventory.clean_text(value)
+                for index, value in enumerate(values)
+                if index != date_index
+            ):
+                deployment_date = current_date
+            else:
+                continue
+
+            deployment_serial, deployment_status_hint = inventory.serial_and_status_hint(
+                value_at(values, indexes.get("deployment_serial"))
+            )
+            returned_device_serial, returned_device_status_hint = inventory.serial_and_status_hint(
+                value_at(values, indexes.get("returned_device")),
+                returned_device=True,
+            )
+            rows.append(
+                inventory.SheetRow(
+                    row_number=record_number,
+                    deployment_date=deployment_date,
+                    username=value_at(values, indexes.get("username")),
+                    deployment_serial=deployment_serial,
+                    returned_device_serial=returned_device_serial,
+                    pending_return_serial=value_at(values, indexes.get("pending_return")),
+                    marked_red=False,
+                    enabled=inventory.enabled_column_allows(
+                        value_at(values, indexes.get("enabled"))
+                    ) if indexes.get("enabled") is not None else True,
+                    # CSV contains values only. Every date has one logical
+                    # section and no colour-derived status hints.
+                    date_group=1,
+                    returned_device_column_present=indexes.get("returned_device") is not None,
+                    device_allocation=value_at(values, indexes.get("device_allocation")),
+                    new_asset_status=value_at(values, indexes.get("new_asset_status")),
+                    new_joiner=inventory.row_contains_new_joiner(values),
+                    first_name=value_at(values, indexes.get("first_name")),
+                    last_name=value_at(values, indexes.get("last_name")),
+                    deployment_status_hint=deployment_status_hint,
+                    returned_device_status_hint=returned_device_status_hint,
+                )
+            )
+            if on_progress and (record_number % 150 == 0):
+                on_progress(cls.CSV_TABLE_NAME, record_number - header_row, total_rows)
+
+        if not header_row:
+            raise eudm.EUDMError(
+                "Could not find the required CSV headers. Check ALM Workbook settings."
+            )
+        if not rows:
+            raise eudm.EUDMError(
+                "No dated rows were found with the configured CSV headers."
+            )
+        if on_progress:
+            on_progress(cls.CSV_TABLE_NAME, len(rows), max(len(rows), total_rows))
+        return cls(uuid.uuid4().hex, filename, {cls.CSV_TABLE_NAME: rows})
 
     @classmethod
     def _from_fast_payload(
@@ -1125,6 +1345,9 @@ class WorkbookImport:
                 **self._summary_cache,
                 "import_id": self.import_id,
                 "filename": self.filename,
+                "format": self._source_format(self.filename),
+                "has_sheets": self._source_format(self.filename) != "csv",
+                "supports_formatting": self._source_format(self.filename) != "csv",
             }
         sheet_summaries = []
         for name, rows in self.sheets.items():
@@ -1209,6 +1432,9 @@ class WorkbookImport:
             "filename": self.filename,
             "default_sheet": default_sheet,
             "sheets": sheet_summaries,
+            "format": self._source_format(self.filename),
+            "has_sheets": self._source_format(self.filename) != "csv",
+            "supports_formatting": self._source_format(self.filename) != "csv",
         }
 
     def prepare(

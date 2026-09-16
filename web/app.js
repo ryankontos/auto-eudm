@@ -3427,7 +3427,7 @@ function openBacklogForCurrentWorkbook() {
 }
 
 function workbookFile(file) {
-  return file && /\.(xlsx|xlsm)$/i.test(file.name || "");
+  return file && /\.(xlsx|xlsm|csv)$/i.test(file.name || "");
 }
 
 function setQueueWorkbookDropActive(active) {
@@ -3440,7 +3440,7 @@ function setQueueWorkbookDropActive(active) {
 function importDroppedWorkbook(file) {
   if (!state.config?.spreadsheet_import_enabled) return;
   if (!workbookFile(file)) {
-    toast("Drop an .xlsx or .xlsm ALM Workbook.", "error");
+    toast("Drop an .xlsx, .xlsm, or .csv ALM inventory file.", "error");
     return;
   }
   openAlmWorkbookImport();
@@ -3454,7 +3454,7 @@ function setImportDialogDropActive(active) {
 
 function importDroppedIntoDialog(file) {
   if (!workbookFile(file)) {
-    toast("Drop an .xlsx or .xlsm ALM Workbook.", "error");
+    toast("Drop an .xlsx, .xlsm, or .csv ALM inventory file.", "error");
     return;
   }
   if (!$("#importDialog").open) openAlmWorkbookImport();
@@ -3983,6 +3983,9 @@ function resetImportDialog(mode = state.importMode || "deploy") {
   state.backlogValidationIds.clear();
   $("#workbookInput").value = "";
   $("#importFileChooser").hidden = false;
+  $("#importFormatNote").hidden = true;
+  $("#importMapSheetField").hidden = false;
+  $("#importSheetField").hidden = false;
   setImportStage("choose");
   $("#importVerificationWarnings").hidden = true;
   $("#importVerificationWarningList").innerHTML = "";
@@ -4052,6 +4055,10 @@ function setImportStage(stage) {
 
 function workbookSheet(name) {
   return state.workbook?.sheets.find((sheet) => sheet.name === name);
+}
+
+function csvImport(source = state.workbook || state.workbookInspection) {
+  return source?.format === "csv" || source?.has_sheets === false;
 }
 
 function localDate(value) {
@@ -4389,6 +4396,7 @@ function openImportColumnMapping() {
   $("#importFileChooser").hidden = true;
   setImportStage("mapping");
   $("#importMapFilename").textContent = workbook.filename;
+  $("#importMapSheetField").hidden = csvImport(workbook);
   const preferredSheet = $("#sheetInput").value || workbook.default_sheet;
   $("#importMapSheet").innerHTML = workbook.sheets.map((sheet) => (
     `<option value="${escapeHtml(sheet.name)}" ${sheet.name === preferredSheet ? "selected" : ""}>${escapeHtml(sheet.name)}</option>`
@@ -4433,7 +4441,12 @@ async function showImportedWorkbook(workbook) {
   renderImportModeOptions();
   setImportStep(2);
   $("#importFilename").textContent = workbook.filename;
-  $("#importFileSummary").textContent = `${workbook.sheets.length} dated sheet${workbook.sheets.length === 1 ? "" : "s"}`;
+  const isCsv = csvImport(workbook);
+  $("#importFileSummary").textContent = isCsv
+    ? "CSV inventory"
+    : `${workbook.sheets.length} dated sheet${workbook.sheets.length === 1 ? "" : "s"}`;
+  $("#importSheetField").hidden = isCsv;
+  $("#importFormatNote").hidden = !isCsv;
   $("#sheetInput").innerHTML = workbook.sheets.map((sheet) => `<option value="${escapeHtml(sheet.name)}" ${sheet.name === workbook.default_sheet ? "selected" : ""}>${escapeHtml(sheet.name)}</option>`).join("");
   updateImportDates();
   saveCurrentImportDraft();
@@ -4546,8 +4559,8 @@ async function uploadWorkbook(file) {
   state.importUploadToken = token;
   $("#importError").hidden = true;
   $("#prepareImportButton").disabled = true;
-  if (!/\.(xlsx|xlsm)$/i.test(file.name)) {
-    $("#importError").textContent = "Choose an .xlsx or .xlsm ALM Workbook.";
+  if (!/\.(xlsx|xlsm|csv)$/i.test(file.name)) {
+    $("#importError").textContent = "Choose an .xlsx, .xlsm, or .csv ALM inventory file.";
     $("#importError").hidden = false;
     setImportBusy(false);
     return;
@@ -5416,7 +5429,8 @@ function renderBacklogPreview(payload) {
   const included = requests.filter((request) => request.included !== false);
   $("#importVerificationWarnings").hidden = true;
   $("#importPreviewTitle").textContent = `${included.length} undeployed device${included.length === 1 ? "" : "s"}`;
-  $("#importPreviewSubtitle").textContent = `${payload.sheet} · ${payload.start_date} to ${payload.end_date}${payload.include_today ? " · including today" : ""}`;
+  const backlogRange = `${payload.start_date} to ${payload.end_date}${payload.include_today ? " · including today" : ""}`;
+  $("#importPreviewSubtitle").textContent = csvImport() ? backlogRange : `${payload.sheet} · ${backlogRange}`;
   $("#importPreviewCount").textContent = `${included.length} selected`;
   const rows = requests.map((request, index) => {
     const options = ALM_IMPORT_STATUS_OPTIONS.Deployments;
@@ -5578,7 +5592,8 @@ function renderImportPreview() {
   const pendingReturnCount = included.filter((request) => request.group === "Pending returns").length;
   $("#importPreviewTitle").textContent = `${deploymentCount} deployments · ${returnedDeviceCount} returned devices · ${pendingReturnCount} pending returns`;
   const selectedDateLabels = selectedImportDateEntries().map((entry) => entry.label);
-  $("#importPreviewSubtitle").textContent = `${$("#sheetInput").value} · ${selectedDateLabels.join(", ")}`;
+  const dateSummary = selectedDateLabels.join(", ");
+  $("#importPreviewSubtitle").textContent = csvImport() ? dateSummary : `${$("#sheetInput").value} · ${dateSummary}`;
   $("#importPreviewCount").textContent = `${included.length} selected`;
 
   const groups = [

@@ -9,6 +9,7 @@ workbook's cell values or formulas.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import csv
 import hashlib
 import importlib.metadata
 import json
@@ -17,7 +18,7 @@ import platform
 import sys
 import threading
 import traceback
-from io import BytesIO
+from io import BytesIO, StringIO
 from typing import Any
 import zipfile
 from xml.etree import ElementTree
@@ -134,6 +135,8 @@ class WorkbookLoadLog:
             return
         self.event("checked ZIP container signature", stage="container", is_zipfile=is_zip)
         if not is_zip:
+            if self.filename.lower().endswith(".csv"):
+                self._record_csv(payload)
             return
         try:
             with zipfile.ZipFile(BytesIO(payload)) as archive:
@@ -152,6 +155,46 @@ class WorkbookLoadLog:
                     self._record_zip_member(archive, info)
         except Exception as exc:
             self.exception("could not open or inspect ZIP container", exc, stage="zip")
+
+    def _record_csv(self, payload: bytes) -> None:
+        """Record structural CSV details without copying source cell values."""
+        encoding = "utf-8-sig"
+        try:
+            if payload.startswith((b"\xff\xfe", b"\xfe\xff")):
+                encoding = "utf-16"
+            try:
+                text = payload.decode(encoding)
+            except UnicodeDecodeError:
+                encoding = "cp1252"
+                text = payload.decode(encoding)
+            sample = text[:65536]
+            try:
+                delimiter = csv.Sniffer().sniff(sample, delimiters=",;\t|").delimiter
+            except csv.Error:
+                delimiter = ","
+            reader = csv.reader(StringIO(text, newline=""), delimiter=delimiter)
+            row_count = 0
+            widest_row = 0
+            first_row_columns = 0
+            for row in reader:
+                row_count += 1
+                widest_row = max(widest_row, len(row))
+                if row_count == 1:
+                    first_row_columns = len(row)
+            self.event(
+                "inspected CSV structure",
+                stage="csv",
+                encoding=encoding,
+                delimiter=repr(delimiter),
+                row_count=row_count,
+                first_row_columns=first_row_columns,
+                widest_row_columns=widest_row,
+                carriage_return_count=text.count("\r"),
+                line_feed_count=text.count("\n"),
+                nul_character_count=text.count("\x00"),
+            )
+        except Exception as exc:
+            self.exception("could not inspect CSV structure", exc, stage="csv")
 
     def _record_zip_member(self, archive: zipfile.ZipFile, info: zipfile.ZipInfo) -> None:
         encrypted = bool(info.flag_bits & 0x1)
