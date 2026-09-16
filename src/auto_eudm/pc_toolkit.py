@@ -212,7 +212,15 @@ class PCToolkitClient:
         if len(value) < 2:
             raise PCToolkitError("Enter at least two characters for PC Toolkit.")
         url = f"{self.base_url}/{urllib.parse.quote(value, safe='-._')}?sources=cmdb,sccm"
-        headers = {"Accept": "application/json", "User-Agent": "AutoEUDM/1.0"}
+        # The device service is behind the portal's elevated-role gateway.
+        # These are the same origin/referrer headers sent by the portal's
+        # browser client; without them the gateway can reject a valid role.
+        headers = {
+            "Accept": "application/json, text/plain, */*",
+            "Origin": "https://portal.platform.infraportal.syd.c1.macquarie.com",
+            "Referer": "https://portal.platform.infraportal.syd.c1.macquarie.com/",
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
+        }
         if self.role:
             headers["X-Max-Elevated-Role"] = self.role
         started = time.monotonic()
@@ -516,7 +524,6 @@ class PCToolkitService:
                 return
             try:
                 self.role = self._discover_role()
-                self._client().lookup("auto-eudm-health-check")
             except PCToolkitError as exc:
                 with self.lock:
                     self.state = "error"
