@@ -16,6 +16,7 @@ from . import eudm_inventory_import as inventory
 from . import eudm_request as eudm
 from .fast_workbook import FastWorkbook, FastWorkbookError
 from .identifiers import is_login_id, is_serial
+from .workbook_debug import WorkbookLoadLog
 
 
 USER_STATUSES: tuple[tuple[str, str], ...] = (
@@ -86,6 +87,21 @@ CITIES: tuple[str, ...] = (
 )
 
 MAX_WORKBOOK_BYTES = 100 * 1024 * 1024
+
+
+def _workbook_debug(
+    debug: WorkbookLoadLog | None,
+    method: str,
+    *args: Any,
+    **kwargs: Any,
+) -> None:
+    """Never let a diagnostic filesystem problem break workbook loading."""
+    if debug is None:
+        return
+    try:
+        getattr(debug, method)(*args, **kwargs)
+    except Exception:
+        pass
 
 
 def clean(value: Any) -> str:
@@ -415,8 +431,14 @@ class WorkbookImport:
     _inspection_cache: dict[str, Any] | None = field(default=None, repr=False)
 
     @staticmethod
-    def decode_upload(filename: str, encoded: str) -> bytes:
+    def decode_upload(
+        filename: str,
+        encoded: str,
+        *,
+        debug: WorkbookLoadLog | None = None,
+    ) -> bytes:
         """Validate and decode one browser workbook upload exactly once."""
+        _workbook_debug(debug, "record_upload", encoded)
         if not filename.lower().endswith((".xlsx", ".xlsm")):
             raise eudm.EUDMError("Choose an .xlsx or .xlsm workbook.")
         try:
@@ -427,24 +449,37 @@ class WorkbookImport:
             raise eudm.EUDMError("The uploaded workbook was empty.")
         if len(payload) > MAX_WORKBOOK_BYTES:
             raise eudm.EUDMError("The workbook is larger than the 100 MB local limit.")
+        _workbook_debug(debug, "record_payload", payload)
         return payload
 
     @staticmethod
-    def inspect_payload(filename: str, payload: bytes) -> dict[str, Any]:
+    def inspect_payload(
+        filename: str,
+        payload: bytes,
+        *,
+        debug: WorkbookLoadLog | None = None,
+    ) -> dict[str, Any]:
         """Return selectable headings before committing to a column mapping."""
+        _workbook_debug(debug, "event", "starting workbook heading inspection", stage="inspect", byte_count=len(payload))
+        _workbook_debug(debug, "record_payload", payload)
         try:
             with FastWorkbook(payload) as workbook:
-                return WorkbookImport._inspect_fast_workbook(filename, workbook)
-        except FastWorkbookError:
+                result = WorkbookImport._inspect_fast_workbook(filename, workbook)
+                _workbook_debug(debug, "event", "fast workbook heading inspection succeeded", stage="inspect", sheet_count=len(result.get("sheets", [])))
+                return result
+        except FastWorkbookError as exc:
             # Keep the compatibility reader for unusual but valid workbooks.
-            pass
+            _workbook_debug(debug, "exception", "fast workbook heading inspection failed; using openpyxl fallback", exc, stage="inspect-fast")
         try:
             from openpyxl import load_workbook
             workbook = load_workbook(BytesIO(payload), data_only=True, read_only=True)
         except Exception as exc:
+            _workbook_debug(debug, "exception", "openpyxl could not open workbook during heading inspection", exc, stage="inspect-openpyxl")
             raise eudm.EUDMError("Could not read the workbook. Use an unencrypted .xlsx or .xlsm file.") from exc
         try:
-            return WorkbookImport._inspect_openpyxl_workbook(filename, workbook)
+            result = WorkbookImport._inspect_openpyxl_workbook(filename, workbook)
+            _workbook_debug(debug, "event", "openpyxl heading inspection succeeded", stage="inspect", sheet_count=len(result.get("sheets", [])))
+            return result
         finally:
             workbook.close()
 
@@ -733,24 +768,36 @@ class WorkbookImport:
         *,
         columns: inventory.ImportColumns | None = None,
         on_progress: Callable[[str, int, int], None] | None = None,
+        debug: WorkbookLoadLog | None = None,
     ) -> "WorkbookImport":
         """Parse an ALM workbook, using the streaming reader when possible."""
+        _workbook_debug(debug, "event", "starting workbook row parse", stage="parse", byte_count=len(payload))
+        _workbook_debug(debug, "record_payload", payload)
         try:
-            return cls._from_fast_payload(
+            result = cls._from_fast_payload(
                 filename,
                 payload,
                 columns=columns,
                 on_progress=on_progress,
             )
-        except FastWorkbookError:
+            _workbook_debug(debug, "event", "fast workbook row parse succeeded", stage="parse", sheets=list(result.sheets), row_count=sum(len(rows) for rows in result.sheets.values()))
+            return result
+        except FastWorkbookError as exc:
             # Some valid workbooks use XML features outside this focused
             # reader. Keep openpyxl as a compatibility path for those files.
-            return cls._from_openpyxl_payload(
-                filename,
-                payload,
-                columns=columns,
-                on_progress=on_progress,
-            )
+            _workbook_debug(debug, "exception", "fast workbook row parse failed; using openpyxl fallback", exc, stage="parse-fast")
+            try:
+                result = cls._from_openpyxl_payload(
+                    filename,
+                    payload,
+                    columns=columns,
+                    on_progress=on_progress,
+                )
+                _workbook_debug(debug, "event", "openpyxl workbook row parse succeeded", stage="parse", sheets=list(result.sheets), row_count=sum(len(rows) for rows in result.sheets.values()))
+                return result
+            except Exception as fallback_exc:
+                _workbook_debug(debug, "exception", "openpyxl workbook row parse failed", fallback_exc, stage="parse-openpyxl")
+                raise
 
     @classmethod
     def _from_fast_payload(

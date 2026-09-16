@@ -29,6 +29,7 @@ AutoEUDM is a local web UI I developed to speed up device-management work in EUD
 - Helix's `sessionstatus` response is not proof of an authenticated API session. Let the opened Helix app establish its own web-client session, then verify the EUDM catalogue and carts APIs before reporting success. Helix API requests use the site-root origin/referrer and the authenticating Chrome user agent.
 - The in-memory diagnostics capture runs for the current server session. It records compact API request/response bodies and safe headers, and exports only the most recent five minutes as a gzip file from Settings or the authentication sheet. Credential-bearing fields remain redacted; request serials, usernames, form answers, and error responses are retained.
 - Queue entries, request history, ALM drafts, settings, verification cache, and backlog exclusions belong in `results/`, not browser storage.
+- Every ALM workbook upload and mapped parse attempt writes a detailed, workbook-content-safe diagnostic to `results/alm-workbook-load-logs/`; the import status exposes its path on failure.
 - Submission jobs are asynchronous. Preserve queue state, progress, request IDs, and failed rows if the UI is closed while a job runs.
 - Workbook columns are selected by heading. ALM drafts must be saved while editing and removed when their requests enter the queue; late verification must not recreate a completed draft.
 - Validation remains active even when cached verification fills a result immediately.

@@ -523,10 +523,12 @@ class ImportPayloadLifecycleTests(unittest.TestCase):
 
         app._inspect_import(job, "encoded workbook")
 
-        decode_upload.assert_called_once_with("tracking.xlsx", "encoded workbook")
-        inspect_payload.assert_called_once_with(
-            "tracking.xlsx", b"decoded workbook"
-        )
+        decode_upload.assert_called_once()
+        self.assertEqual(decode_upload.call_args.args, ("tracking.xlsx", "encoded workbook"))
+        self.assertIn("debug", decode_upload.call_args.kwargs)
+        inspect_payload.assert_called_once()
+        self.assertEqual(inspect_payload.call_args.args, ("tracking.xlsx", b"decoded workbook"))
+        self.assertIn("debug", inspect_payload.call_args.kwargs)
         self.assertEqual(job.state, "ready")
         self.assertEqual(len(app.pending_imports), 1)
         _, retained = next(iter(app.pending_imports.values()))
@@ -573,8 +575,9 @@ class ImportPayloadLifecycleTests(unittest.TestCase):
 
         app.start_mapped_import("pending", {})
 
-        _, payload, _ = thread.call_args.kwargs["args"]
+        _, payload, _, debug = thread.call_args.kwargs["args"]
         self.assertEqual(payload, b"decoded workbook")
+        self.assertTrue(debug.path.exists())
         thread.return_value.start.assert_called_once_with()
         self.assertNotIn("pending", app.pending_imports)
 

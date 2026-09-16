@@ -4360,7 +4360,11 @@ async function waitForWorkbookImport(jobId, token) {
       detail,
     });
     if (status.state === "ready") return status.workbook;
-    if (status.state === "failed") throw new Error(status.error || "The ALM Workbook could not be imported.");
+    if (status.state === "failed") {
+      const error = status.error || "The ALM Workbook could not be imported.";
+      const log = status.debug_log_path ? `\nDiagnostic log saved to: ${status.debug_log_path}` : "";
+      throw new Error(`${error}${log}`);
+    }
     await pause(250);
   }
   return null;

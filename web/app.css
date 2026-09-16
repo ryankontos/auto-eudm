@@ -1237,7 +1237,7 @@ input:hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var
 .icon-button .lucide { width: 18px; height: 18px; stroke-width: 1.8; }
 .modal-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 .inline-label { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 12px; margin-top: 12px; font-weight: 650; }
-.inline-error { margin-top: 10px; padding: 9px 11px; color: var(--danger-text); background: var(--red-soft); border-radius: 4px; }
+.inline-error { margin-top: 10px; padding: 9px 11px; color: var(--danger-text); background: var(--red-soft); border-radius: 4px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .choice-cards.pairs-mode-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 2px 0 13px; }
 .pairs-instructions {
   display: grid;

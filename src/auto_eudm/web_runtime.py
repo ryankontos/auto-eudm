@@ -21,6 +21,7 @@ from . import eudm_inventory_import as inventory
 from . import eudm_request as eudm
 from . import run_reporting
 from .pc_toolkit import PCToolkitService, normalise_key as normalise_pc_toolkit_key
+from .workbook_debug import WorkbookLoadLog
 from .eudm_config import AppConfig
 from .web_models import (
     CITIES,
@@ -1020,6 +1021,7 @@ class ImportJob:
     total_rows: int = 0
     workbook: dict[str, Any] | None = None
     error: str | None = None
+    debug_log_path: str | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def update(
@@ -1072,6 +1074,7 @@ class ImportJob:
                 "total_rows": self.total_rows,
                 "workbook": self.workbook,
                 "error": self.error,
+                "debug_log_path": self.debug_log_path,
             }
 
 
@@ -1800,10 +1803,19 @@ class Application:
 
     def start_import(self, filename: str, encoded: str) -> ImportJob:
         job = ImportJob(job_id=uuid.uuid4().hex, filename=filename)
+        debug = WorkbookLoadLog.create(ROOT, job.job_id, filename)
+        job.debug_log_path = str(debug.path)
+        debug.event(
+            "created diagnostic for workbook upload attempt",
+            stage="lifecycle",
+            simulated=self.config.simulate,
+            spreadsheet_import_enabled=self.config.spreadsheet_import_enabled,
+            configured_request_for=self.clients.request_for,
+        )
         self._register_import_job(job)
         threading.Thread(
             target=self._inspect_import,
-            args=(job, encoded),
+            args=(job, encoded, debug),
             daemon=True,
         ).start()
         return job
@@ -1813,31 +1825,53 @@ class Application:
         import_id: str,
         columns: dict[str, Any],
     ) -> ImportJob:
+        attempt_id = uuid.uuid4().hex
+        debug = WorkbookLoadLog.create(ROOT, attempt_id, "ALM Workbook (mapped import)")
+        debug.event("starting mapped workbook load attempt", stage="lifecycle", source_import_id=import_id)
         with self.import_lock:
             pending = self.pending_imports.pop(import_id, None)
         if not pending:
             restored = self._load_import_payload(import_id)
             if not restored:
-                raise eudm.EUDMError("That workbook import expired. Choose the file again.")
+                error = "That workbook import expired. Choose the file again."
+                debug.exception("could not restore source workbook payload", eudm.EUDMError(error), stage="restore")
+                debug.close("failed", error=error)
+                raise eudm.EUDMError(f"{error} Diagnostic log: {debug.path}")
             filename, payload, _ = restored
         else:
             filename, payload = pending
-        job = ImportJob(job_id=uuid.uuid4().hex, filename=filename)
+        job = ImportJob(job_id=attempt_id, filename=filename, debug_log_path=str(debug.path))
         self._register_import_job(job)
         threading.Thread(
             target=self._read_import,
-            args=(job, payload, inventory.columns_from_mapping(columns)),
+            args=(job, payload, inventory.columns_from_mapping(columns), debug),
             daemon=True,
         ).start()
         return job
 
-    def _inspect_import(self, job: ImportJob, encoded: str) -> None:
+    def _inspect_import(
+        self,
+        job: ImportJob,
+        encoded: str,
+        debug: WorkbookLoadLog | None = None,
+    ) -> None:
+        if debug is None:
+            debug = WorkbookLoadLog.create(ROOT, job.job_id, job.filename)
+            job.debug_log_path = str(debug.path)
         job.update(state="reading", message="Reading workbook headings…")
+        debug.event("beginning workbook heading inspection", stage="inspect")
         try:
-            payload = WorkbookImport.decode_upload(job.filename, encoded)
-            inspected = WorkbookImport.inspect_payload(job.filename, payload)
+            payload = WorkbookImport.decode_upload(job.filename, encoded, debug=debug)
+            inspected = WorkbookImport.inspect_payload(job.filename, payload, debug=debug)
             import_id = uuid.uuid4().hex
             inspected["import_id"] = import_id
+            debug.event(
+                "workbook headings identified",
+                stage="inspect",
+                import_id=import_id,
+                default_sheet=inspected.get("default_sheet"),
+                sheets=inspected.get("sheets"),
+            )
             self._persist_import_payload(import_id, job.filename, payload)
             with self.import_lock:
                 self.pending_imports[import_id] = (job.filename, payload)
@@ -1845,18 +1879,48 @@ class Application:
                     expired_id = next(iter(self.pending_imports))
                     self.pending_imports.pop(expired_id, None)
             job.finish(inspected)
+            debug.event("workbook heading inspection completed", stage="inspect", import_id=import_id)
+            debug.close("ready")
         except eudm.EUDMError as exc:
+            debug.exception("workbook heading inspection failed", exc, stage="inspect")
             job.fail(str(exc))
+            debug.close("failed", error=str(exc))
+        except Exception as exc:
+            run_reporting.exception("Could not inspect an ALM workbook")
+            debug.exception("unexpected workbook heading inspection failure", exc, stage="inspect")
+            message = "The workbook could not be read. Check the diagnostic log for the exact parser failure."
+            job.fail(message)
+            debug.close("failed", error=message)
 
     def _read_import(
         self,
         job: ImportJob,
         payload: bytes,
         columns: inventory.ImportColumns,
+        debug: WorkbookLoadLog | None = None,
     ) -> None:
         job.update(state="reading", message="Opening the workbook…")
+        if debug is None:
+            debug = WorkbookLoadLog.create(ROOT, job.job_id, job.filename)
+            job.debug_log_path = str(debug.path)
+        debug.event("beginning workbook row parsing", stage="parse", selected_columns=columns.__dict__)
+        debug.event(
+            "parser configuration",
+            stage="parse",
+            simulated=self.config.simulate,
+            spreadsheet_import_enabled=self.config.spreadsheet_import_enabled,
+            source_filename=job.filename,
+        )
 
         def progress(sheet: str, completed: int, total: int) -> None:
+            if completed == total or completed % 150 == 0:
+                debug.event(
+                    "workbook row parsing progress",
+                    stage="parse-progress",
+                    sheet=sheet,
+                    completed=completed,
+                    total=total,
+                )
             job.update(
                 state="reading",
                 message="Reading deployment rows…",
@@ -1867,16 +1931,22 @@ class Application:
 
         try:
             workbook = WorkbookImport.from_payload(
-                job.filename, payload, columns=columns, on_progress=progress
+                job.filename, payload, columns=columns, on_progress=progress, debug=debug
             )
             self._persist_import_payload(workbook.import_id, job.filename, payload, columns)
             self.add_import(workbook)
             job.finish(self._workbook_job_payload(workbook))
+            debug.close("ready")
         except eudm.EUDMError as exc:
+            debug.exception("workbook row parsing failed", exc, stage="parse")
             job.fail(str(exc))
-        except Exception:
+            debug.close("failed", error=str(exc))
+        except Exception as exc:
             run_reporting.exception("Could not parse an ALM workbook")
-            job.fail("The workbook could not be read. Choose an unencrypted .xlsx or .xlsm file.")
+            debug.exception("unexpected workbook row parsing failure", exc, stage="parse")
+            message = "The workbook could not be read. Check the diagnostic log for the exact parser failure."
+            job.fail(message)
+            debug.close("failed", error=message)
 
     def import_status(self, job_id: str) -> dict[str, Any]:
         with self.import_lock:
