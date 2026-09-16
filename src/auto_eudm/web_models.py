@@ -616,6 +616,66 @@ class WorkbookImport:
         return csv.reader(StringIO(text, newline=""), delimiter=delimiter), encoding, delimiter
 
     @staticmethod
+    def _normalize_csv_date(value: Any) -> date | None:
+        """Accept the display-oriented dates produced by Excel CSV exports."""
+        text = inventory.clean_text(value)
+        if not text:
+            return None
+        collapsed = " ".join(text.replace("\u00a0", " ").split())
+        # CSV exports may contain a displayed date/time rather than Excel's
+        # underlying date value. Try ISO and the common regional Excel forms,
+        # including day/month names and a leading weekday.
+        candidates = [collapsed, collapsed.replace(",", " ")]
+        formats = (
+            "%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%d/%m/%y",
+            "%m/%d/%Y", "%m-%d-%Y", "%m/%d/%y",
+            "%d/%m/%Y %H:%M", "%d/%m/%Y %H:%M:%S",
+            "%m/%d/%Y %H:%M", "%m/%d/%Y %H:%M:%S",
+            "%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S",
+            "%d-%b-%Y", "%d %b %Y", "%d %B %Y",
+            "%a %d %b %Y", "%A %d %b %Y",
+            "%a %d %B %Y", "%A %d %B %Y",
+        )
+        for candidate in candidates:
+            try:
+                return datetime.fromisoformat(candidate.rstrip("Z")).date()
+            except ValueError:
+                pass
+            for pattern in formats:
+                try:
+                    return datetime.strptime(candidate, pattern).date()
+                except ValueError:
+                    pass
+
+        # Some Excel number formats produce a serial number in CSV. Avoid
+        # treating arbitrary text as numeric, but preserve fractional days.
+        if re.fullmatch(r"\d+(?:\.\d+)?", collapsed):
+            try:
+                return inventory.normalize_date(
+                    float(collapsed), datetime(1899, 12, 30)
+                )
+            except (TypeError, ValueError, OverflowError):
+                return None
+
+        # A custom display format can include a weekday or line-break around
+        # a date. Extract a date-shaped portion before giving up.
+        date_match = re.search(
+            r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b|"
+            r"\b\d{1,2}\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|"
+            r"Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|"
+            r"Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
+            r"(?:\s+\d{2,4})?\b",
+            collapsed,
+            re.IGNORECASE,
+        )
+        if date_match:
+            extracted = date_match.group(0)
+            if re.fullmatch(r"\d{1,2}\s+\D+", extracted):
+                extracted = f"{extracted} {date.today().year}"
+            return WorkbookImport._normalize_csv_date(extracted)
+        return None
+
+    @staticmethod
     def _inspect_csv_payload(filename: str, payload: bytes) -> dict[str, Any]:
         reader, _encoding, _delimiter = WorkbookImport._csv_reader(payload)
         headings: list[str] = []
@@ -959,7 +1019,7 @@ class WorkbookImport:
                 indexes = candidate_indexes
                 continue
 
-            explicit_date = inventory.normalize_date(value_at(values, date_index), datetime(1899, 12, 30))
+            explicit_date = cls._normalize_csv_date(value_at(values, date_index))
             if explicit_date is not None:
                 current_date = explicit_date
                 deployment_date = explicit_date

@@ -649,6 +649,22 @@ class WorkbookUploadTests(unittest.TestCase):
 
         self.assertEqual(workbook.sheets["Inventory"][0].first_name, "René")
 
+    def test_csv_dates_accept_excel_display_formats_and_serials(self) -> None:
+        header = "Date,Username,SN,OLD Device SN\r\n"
+        payload = (
+            header +
+            '"Wednesday\n17 September 2026",first.user,SERIAL001,PENDING001\r\n'
+            "2026-09-18 00:00:00,second.user,SERIAL002,PENDING002\r\n"
+            "46380,third.user,SERIAL003,PENDING003\r\n"
+        ).encode("utf-8")
+
+        workbook = WorkbookImport.from_payload("tracking.csv", payload)
+
+        self.assertEqual(
+            [row.deployment_date for row in workbook.sheets["Inventory"]],
+            [date(2026, 9, 17), date(2026, 9, 18), date(2026, 12, 24)],
+        )
+
     def test_oversized_upload_is_rejected_before_parsing(self) -> None:
         encoded = base64.b64encode(b"1234").decode("ascii")
         with mock.patch.object(web_models, "MAX_WORKBOOK_BYTES", 3):

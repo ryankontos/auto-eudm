@@ -123,6 +123,19 @@ class ImportColumnTests(unittest.TestCase):
             "Pending Decom",
         )
 
+    def test_unsupported_system_font_colour_is_ignored(self) -> None:
+        self.assertIsNone(
+            inventory.returned_device_status_from_font_color(
+                ("rgb", "WINDOW", 0.25),
+            )
+        )
+        self.assertIsNone(
+            inventory.returned_device_status_from_font_color(
+                ("theme", 0, 0.25),
+                theme_colors={0: "WINDOW"},
+            )
+        )
+
 
 class ImportActionTests(unittest.TestCase):
     def setUp(self) -> None:

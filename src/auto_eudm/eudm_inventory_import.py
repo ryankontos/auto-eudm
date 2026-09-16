@@ -412,10 +412,16 @@ def theme_colors_from_xml(theme_xml: Any) -> dict[int, str]:
     return colours
 
 
-def _apply_tint(rgb: str, tint: float) -> str:
+def _apply_tint(rgb: str, tint: float) -> str | None:
+    # Excel also stores system colours such as ``WINDOW``. They are not
+    # usable for the narrow status matching below, but they must not make an
+    # otherwise readable workbook fail during a fast row scan.
+    normalised = _normalise_rgb(rgb)
+    if not normalised:
+        return None
     if not tint:
-        return rgb
-    channels = [int(rgb[index : index + 2], 16) for index in (0, 2, 4)]
+        return normalised
+    channels = [int(normalised[index : index + 2], 16) for index in (0, 2, 4)]
     if tint > 0:
         channels = [round(channel + (255 - channel) * tint) for channel in channels]
     else:
