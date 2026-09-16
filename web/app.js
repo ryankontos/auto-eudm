@@ -2778,6 +2778,36 @@ function connectionHasError(status = state.connection) {
   return ["error", "expired"].includes(status?.state);
 }
 
+function renderPcToolkitHeaderStatus() {
+  const wrapper = $("#pcToolkitHeaderStatus");
+  const label = $("#pcToolkitHeaderLabel");
+  const button = $("#pcToolkitHeaderAction");
+  const status = state.pcToolkitStatus || {};
+  if (!wrapper || !label || !button) return;
+  const enabled = state.preferences?.pc_toolkit_enabled === true;
+  wrapper.hidden = !enabled;
+  if (!enabled) return;
+  const connecting = status.state === "connecting";
+  const ready = ["connected", "simulation"].includes(status.state);
+  const failed = status.state === "error";
+  wrapper.dataset.state = ready ? "connected" : failed ? "error" : connecting ? "connecting" : "disconnected";
+  label.textContent = ready ? "PC Toolkit ready" : connecting ? "PC Toolkit connecting…" : failed ? "PC Toolkit unavailable" : "PC Toolkit not connected";
+  button.disabled = connecting;
+  button.textContent = connecting ? "Connecting…" : ready ? "Reconnect" : "Connect";
+}
+
+function renderConnectionOptionalStatus() {
+  const element = $("#connectionOptionalStatus");
+  if (!element) return;
+  const enabled = state.preferences?.pc_toolkit_enabled === true;
+  element.hidden = !enabled;
+  if (!enabled) return;
+  const status = state.pcToolkitStatus || {};
+  const ready = ["connected", "simulation"].includes(status.state);
+  element.dataset.state = ready ? "connected" : status.state === "error" ? "error" : "optional";
+  element.textContent = ready ? "PC Toolkit authenticated (optional)" : status.state === "connecting" ? "PC Toolkit authentication in progress (optional)" : "PC Toolkit authentication is optional";
+}
+
 function renderConnectionSheet(status = state.connection) {
   const ready = connectionIsReady(status);
   const stateName = status?.state || "checking";
@@ -2845,6 +2875,8 @@ function renderConnectionSheet(status = state.connection) {
     elements.connectionLinkIcon.innerHTML = iconMarkup(linkIcon);
   }
   refreshIcons(elements.connectionVisual);
+  renderPcToolkitHeaderStatus();
+  renderConnectionOptionalStatus();
   if (ready || connecting) {
     if (elements.connectionDialog.open) elements.connectionDialog.close();
     return;
@@ -2932,6 +2964,7 @@ function bindConnectionSheetEvents() {
   state.connectionSheetEventsBound = true;
   elements.connectionAuthenticateButton.addEventListener("click", connect);
   elements.connectionStatusAction.addEventListener("click", connect);
+  $("#pcToolkitHeaderAction")?.addEventListener("click", connectPcToolkit);
   elements.exportDiagnosticsSheetButton?.addEventListener("click", exportDiagnostics);
   elements.downloadDiagnosticsButton?.addEventListener("click", exportDiagnostics);
   elements.closeConnectionButton.addEventListener("click", () => {
@@ -3099,6 +3132,8 @@ function renderPcToolkitStatus() {
   detail.textContent = status.message || "PC Toolkit is optional and never blocks Helix submissions.";
   button.disabled = status.state === "connecting";
   setButtonLabel(button, status.state === "connecting" ? "Connecting…" : connected ? "Reconnect" : "Connect");
+  renderPcToolkitHeaderStatus();
+  renderConnectionOptionalStatus();
 }
 
 async function refreshPcToolkitStatus() {
@@ -7834,6 +7869,7 @@ async function init() {
     if (spreadsheetSettings) spreadsheetSettings.hidden = !spreadsheetEnabled;
     configureConcurrency(state.config.concurrency);
     bindEvents();
+    if (state.preferences.pc_toolkit_enabled) void connectPcToolkit();
     await window.autoAnimateReady;
     setupOptionalListAnimation();
     renderAll();

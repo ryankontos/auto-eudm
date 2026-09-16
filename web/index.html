@@ -27,6 +27,10 @@
         </span>
         <button id="connectionStatusAction" class="button secondary compact connection-status-action" type="button" aria-label="Authenticate with Helix">Authenticate</button>
       </div>
+      <div id="pcToolkitHeaderStatus" class="connection-status pc-toolkit-header-status" role="status" aria-live="polite" hidden>
+        <span class="connection-status-copy"><span class="connection-status-dot" aria-hidden="true"></span><span id="pcToolkitHeaderLabel">PC Toolkit unavailable</span></span>
+        <button id="pcToolkitHeaderAction" class="button secondary compact connection-status-action" type="button">Connect</button>
+      </div>
       <button id="commandPaletteButton" class="button secondary compact" type="button" aria-label="Open command palette" title="Open command palette (⌘K or Ctrl+K)"><i data-lucide="command"></i><span>Commands</span></button>
       <button id="historyButton" class="button secondary compact" type="button" aria-keyshortcuts="Alt+Shift+H Control+Shift+H" title="Open request history"><i data-lucide="history"></i><span>Request history</span></button>
     </div>
@@ -305,6 +309,7 @@
         </div>
       </div>
       <div id="connectionLoading" class="connection-loading" role="status" aria-label="Checking Helix authentication" hidden></div>
+      <div id="connectionOptionalStatus" class="connection-optional-status" hidden></div>
       <p id="connectionErrorMessage" class="connection-error-message" role="alert" hidden></p>
       <div class="connection-sheet-actions">
         <button id="connectionAuthenticateButton" class="button primary" type="button">Authenticate in Helix</button>

@@ -245,6 +245,10 @@ textarea:focus-visible {
 .connection-status[data-state="error"] { border-color: rgba(239, 133, 133, .48); color: #ffd0d0; background: rgba(165, 42, 42, .16); }
 .connection-status[data-state="error"] .connection-status-dot { border: 0; background: #ef8585; box-shadow: 0 0 0 2px rgba(239, 133, 133, .16); }
 .connection-status[data-state="disconnected"] .connection-status-dot { border-color: var(--header-muted); }
+.pc-toolkit-header-status { opacity: .84; }
+.connection-optional-status { width: 100%; padding: 9px 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--muted); background: var(--surface-alt); font-size: 12px; }
+.connection-optional-status[data-state="connected"] { border-color: color-mix(in srgb, var(--green) 35%, var(--line)); color: var(--green); }
+.connection-optional-status[data-state="error"] { border-color: color-mix(in srgb, var(--red) 35%, var(--line)); color: var(--red); }
 .theme-button { gap: 6px; }
 #themeIcon { display: grid; width: 15px; height: 15px; place-items: center; line-height: 1; }
 #themeIcon .lucide { width: 15px; height: 15px; stroke-width: 1.8; }
