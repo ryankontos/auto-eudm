@@ -567,6 +567,23 @@ class WorkbookUploadTests(unittest.TestCase):
             "columns": ["Valid User", "valid.user"],
         })
 
+    def test_request_spec_preserves_pc_toolkit_snapshot_for_queue_and_history(self) -> None:
+        request = user_request(pc_toolkit={
+            "serial": {
+                "primary": {
+                    "model": "MacBook Pro (14-inch, 2023)",
+                    "status": "In Inventory",
+                }
+            }
+        })
+
+        restored = RequestSpec.from_json(request.to_json())
+
+        self.assertEqual(
+            restored.to_json()["pc_toolkit"]["serial"]["primary"]["model"],
+            "MacBook Pro (14-inch, 2023)",
+        )
+
     def test_upload_is_decoded_to_bytes(self) -> None:
         encoded = base64.b64encode(b"workbook bytes").decode("ascii")
         self.assertEqual(

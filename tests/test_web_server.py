@@ -30,11 +30,37 @@ class FakeJobs:
         return f"Run: {job_id}\n"
 
 
+class FakePCToolkit:
+    def __init__(self) -> None:
+        self.connected = False
+        self.cache_cleared = False
+        self.models_cleared = False
+
+    def status(self) -> dict[str, object]:
+        return {"enabled": True, "state": "connected" if self.connected else "idle"}
+
+    def connect_async(self) -> None:
+        self.connected = True
+
+    def lookup(self, query: str, *, fresh: bool = False) -> dict[str, object]:
+        return {"query": query, "fresh": fresh, "found": True}
+
+    def bulk_lookup(self, queries: list[str], *, fresh: bool = False) -> dict[str, object]:
+        return {"results": {value.casefold(): {"query": value} for value in queries}, "errors": {}}
+
+    def clear_cache(self) -> None:
+        self.cache_cleared = True
+
+    def clear_models(self) -> None:
+        self.models_cleared = True
+
+
 class FakeApp:
     def __init__(self) -> None:
         self.config = SimpleNamespace(verbose=False, spreadsheet_import_enabled=False)
         self.clients = FakeClients()
         self.jobs = FakeJobs()
+        self.pc_toolkit = FakePCToolkit()
         self.saved_preferences: list[dict[str, object]] = []
         self.import_drafts: list[dict[str, object]] = []
         self.request_queue: list[dict[str, object]] = []
@@ -198,6 +224,31 @@ class LocalWebServerTests(unittest.TestCase):
         )
         self.assertEqual(response.status, 403)
         self.assertEqual(self.app.saved_preferences, [{"theme": "dark"}])
+
+    def test_pc_toolkit_status_lookup_bulk_and_cache_routes(self) -> None:
+        response, raw = self.request("GET", "/api/pc-toolkit/status")
+        self.assertEqual(response.status, 200)
+        self.assertEqual(json.loads(raw)["state"], "idle")
+
+        response, raw = self.request(
+            "POST", "/api/pc-toolkit/lookup", payload={"query": "ABC123", "fresh": True}
+        )
+        self.assertEqual(response.status, 200)
+        self.assertTrue(json.loads(raw)["fresh"])
+
+        response, raw = self.request(
+            "POST", "/api/pc-toolkit/enrich", payload={"queries": ["ABC123", "example.user"]}
+        )
+        self.assertEqual(response.status, 200)
+        self.assertEqual(set(json.loads(raw)["results"]), {"abc123", "example.user"})
+
+        response, _ = self.request("DELETE", "/api/pc-toolkit/cache")
+        self.assertEqual(response.status, 200)
+        self.assertTrue(self.app.pc_toolkit.cache_cleared)
+
+        response, _ = self.request("DELETE", "/api/pc-toolkit/models")
+        self.assertEqual(response.status, 200)
+        self.assertTrue(self.app.pc_toolkit.models_cleared)
 
     def test_import_drafts_are_read_written_and_deleted_through_local_api(self) -> None:
         draft = {

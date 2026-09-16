@@ -62,6 +62,8 @@ const state = {
   importPreviewRenderFrame: null,
   importPreviewNeedsFullRender: false,
   historyRuns: [],
+  pcToolkitStatus: null,
+  pcToolkitEnrichmentEpoch: 0,
 };
 
 const THEME_STORAGE_KEY = "auto-eudm-theme";
@@ -91,6 +93,29 @@ const ALM_IMPORT_STATUS_OPTIONS = {
   ],
 };
 const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
+
+function pcToolkitKey(value) {
+  return String(value || "").trim().replace(/\s+/g, " ").toLocaleLowerCase();
+}
+
+function pcToolkitMappings() {
+  return Array.isArray(state.preferences?.pc_toolkit_model_mappings)
+    ? state.preferences.pc_toolkit_model_mappings
+    : [];
+}
+
+function pcToolkitMappingFor(model) {
+  const key = pcToolkitKey(model);
+  return key ? pcToolkitMappings().find((mapping) => pcToolkitKey(mapping.model) === key) || null : null;
+}
+
+function pcToolkitSuggestedStatus(request, model) {
+  const mapping = pcToolkitMappingFor(model);
+  if (!mapping) return "";
+  return request.kind === "user" || request.group === "Deployments"
+    ? mapping.user_status || ""
+    : mapping.location_status || "";
+}
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -385,6 +410,9 @@ function queueSearchText(request) {
     request?.group,
     request?.source,
     request?.device_allocation,
+    request?.pc_toolkit?.serial?.primary?.model,
+    request?.pc_toolkit?.serial?.primary?.status,
+    request?.pc_toolkit?.serial?.primary?.assigned_user?.login,
     request?.request_id,
     ...userInfo,
     ...location,
@@ -1311,6 +1339,7 @@ async function validateBulkSerials({ force = false, requests = null, render = tr
     if (snapshots.get(request.id) !== request.serials.join("\u0000")) return;
     updateBulkValidationSummary(request);
     if (request === selectedRequest()) refreshBulkValidationButton(request);
+    void enrichBulkRequest(request, { render });
   });
   if (render) renderAll();
   else {
@@ -1525,7 +1554,7 @@ function renderQueue() {
     return `
       <tr data-id="${escapeHtml(request.id)}" class="${selected ? "selected" : ""} ${errors.length ? "invalid" : ""} ${submitting ? "submitting" : ""} ${request.result_state === "failed" ? "failed" : ""}" tabindex="0">
         <td class="index-column"><span class="queue-drag-handle" title="Drag to reorder" aria-label="Drag to reorder">${iconMarkup("grip-vertical")}</span><span class="queue-index">${index + 1}</span></td>
-        <td><span class="cell-primary ${request.kind === "bulk_location" ? "bulk-serial-summary" : ""}">${escapeHtml(serialDisplay)}</span>${request.device_allocation ? `<span class="cell-secondary">${escapeHtml(request.device_allocation)}</span>` : ""}${requestId}</td>
+        <td><span class="cell-primary ${request.kind === "bulk_location" ? "bulk-serial-summary" : ""}">${escapeHtml(serialDisplay)}</span>${pcToolkitModelFor(request) ? `<span class="cell-secondary">${escapeHtml(pcToolkitModelFor(request))}</span>` : ""}${requestId}</td>
         <td><span class="cell-primary queue-context">${requestKindMarkup(request.kind)}<span>${escapeHtml(kindLabel(request.kind))}</span></span>${secondary ? `<span class="cell-secondary">${escapeHtml(secondary)}</span>` : ""}</td>
         <td title="${escapeHtml(statusLabel(request))}">${statusMarkup(request)}</td>
         <td title="${escapeHtml(destinationLabel(request))}"><span class="cell-primary queue-context">${destinationMarkup(request)}<span>${escapeHtml(destinationLabel(request))}</span></span>${request.returning ? `<span class="cell-secondary">Return from ${escapeHtml(request.returning_user || "user")}</span>` : ""}</td>
@@ -1824,6 +1853,7 @@ function renderInspector() {
   elements.serialHint.textContent = bulk ? `${request.serials.length} serial${request.serials.length === 1 ? "" : "s"}` : "";
   renderBulkSerialEditor(request);
   refreshBulkValidationButton(request);
+  renderRequestPcToolkitDetails(request);
 
   normalizeRequestStatus(request);
   const statusOptions = bulk
@@ -2431,6 +2461,7 @@ async function loadSerialSuggestions(request, query, { requireSelection = true }
     } else {
       request.serial_validation = "valid";
     }
+    if (exact) void enrichRequest(request);
     refreshSelectedValidation();
     updateLookupControlStates(request);
     renderQueue();
@@ -2541,6 +2572,7 @@ async function validateUserAfterPause(request, returning = false) {
         request.user_validation = "valid";
         request.user_validation_error = "";
       }
+      void enrichRequest(request);
       renderInspector();
       renderQueue();
     }, 0);
@@ -2558,6 +2590,7 @@ async function validateUserAfterPause(request, returning = false) {
         ? ""
         : hasResults ? "Choose the verified user from the suggestions." : "User was not found in Helix.";
     }
+    if (autoSelectedResult) void enrichRequest(request);
     refreshSelectedValidation();
     updateLookupControlStates(request);
     renderQueue();
@@ -3015,7 +3048,290 @@ function openPasteDialog() {
   setTimeout(() => $("#pairsAddUsername").focus(), 0);
 }
 
-function openSettings() {
+function pcToolkitMappingRow(mapping = {}) {
+  const userOptions = [{ value: "", label: "No user suggestion" }, ...(state.config?.user_statuses || [])];
+  const locationOptions = [{ value: "", label: "No location suggestion" }, ...(state.config?.location_statuses || [])];
+  const options = (items, selected) => items.map((item) => `<option value="${escapeHtml(item.value)}" ${item.value === selected ? "selected" : ""}>${escapeHtml(item.label)}</option>`).join("");
+  return `<div class="pc-toolkit-mapping-row">
+    <label>Model<input data-pc-toolkit-model type="text" value="${escapeHtml(mapping.model || "")}" placeholder="MacBook Pro (14-inch, 2023)"></label>
+    <label>User deployment<select data-pc-toolkit-user-status>${options(userOptions, mapping.user_status || "")}</select></label>
+    <label>Location deployment<select data-pc-toolkit-location-status>${options(locationOptions, mapping.location_status || "")}</select></label>
+    <button class="icon-button" data-pc-toolkit-remove-mapping type="button" aria-label="Remove model mapping"><i data-lucide="x"></i></button>
+  </div>`;
+}
+
+function renderPcToolkitMappings(extra = null) {
+  const wrapper = $("#pcToolkitMappings");
+  if (!wrapper) return;
+  const mappings = pcToolkitMappings().map((mapping) => ({ ...mapping }));
+  (state.pcToolkitStatus?.models || []).forEach((model) => {
+    if (model && !mappings.some((mapping) => pcToolkitKey(mapping.model) === pcToolkitKey(model))) {
+      mappings.push({ model, user_status: "", location_status: "" });
+    }
+  });
+  if (extra?.model && !mappings.some((mapping) => pcToolkitKey(mapping.model) === pcToolkitKey(extra.model))) mappings.push(extra);
+  wrapper.innerHTML = mappings.length
+    ? mappings.map(pcToolkitMappingRow).join("")
+    : '<div class="pc-toolkit-mapping-empty">No model suggestions saved yet.</div>';
+  wrapper.querySelectorAll("[data-pc-toolkit-remove-mapping]").forEach((button) => button.addEventListener("click", () => {
+    button.closest(".pc-toolkit-mapping-row")?.remove();
+    if (!wrapper.querySelector(".pc-toolkit-mapping-row")) wrapper.innerHTML = '<div class="pc-toolkit-mapping-empty">No model suggestions saved yet.</div>';
+  }));
+  refreshIcons(wrapper);
+}
+
+function readPcToolkitMappings() {
+  return $$("#pcToolkitMappings .pc-toolkit-mapping-row").map((row) => ({
+    model: row.querySelector("[data-pc-toolkit-model]").value.trim().replace(/\s+/g, " "),
+    user_status: row.querySelector("[data-pc-toolkit-user-status]").value,
+    location_status: row.querySelector("[data-pc-toolkit-location-status]").value,
+  })).filter((mapping) => mapping.model || mapping.user_status || mapping.location_status);
+}
+
+function renderPcToolkitStatus() {
+  const status = state.pcToolkitStatus || {};
+  const title = $("#pcToolkitStatusTitle");
+  const detail = $("#pcToolkitStatusDetail");
+  const button = $("#connectPcToolkitButton");
+  if (!title || !detail || !button) return;
+  const connected = ["connected", "simulation"].includes(status.state);
+  title.textContent = connected ? "PC Toolkit ready" : status.state === "connecting" ? "Connecting…" : "Not connected";
+  detail.textContent = status.message || "PC Toolkit is optional and never blocks Helix submissions.";
+  button.disabled = status.state === "connecting";
+  setButtonLabel(button, status.state === "connecting" ? "Connecting…" : connected ? "Reconnect" : "Connect");
+}
+
+async function refreshPcToolkitStatus() {
+  try {
+    state.pcToolkitStatus = await api("/api/pc-toolkit/status");
+    renderPcToolkitStatus();
+  } catch (_) {}
+  return state.pcToolkitStatus;
+}
+
+async function connectPcToolkit() {
+  const button = $("#connectPcToolkitButton");
+  if (button) button.disabled = true;
+  try {
+    state.pcToolkitStatus = await api("/api/pc-toolkit/connect", { method: "POST", body: "{}" });
+    renderPcToolkitStatus();
+    for (let attempt = 0; attempt < 80 && state.pcToolkitStatus?.state === "connecting"; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, 1500));
+      await refreshPcToolkitStatus();
+    }
+    if (["connected", "simulation"].includes(state.pcToolkitStatus?.state)) toast("PC Toolkit is ready.", "success");
+    else if (state.pcToolkitStatus?.state === "error") toast(state.pcToolkitStatus.message || "PC Toolkit could not connect.", "error");
+  } catch (error) {
+    toast(error.message, "error");
+  } finally {
+    if (button) button.disabled = false;
+    renderPcToolkitStatus();
+  }
+}
+
+function pcToolkitAssignedLabel(device) {
+  const person = device?.assigned_user;
+  if (!person) return "";
+  return person.name && person.login && pcToolkitKey(person.name) !== pcToolkitKey(person.login)
+    ? `${person.name} (${person.login})`
+    : person.name || person.login || "";
+}
+
+async function pcToolkitEnrichQueries(queries, { fresh = false, onBatch = null } = {}) {
+  const unique = [...new Map(
+    queries
+      .map((value) => String(value || "").trim())
+      .filter((value) => value.length >= 2)
+      .map((value) => [pcToolkitKey(value), value]),
+  ).values()];
+  const results = {};
+  const errors = {};
+  // The captured service can take 5–12 seconds per lookup. Ten server-side
+  // workers keeps each local HTTP request below its timeout without flooding
+  // the internal API when a workbook contains hundreds of rows.
+  for (let index = 0; index < unique.length; index += 10) {
+    const batch = unique.slice(index, index + 10);
+    try {
+      const payload = await api("/api/pc-toolkit/enrich", {
+        method: "POST",
+        body: JSON.stringify({ queries: batch, fresh }),
+      });
+      Object.assign(results, payload.results || {});
+      Object.assign(errors, payload.errors || {});
+      if (onBatch) onBatch(payload.results || {}, { completed: Math.min(index + batch.length, unique.length), total: unique.length });
+    } catch (error) {
+      batch.forEach((value) => { errors[pcToolkitKey(value)] = error.message || "PC Toolkit lookup failed."; });
+    }
+  }
+  return { results, errors };
+}
+
+function pcToolkitModelFor(request) {
+  return request?.pc_toolkit?.serial?.primary?.model
+    || request?.pc_toolkit?.primary?.model
+    || request?.device_allocation
+    || "";
+}
+
+function pcToolkitFactsMarkup(result, { compact = false } = {}) {
+  const device = result?.primary;
+  if (!device) return "";
+  const facts = [device.model, device.status, pcToolkitAssignedLabel(device), device.location].filter(Boolean);
+  const warning = result.ambiguous
+    ? '<small class="pc-toolkit-warning">Multiple active PC Toolkit records need review.</small>'
+    : "";
+  return `<div class="pc-toolkit-facts ${compact ? "compact" : ""}">
+    <strong>${escapeHtml(device.model || device.name || device.serial || "PC Toolkit device")}</strong>
+    <small>${escapeHtml(facts.slice(device.model ? 1 : 0).join(" · "))}</small>${warning}
+  </div>`;
+}
+
+function renderRequestPcToolkitDetails(request) {
+  const wrapper = $("#pcToolkitRequestDetails");
+  if (!wrapper) return;
+  if (request?.kind === "bulk_location") {
+    const results = Object.values(request.pc_toolkit?.bulk || {}).filter((result) => result?.primary);
+    const models = new Map();
+    results.forEach((result) => {
+      const model = result.primary.model || "Unknown model";
+      models.set(model, (models.get(model) || 0) + 1);
+    });
+    wrapper.hidden = !results.length;
+    wrapper.innerHTML = results.length
+      ? `<div class="pc-toolkit-facts"><strong>PC Toolkit device details</strong><small>${escapeHtml([...models].map(([model, count]) => `${count} × ${model}`).join(" · "))}</small></div>`
+      : "";
+    return;
+  }
+  const result = request?.pc_toolkit?.serial;
+  const userResult = request?.pc_toolkit?.user;
+  const model = pcToolkitModelFor(request);
+  const suggestion = pcToolkitSuggestedStatus(request, model);
+  wrapper.hidden = !result?.primary;
+  if (wrapper.hidden) {
+    wrapper.replaceChildren();
+    return;
+  }
+  const associated = (userResult?.devices || []).filter((device) => device.active !== false).slice(0, 4);
+  wrapper.innerHTML = `${pcToolkitFactsMarkup(result)}${associated.length ? `<div class="pc-toolkit-associated"><small>Associated with this user</small><span>${associated.map((device) => `${escapeHtml(device.serial || device.name)}${device.model ? ` · ${escapeHtml(device.model)}` : ""}`).join("<br>")}</span></div>` : ""}<div class="pc-toolkit-fact-actions">
+    ${suggestion && request.status !== suggestion ? `<button class="text-button" type="button" data-pc-toolkit-use-status="${escapeHtml(suggestion)}">Use ${escapeHtml(suggestion)}</button>` : ""}
+    ${model && !pcToolkitMappingFor(model) ? `<button class="text-button" type="button" data-pc-toolkit-map-model="${escapeHtml(model)}">Save model mapping</button>` : ""}
+  </div>`;
+  wrapper.querySelector("[data-pc-toolkit-use-status]")?.addEventListener("click", (event) => {
+    recordAppEdit();
+    request.status = event.currentTarget.dataset.pcToolkitUseStatus;
+    renderAll();
+  });
+  wrapper.querySelector("[data-pc-toolkit-map-model]")?.addEventListener("click", (event) => {
+    openSettings({ tab: "pc-toolkit", model: event.currentTarget.dataset.pcToolkitMapModel });
+  });
+}
+
+async function enrichBulkRequest(request, { render = true } = {}) {
+  if (!state.preferences.pc_toolkit_enabled || request?.kind !== "bulk_location" || !request.serials?.length) return;
+  const epoch = Number(request.pc_toolkit_epoch || 0) + 1;
+  request.pc_toolkit_epoch = epoch;
+  try {
+    const payload = await pcToolkitEnrichQueries(request.serials);
+    if (request.pc_toolkit_epoch !== epoch) return;
+    request.pc_toolkit = { bulk: payload.results || {}, enriched_at: new Date().toISOString() };
+  } catch (_) {
+  } finally {
+    if (render && selectedRequest() === request) renderRequestPcToolkitDetails(request);
+    if (render) renderQueue();
+  }
+}
+
+async function enrichRequest(request, { render = true, includeUser = true } = {}) {
+  if (!state.preferences.pc_toolkit_enabled || !request) return;
+  const serial = String(request.serials?.[0] || "").trim();
+  const username = String(request.user || request.returning_user || "").trim();
+  const queries = [serial, ...(includeUser && username ? [username] : [])].filter((value) => value.length >= 2);
+  if (!queries.length) return;
+  const epoch = Number(request.pc_toolkit_epoch || 0) + 1;
+  request.pc_toolkit_epoch = epoch;
+  request.pc_toolkit_loading = true;
+  if (render && selectedRequest() === request) renderRequestPcToolkitDetails(request);
+  try {
+    const payload = await pcToolkitEnrichQueries(queries);
+    if (request.pc_toolkit_epoch !== epoch) return;
+    const results = payload.results || {};
+    request.pc_toolkit = {
+      serial: results[pcToolkitKey(serial)] || request.pc_toolkit?.serial || null,
+      user: username ? results[pcToolkitKey(username)] || request.pc_toolkit?.user || null : null,
+      enriched_at: new Date().toISOString(),
+    };
+  } catch (_) {
+    // Enrichment is optional and must never turn into a validation failure.
+  } finally {
+    if (request.pc_toolkit_epoch === epoch) request.pc_toolkit_loading = false;
+    if (render && selectedRequest() === request) {
+      renderRequestPcToolkitDetails(request);
+      renderQueue();
+    }
+  }
+}
+
+function pcToolkitConflictFor(request) {
+  const result = request?.pc_toolkit?.serial;
+  const device = result?.primary;
+  if (!device) return null;
+  if (result.ambiguous) return { level: "warning", text: "Multiple active PC Toolkit records" };
+  const target = pcToolkitKey(request.username || request.user || request.returning_user);
+  const assigned = pcToolkitKey(device.assigned_user?.login);
+  if (request.group === "Deployments" && pcToolkitKey(device.status) === "deployed") {
+    if (target && assigned === target) return { level: "complete", text: "Already deployed to this user in PC Toolkit" };
+    return { level: "danger", text: assigned ? `Currently deployed to ${device.assigned_user.login}` : "Already marked Deployed in PC Toolkit" };
+  }
+  if (["Returned devices", "Pending returns"].includes(request.group) && target && assigned && target !== assigned) {
+    return { level: "danger", text: `PC Toolkit assigns this device to ${device.assigned_user.login}` };
+  }
+  return null;
+}
+
+async function enrichImportPreview(payload = state.importPreview) {
+  if (!payload || !state.preferences.pc_toolkit_enabled) return;
+  const epoch = ++state.pcToolkitEnrichmentEpoch;
+  const requests = payload.requests || [];
+  const queries = [...new Set(requests.flatMap((request) => [
+    String(request.serials?.[0] || request.serial || "").trim(),
+    String(request.username || request.user || request.returning_user || "").trim(),
+  ]).filter((value) => value.length >= 2))];
+  if (!queries.length) return;
+  payload.pc_toolkit_loading = true;
+  try {
+    const response = await pcToolkitEnrichQueries(queries);
+    if (state.importPreview !== payload || epoch !== state.pcToolkitEnrichmentEpoch) return;
+    const results = response.results || {};
+    requests.forEach((request) => {
+      const serial = String(request.serials?.[0] || request.serial || "").trim();
+      const username = String(request.username || request.user || request.returning_user || "").trim();
+      request.pc_toolkit = {
+        serial: results[pcToolkitKey(serial)] || request.pc_toolkit?.serial || null,
+        user: results[pcToolkitKey(username)] || request.pc_toolkit?.user || null,
+        enriched_at: new Date().toISOString(),
+      };
+      const model = pcToolkitModelFor(request);
+      request.pc_toolkit_suggested_status = pcToolkitSuggestedStatus(
+        payload.mode === "backlog" ? { ...request, kind: "user" } : request,
+        model,
+      );
+      request.pc_toolkit_conflict = pcToolkitConflictFor(request);
+      if (payload.mode === "backlog" && request.pc_toolkit_conflict?.level === "complete" && request.included !== false) {
+        request.included = false;
+        request.pc_toolkit_default_excluded = true;
+      }
+    });
+    renderImportPreview();
+    updateImportPrepareButton(payload);
+    saveCurrentImportDraft();
+  } catch (_) {
+    // Keep the workbook fully usable when the optional service is unavailable.
+  } finally {
+    if (state.importPreview === payload && epoch === state.pcToolkitEnrichmentEpoch) payload.pc_toolkit_loading = false;
+  }
+}
+
+function openSettings({ tab = "", model = "" } = {}) {
   const columns = importColumns() || {};
   $("#spreadsheetUsernameColumnInput").value = columns.username || "Username";
   $("#spreadsheetDeploymentColumnInput").value = columns.deployment_serial || "SN";
@@ -3029,9 +3345,14 @@ function openSettings() {
   $("#validateQuickImportInput").checked = validationEnabled("validate_quick_import");
   $("#validateWorkbookImportInput").checked = validationEnabled("validate_workbook_import");
   $("#saveAlmImportDraftsInput").checked = state.preferences.save_alm_import_drafts !== false;
+  $("#pcToolkitEnabledInput").checked = state.preferences.pc_toolkit_enabled === true;
+  renderPcToolkitMappings(model ? { model, user_status: "", location_status: "" } : null);
+  renderPcToolkitStatus();
   renderRequestStatusSettings();
   $("#settingsDialog").showModal();
+  if (tab) document.querySelector(`[data-settings-tab="${tab}"]`)?.click();
   void refreshDiagnosticsStatus();
+  void refreshPcToolkitStatus().then(() => renderPcToolkitMappings(model ? { model, user_status: "", location_status: "" } : null));
 }
 
 function openAlmWorkbookImport() {
@@ -4518,6 +4839,7 @@ function resumeImportDraft(id) {
     if (state.importPreview.mode === "backlog") void validateBacklogPreview(state.importPreview);
     else void validateImportPreview();
   }
+  void enrichImportPreview(state.importPreview);
 }
 
 function importFailedFields(request) {
@@ -4785,6 +5107,19 @@ function manualReturnEditorMarkup(source, payload) {
     .filter(Boolean)
     .join(" ") || username || "User";
   const statusOptions = manualReturnStatusOptions();
+  const deploymentSerial = pcToolkitKey(source.serials?.[0]);
+  const suggestedDevices = (source.pc_toolkit?.user?.devices || []).filter((device) =>
+    device.active !== false
+    && pcToolkitKey(device.status) === "deployed"
+    && pcToolkitKey(device.serial)
+    && pcToolkitKey(device.serial) !== deploymentSerial
+  );
+  const candidateMarkup = !added && suggestedDevices.length
+    ? `<div class="pc-toolkit-return-candidates"><small>Devices associated with this user in PC Toolkit</small>${suggestedDevices.map((device) => {
+        const model = device.model || device.name || "Device";
+        return `<div class="pc-toolkit-return-candidate"><span><strong>${escapeHtml(device.serial)}</strong><small>${escapeHtml([model, device.status].filter(Boolean).join(" · "))}</small></span><span><button class="text-button" type="button" data-pc-toolkit-return-candidate="${escapeHtml(source.id)}" data-candidate-serial="${escapeHtml(device.serial)}" data-candidate-model="${escapeHtml(device.model || "")}" data-candidate-type="returned_devices">Use as returned</button><button class="text-button" type="button" data-pc-toolkit-return-candidate="${escapeHtml(source.id)}" data-candidate-serial="${escapeHtml(device.serial)}" data-candidate-model="${escapeHtml(device.model || "")}" data-candidate-type="pending_returns">Use as pending return</button></span></div>`;
+      }).join("")}</div>`
+    : "";
   const statusControl = type === "returned_devices"
     ? `<label>Status<select data-import-manual-status="${escapeHtml(source.id)}">
         <option value="">Choose a location status</option>
@@ -4807,6 +5142,7 @@ function manualReturnEditorMarkup(source, payload) {
       </div>${error}`;
   return `<div class="import-manual-return-entry" data-import-manual-source="${escapeHtml(source.id)}">
     <div class="import-manual-return-entry-heading"><div><strong>${escapeHtml(name)}</strong><small>${escapeHtml(username || "No username")} · row ${escapeHtml(source.row_number)}</small></div><span>Neither return serial is listed</span></div>
+    ${candidateMarkup}
     ${addedMarkup}
   </div>`;
 }
@@ -4844,6 +5180,10 @@ const IMPORT_HISTORY_FIELDS = [
   "manual_return_status",
   "manual_return_error",
   "manual_return_source_id",
+  "pc_toolkit",
+  "pc_toolkit_suggested_status",
+  "pc_toolkit_conflict",
+  "pc_toolkit_default_excluded",
 ];
 
 function cloneImportHistoryValue(value) {
@@ -4960,6 +5300,48 @@ function clearImportStatuses() {
   saveCurrentImportDraft();
 }
 
+function pcToolkitImportMarkup(request) {
+  const result = request?.pc_toolkit?.serial;
+  const device = result?.primary;
+  if (!device) return "";
+  const model = device.model || request.device_allocation || "";
+  const suggestion = request.pc_toolkit_suggested_status || pcToolkitSuggestedStatus(request, model);
+  const conflict = request.pc_toolkit_conflict || pcToolkitConflictFor(request);
+  const mapping = pcToolkitMappingFor(model);
+  const mappedForKind = request.group === "Deployments" ? mapping?.user_status : mapping?.location_status;
+  return `<div class="pc-toolkit-import-facts">
+    <small>${escapeHtml([device.model, device.status, pcToolkitAssignedLabel(device)].filter(Boolean).join(" · "))}</small>
+    ${result.ambiguous ? '<span class="pc-toolkit-import-warning">Multiple active records</span>' : ""}
+    ${conflict ? `<span class="pc-toolkit-import-${escapeHtml(conflict.level)}">${escapeHtml(conflict.text)}</span>` : ""}
+    <span class="pc-toolkit-import-actions">
+      ${suggestion && request.status !== suggestion ? `<button class="text-button" type="button" data-import-pc-use="${escapeHtml(request.id)}" data-status="${escapeHtml(suggestion)}">Use ${escapeHtml(suggestion)}</button>` : ""}
+      ${model && request.status && !mappedForKind ? `<button class="text-button" type="button" data-import-pc-remember="${escapeHtml(request.id)}">Remember for this model</button>` : ""}
+    </span>
+  </div>`;
+}
+
+async function rememberPcToolkitMapping(request) {
+  const model = pcToolkitModelFor(request);
+  if (!model || !request.status) return;
+  const mappings = pcToolkitMappings().map((mapping) => ({ ...mapping }));
+  let mapping = mappings.find((item) => pcToolkitKey(item.model) === pcToolkitKey(model));
+  if (!mapping) {
+    mapping = { model, user_status: "", location_status: "" };
+    mappings.push(mapping);
+  }
+  if (request.kind === "user" || request.group === "Deployments") mapping.user_status = request.status;
+  else mapping.location_status = request.status;
+  try {
+    state.preferences = await api("/api/preferences", {
+      method: "POST",
+      body: JSON.stringify({ pc_toolkit_model_mappings: mappings }),
+    });
+    request.pc_toolkit_suggested_status = request.status;
+    renderImportPreview();
+    toast(`Saved the ${model} suggestion.`, "success");
+  } catch (error) { toast(error.message, "error"); }
+}
+
 function persistBacklogIgnore(request, ignored) {
   const serial = String(request.serial || "").trim();
   const username = String(request.username || "").trim();
@@ -4996,7 +5378,9 @@ function renderBacklogPreview(payload) {
       : "";
     const exclusionLabel = request.default_excluded === true
       ? "Did not attend"
-      : "Ignored in future backlog checks";
+      : request.pc_toolkit_default_excluded
+        ? "Already deployed to this user in PC Toolkit"
+        : "Ignored in future backlog checks";
     const statusControl = `<div class="import-status-control">
       <select data-backlog-status="${escapeHtml(request.id)}" aria-label="Deployment status for ${escapeHtml(request.serial)}">
         <option value="">Choose a deployment status</option>
@@ -5010,7 +5394,7 @@ function renderBacklogPreview(payload) {
         <input type="checkbox" data-backlog-include="${escapeHtml(request.id)}" ${includedRow ? "checked" : ""}>
         <span>${index + 1}</span>
       </label>
-      <div><small class="import-field-title">Deployment serial</small><strong>${escapeHtml(request.serial)}</strong><small class="import-device-allocation">${escapeHtml(request.date)}${request.device_allocation ? ` · ${escapeHtml(request.device_allocation)}` : ""}</small></div>
+      <div><small class="import-field-title">Deployment serial</small><strong>${escapeHtml(request.serial)}</strong><small class="import-device-allocation">${escapeHtml(request.date)}${request.device_allocation ? ` · ${escapeHtml(request.device_allocation)}` : ""}</small>${pcToolkitImportMarkup(request)}</div>
       ${importPersonMarkup(request).replace("</div>", `<small class="import-device-allocation">Current: ${escapeHtml(request.current_status)}</small>${occurrenceLabel ? `<small class="import-duplicate-warning">${escapeHtml(occurrenceLabel)}</small>` : ""}${notAttending ? '<small class="import-attendance-warning">Did not attend</small>' : ""}</div>`)}
       <div>${statusControl}${includedRow ? validation : `<small class="${notAttending ? "import-attendance-warning" : ""}">${escapeHtml(exclusionLabel)}</small>`}<div class="backlog-row-actions"><button class="text-button" type="button" data-backlog-ignore="${escapeHtml(request.id)}">${iconMarkup("eye-off")}<span>Ignore in future</span></button></div></div>
     </div>`;
@@ -5109,6 +5493,19 @@ function renderBacklogPreview(payload) {
     saveCurrentImportDraft();
     if (toValidate.length) void validateBacklogPreview(payload, toValidate);
   }));
+  $("#importPreviewList").querySelectorAll("[data-import-pc-use]").forEach((button) => button.addEventListener("click", () => {
+    const request = requests.find((item) => item.id === button.dataset.importPcUse);
+    if (!request) return;
+    recordImportEdit();
+    request.status = button.dataset.status || "";
+    renderImportPreview();
+    updateImportPrepareButton(payload);
+    saveCurrentImportDraft();
+  }));
+  $("#importPreviewList").querySelectorAll("[data-import-pc-remember]").forEach((button) => button.addEventListener("click", () => {
+    const request = requests.find((item) => item.id === button.dataset.importPcRemember);
+    if (request) void rememberPcToolkitMapping({ ...request, kind: "user" });
+  }));
   refreshIcons($("#importPreviewList"));
   saveCurrentImportDraft();
 }
@@ -5197,7 +5594,7 @@ function renderImportPreview() {
           <input type="checkbox" data-import-include="${escapeHtml(request.id)}" ${isIncluded ? "checked" : ""}>
           <span>${index + 1}</span>
         </label>
-        <div><small class="import-field-title">${isDeployment ? "Deployment serial" : isReturnedDevice ? "Returned device" : "Pending return"}</small><strong>${escapeHtml(request.serials[0])}</strong>${request.device_allocation ? `<small class="import-device-allocation">${escapeHtml(request.device_allocation)}</small>` : ""}${isDeployment && request.new_asset_status ? `<small class="import-device-status">New asset status: ${escapeHtml(request.new_asset_status)}</small>` : ""}</div>
+        <div><small class="import-field-title">${isDeployment ? "Deployment serial" : isReturnedDevice ? "Returned device" : "Pending return"}</small><strong>${escapeHtml(request.serials[0])}</strong>${request.device_allocation ? `<small class="import-device-allocation">${escapeHtml(request.device_allocation)}</small>` : ""}${isDeployment && request.new_asset_status ? `<small class="import-device-status">New asset status: ${escapeHtml(request.new_asset_status)}</small>` : ""}${pcToolkitImportMarkup(request)}</div>
         ${personColumn}
         <div>${statusControl}${isIncluded ? validation : "<small>Do not deploy</small>"}${editable}</div>
       </div>`;
@@ -5243,6 +5640,33 @@ function renderImportPreview() {
       saveCurrentImportDraft();
     });
   });
+  $("#importPreviewList").querySelectorAll("[data-import-pc-use]").forEach((button) => button.addEventListener("click", () => {
+    const request = payload.requests.find((item) => item.id === button.dataset.importPcUse);
+    if (!request) return;
+    recordImportEdit();
+    request.status = button.dataset.status || "";
+    renderImportPreview();
+    updateImportPrepareButton(payload);
+    saveCurrentImportDraft();
+  }));
+  $("#importPreviewList").querySelectorAll("[data-import-pc-remember]").forEach((button) => button.addEventListener("click", () => {
+    const request = payload.requests.find((item) => item.id === button.dataset.importPcRemember);
+    if (request) void rememberPcToolkitMapping(request);
+  }));
+  $("#importPreviewList").querySelectorAll("[data-pc-toolkit-return-candidate]").forEach((button) => button.addEventListener("click", () => {
+    const source = payload.requests.find((item) => item.id === button.dataset.pcToolkitReturnCandidate);
+    if (!source) return;
+    recordImportEdit();
+    source.manual_return_serial = button.dataset.candidateSerial || "";
+    source.manual_return_type = button.dataset.candidateType || "returned_devices";
+    const candidateModel = button.dataset.candidateModel || "";
+    source.manual_return_status = source.manual_return_type === "returned_devices"
+      ? pcToolkitSuggestedStatus({ kind: "location" }, candidateModel)
+      : "";
+    source.manual_return_error = "";
+    renderImportPreview();
+    saveCurrentImportDraft();
+  }));
   $("#importPreviewList").querySelectorAll("[data-import-status-all]").forEach((select) => select.addEventListener("change", () => {
     const status = select.value;
     if (!status) return;
@@ -5849,6 +6273,7 @@ async function prepareImport() {
         device_allocation: request.device_allocation || "",
         first_name: request.first_name || "",
         last_name: request.last_name || "",
+        pc_toolkit: request.pc_toolkit || null,
         serial_validation: "valid",
         user_validation: "valid",
         user_info: request.user_info || null,
@@ -5938,6 +6363,7 @@ async function prepareImport() {
       renderImportPreview();
       saveCurrentImportDraft();
       validateBacklogPreview(payload);
+      void enrichImportPreview(payload);
       return;
     }
     if (!mode) throw new Error("Select at least one type of deployment to import.");
@@ -5983,6 +6409,7 @@ async function prepareImport() {
     renderImportPreview();
     saveCurrentImportDraft();
     validateImportPreview();
+    void enrichImportPreview(payload);
   } catch (error) {
     $("#importError").textContent = error.message;
     $("#importError").hidden = false;
@@ -6360,6 +6787,9 @@ function historyEntryMatches(entry, run, query, filter) {
     person.login,
     ...(entry.user_info?.columns || []),
     ...(entry.returning_user_info?.columns || []),
+    entry.pc_toolkit?.serial?.primary?.model,
+    entry.pc_toolkit?.serial?.primary?.status,
+    entry.pc_toolkit?.serial?.primary?.assigned_user?.login,
     run.request_for,
   ];
   return values.some((value) => String(value || "").toLocaleLowerCase().includes(query));
@@ -6399,8 +6829,9 @@ function renderHistory(runs) {
       const serialMarkup = serials.length
         ? serials.map((serial) => `<button class="history-filter-link" type="button" data-history-filter="${escapeHtml(serial)}" title="Show requests containing ${escapeHtml(serial)}">${escapeHtml(serial)}</button>`).join("")
         : "No serial";
+      const pcModel = pcToolkitModelFor(entry);
       return `<div class="history-entry ${entry.state === "failed" ? "failed" : ""}">
-        <div class="history-device"><div class="history-device-serials">${serialMarkup}</div>${statusMarkup(entry)}</div>
+        <div class="history-device"><div class="history-device-serials">${serialMarkup}</div>${pcModel ? `<small class="history-device-model">${escapeHtml(pcModel)}</small>` : ""}${statusMarkup(entry)}</div>
         <div class="history-person"><small>${escapeHtml(person.role)}</small><strong>${escapeHtml(person.name)}</strong>${person.login ? `<button class="history-filter-link" type="button" data-history-filter="${escapeHtml(person.login)}" title="Show requests for ${escapeHtml(person.login)}">${escapeHtml(person.login)}</button>` : ""}</div>
         <div class="history-result"><span class="history-result-state ${entry.state === "failed" ? "failed" : ""}">${escapeHtml(entry.state === "succeeded" ? "Submitted" : entry.state)}</span>${requestLink}<small>${escapeHtml(entry.message || "")}</small></div>
         <div class="history-entry-actions"><button class="button secondary compact" type="button" data-history-readd="${escapeHtml(entry.id)}">${iconMarkup("rotate-ccw")}<span>Re-add to queue</span></button></div>
@@ -6780,6 +7211,34 @@ function bindEvents() {
   });
   $("#pairsInput").addEventListener("input", () => { $("#pairsError").hidden = true; });
   $("#settingsButton").addEventListener("click", openSettings);
+  $("#addPcToolkitMappingButton").addEventListener("click", () => {
+    const empty = $("#pcToolkitMappings .pc-toolkit-mapping-empty");
+    if (empty) empty.remove();
+    $("#pcToolkitMappings").insertAdjacentHTML("beforeend", pcToolkitMappingRow());
+    const row = $("#pcToolkitMappings .pc-toolkit-mapping-row:last-child");
+    row.querySelector("[data-pc-toolkit-remove-mapping]").addEventListener("click", () => row.remove());
+    refreshIcons(row);
+    row.querySelector("input")?.focus();
+  });
+  $("#connectPcToolkitButton").addEventListener("click", connectPcToolkit);
+  $("#clearPcToolkitCacheButton").addEventListener("click", async () => {
+    try {
+      await api("/api/pc-toolkit/cache", { method: "DELETE" });
+      toast("PC Toolkit cache cleared.", "success");
+      await refreshPcToolkitStatus();
+    } catch (error) { toast(error.message, "error"); }
+  });
+  $("#clearPcToolkitModelsButton").addEventListener("click", async () => {
+    try {
+      state.preferences.pc_toolkit_model_mappings = [];
+      await api("/api/preferences", { method: "POST", body: JSON.stringify({ pc_toolkit_model_mappings: [] }) });
+      const response = await api("/api/pc-toolkit/models", { method: "DELETE" });
+      state.pcToolkitStatus = response.status;
+      renderPcToolkitMappings();
+      renderPcToolkitStatus();
+      toast("PC Toolkit model list cleared.", "success");
+    } catch (error) { toast(error.message, "error"); }
+  });
   $$('[data-settings-tab]').forEach((tab) => tab.addEventListener("click", () => {
     $$('[data-settings-tab]').forEach((item) => item.classList.toggle("active", item === tab));
     $$('[data-settings-panel]').forEach((panel) => { panel.hidden = panel.dataset.settingsPanel !== tab.dataset.settingsTab; });
@@ -6826,6 +7285,8 @@ function bindEvents() {
       validate_quick_import: $("#validateQuickImportInput").checked,
       validate_workbook_import: $("#validateWorkbookImportInput").checked,
       save_alm_import_drafts: $("#saveAlmImportDraftsInput").checked,
+      pc_toolkit_enabled: $("#pcToolkitEnabledInput").checked,
+      pc_toolkit_model_mappings: readPcToolkitMappings(),
       request_statuses: requestStatuses,
       import_columns: columns,
     };
@@ -7363,6 +7824,7 @@ async function init() {
       api("/api/config"),
       api("/api/preferences"),
     ]);
+    await refreshPcToolkitStatus();
     await loadPersistedQueue();
     if (state.preferences.save_alm_import_drafts !== false) await loadImportDrafts();
     const spreadsheetEnabled = Boolean(state.config.spreadsheet_import_enabled);

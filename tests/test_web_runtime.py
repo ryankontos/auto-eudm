@@ -371,6 +371,47 @@ class RequestStatusPreferenceTests(unittest.TestCase):
                 {"request_statuses": ["Deployed - New Stock"]}
             )
 
+    def test_pc_toolkit_model_mappings_are_normalised_and_optional_per_destination(self) -> None:
+        preferences = self.app._normalise_preferences({
+            "pc_toolkit_enabled": True,
+            "pc_toolkit_model_mappings": [{
+                "model": "  MacBook   Pro 14  ",
+                "user_status": "Deployed - New Stock",
+                "location_status": "",
+            }],
+        })
+
+        self.assertTrue(preferences["pc_toolkit_enabled"])
+        self.assertEqual(preferences["pc_toolkit_model_mappings"], [{
+            "model": "MacBook Pro 14",
+            "user_status": "Deployed - New Stock",
+            "location_status": "",
+        }])
+
+    def test_pc_toolkit_model_names_are_case_insensitively_unique(self) -> None:
+        with self.assertRaises(eudm.EUDMError):
+            self.app._normalise_preferences({
+                "pc_toolkit_model_mappings": [
+                    {"model": "Latitude 7440", "user_status": "Deployed - Existing Stock"},
+                    {"model": " latitude 7440 ", "location_status": "Pending Rebuild"},
+                ],
+            })
+
+    def test_pc_toolkit_discovered_model_can_be_saved_before_statuses_are_chosen(self) -> None:
+        preferences = self.app._normalise_preferences({
+            "pc_toolkit_model_mappings": [{
+                "model": "  MacBook   Air  ",
+                "user_status": "",
+                "location_status": "",
+            }],
+        })
+
+        self.assertEqual(preferences["pc_toolkit_model_mappings"], [{
+            "model": "MacBook Air",
+            "user_status": "",
+            "location_status": "",
+        }])
+
 
 class SearchProbePoolTests(unittest.TestCase):
     def test_fresh_search_reuses_a_bounded_pool(self) -> None:

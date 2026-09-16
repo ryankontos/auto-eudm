@@ -163,6 +163,7 @@ class RequestSpec:
     device_allocation: str | None = None
     first_name: str | None = None
     last_name: str | None = None
+    pc_toolkit: dict[str, Any] | None = None
 
     @classmethod
     def from_json(cls, raw: Any) -> "RequestSpec":
@@ -197,6 +198,9 @@ class RequestSpec:
                 "login": clean(raw_user_info.get("login")),
                 "columns": [clean(value) for value in raw_columns if clean(value)],
             }
+        raw_pc_toolkit = raw.get("pc_toolkit")
+        if raw_pc_toolkit is not None and not isinstance(raw_pc_toolkit, dict):
+            raise eudm.EUDMError("PC Toolkit request details must be an object.")
         location = (
             Location.from_json(raw.get("location"))
             if kind in {"location", "bulk_location"}
@@ -218,6 +222,7 @@ class RequestSpec:
             device_allocation=clean(raw.get("device_allocation")) or None,
             first_name=clean(raw.get("first_name")) or None,
             last_name=clean(raw.get("last_name")) or None,
+            pc_toolkit=dict(raw_pc_toolkit) if isinstance(raw_pc_toolkit, dict) else None,
         )
 
     def validate(
@@ -328,6 +333,7 @@ class RequestSpec:
             "device_allocation": self.device_allocation or "",
             "first_name": self.first_name or "",
             "last_name": self.last_name or "",
+            "pc_toolkit": self.pc_toolkit or None,
             "errors": self.validate(),
             "destination": self.destination(),
             "device_count": self.device_count(),

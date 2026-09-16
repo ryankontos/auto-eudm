@@ -16,6 +16,7 @@ AutoEUDM is a local web UI I developed to speed up device-management work in EUD
 - `src/auto_eudm/web_models.py`: request and workbook data models plus validation.
 - `src/auto_eudm/eudm_request.py`: authenticated EUDM operations and browser-session handoff.
 - `src/auto_eudm/eudm_inventory_import.py`: shared ALM workbook parsing and row rules.
+- `src/auto_eudm/pc_toolkit.py`: optional read-only PC Toolkit enrichment, ranking, authentication handoff, and filesystem cache.
 - `web/`: markup, styling, and browser-side interaction.
 - `launchers/`: double-clickable web startup files for macOS, Windows, and PowerShell.
 - `requirements/`: optional spreadsheet and browser dependencies installed at startup.
@@ -31,6 +32,7 @@ AutoEUDM is a local web UI I developed to speed up device-management work in EUD
 - Submission jobs are asynchronous. Preserve queue state, progress, request IDs, and failed rows if the UI is closed while a job runs.
 - Workbook columns are selected by heading. ALM drafts must be saved while editing and removed when their requests enter the queue; late verification must not recreate a completed draft.
 - Validation remains active even when cached verification fills a result immediately.
+- PC Toolkit enriches Helix data but never replaces Helix validation or blocks submission. Its compact cache and automatically discovered model catalogue live in `results/pc-toolkit-cache.json`; model-to-status mappings live in settings.
 
 ## Checks
 

@@ -185,6 +185,7 @@
             </div>
           </div>
           <div id="serialLookupStatus" class="lookup-status" role="status" aria-live="polite" hidden></div>
+          <div id="pcToolkitRequestDetails" class="pc-toolkit-request-details" hidden></div>
           <div class="field-actions">
             <span id="serialHint" class="hint"></span>
             <button id="validateBulkSerialButton" class="text-button" type="button" hidden><i data-lucide="shield-check"></i><span data-button-label>Verify list</span></button>
@@ -542,6 +543,7 @@
         <button class="settings-tab" data-settings-tab="validation" type="button"><i data-lucide="shield-check"></i><span>Validation</span></button>
         <button class="settings-tab" data-settings-tab="spreadsheet" type="button"><i data-lucide="file-spreadsheet"></i><span>ALM Workbook</span></button>
         <button class="settings-tab" data-settings-tab="statuses" type="button"><i data-lucide="list-ordered"></i><span>Request statuses</span></button>
+        <button class="settings-tab" data-settings-tab="pc-toolkit" type="button"><i data-lucide="monitor-cog"></i><span>PC Toolkit</span></button>
       </div>
       <section data-settings-panel="run">
         <label>Appearance
@@ -588,6 +590,19 @@
           <div class="request-status-group-heading"><h3>Request editor statuses</h3><small>Drag rows or use the arrows to set the order shown in the status list.</small></div>
           <div id="requestStatuses" class="request-status-list" data-request-status-list></div>
         </div>
+      </section>
+      <section data-settings-panel="pc-toolkit" hidden>
+        <label class="settings-checkbox"><input id="pcToolkitEnabledInput" type="checkbox"><span>Use PC Toolkit to enrich devices and users</span></label>
+        <div class="settings-inline-action pc-toolkit-connection">
+          <div><strong id="pcToolkitStatusTitle">Not connected</strong><small id="pcToolkitStatusDetail">PC Toolkit is optional and never blocks Helix submissions.</small></div>
+          <button id="connectPcToolkitButton" class="button secondary compact" type="button">Connect</button>
+        </div>
+        <div class="pc-toolkit-mapping-heading">
+          <div><strong>Device model suggestions</strong><small>Every model seen in PC Toolkit is added here. Suggestions are optional for either destination.</small></div>
+          <button id="addPcToolkitMappingButton" class="button secondary compact" type="button"><i data-lucide="plus"></i><span>Add model</span></button>
+        </div>
+        <div id="pcToolkitMappings" class="pc-toolkit-mappings"></div>
+        <div class="settings-inline-action"><small>Cached details appear immediately while current status refreshes in the background.</small><span class="settings-action-group"><button id="clearPcToolkitModelsButton" class="text-button" type="button"><i data-lucide="list-x"></i><span>Clear model list</span></button><button id="clearPcToolkitCacheButton" class="text-button" type="button"><i data-lucide="trash-2"></i><span>Clear lookup cache</span></button></span></div>
       </section>
       <div class="modal-actions"><button class="button secondary" value="cancel">Cancel</button><button id="saveSettingsButton" class="button primary" value="default" type="button"><i data-lucide="check"></i><span>Save settings</span></button></div>
     </form>
@@ -686,7 +701,6 @@
   <script src="/vendor/canvas-confetti.js" defer></script>
   <script src="/vendor/sortable.min.js" defer></script>
   <script src="/vendor/auto-animate-loader.js" defer></script>
-  <script src="/vendor/tippy-bundle.umd.min.js" defer></script>
   <script src="/app.js" defer></script>
 </body>
 </html>

@@ -254,6 +254,9 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
         if path == "/api/status":
             self._json(self.app.clients.status())
             return
+        if path == "/api/pc-toolkit/status":
+            self._json(self.app.pc_toolkit.status())
+            return
         if path == "/api/diagnostics":
             self._json(run_reporting.diagnostics_status())
             return
@@ -368,6 +371,14 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
                 self.app.clear_alm_backlog_ignored()
                 self._json({"cleared": True})
                 return
+            if path == "/api/pc-toolkit/cache":
+                self.app.pc_toolkit.clear_cache()
+                self._json({"cleared": True, "status": self.app.pc_toolkit.status()})
+                return
+            if path == "/api/pc-toolkit/models":
+                self.app.pc_toolkit.clear_models()
+                self._json({"cleared": True, "status": self.app.pc_toolkit.status()})
+                return
             if path == "/api/import/backlog/ignore":
                 query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
                 serial = query.get("serial", [""])[0]
@@ -410,6 +421,29 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
         if path == "/api/connect":
             self.app.clients.connect_async()
             self._json(self.app.clients.status(), 202)
+            return
+        if path == "/api/pc-toolkit/connect":
+            self.app.pc_toolkit.connect_async()
+            self._json(self.app.pc_toolkit.status(), 202)
+            return
+        if path == "/api/pc-toolkit/lookup":
+            query = self._search_query(
+                payload,
+                minimum=2,
+                message="Enter at least two PC Toolkit search characters.",
+            )
+            self._json(self.app.pc_toolkit.lookup(query, fresh=bool(payload.get("fresh"))))
+            return
+        if path == "/api/pc-toolkit/enrich":
+            queries = payload.get("queries")
+            if not isinstance(queries, list):
+                raise HTTPInputError("PC Toolkit enrichment queries must be a list.")
+            if len(queries) > 5000:
+                raise HTTPInputError("PC Toolkit enrichment is limited to 5000 values at once.")
+            self._json(self.app.pc_toolkit.bulk_lookup(
+                [str(value or "") for value in queries],
+                fresh=bool(payload.get("fresh")),
+            ))
             return
         if path == "/api/preferences":
             self._json(self.app.save_preferences(payload))

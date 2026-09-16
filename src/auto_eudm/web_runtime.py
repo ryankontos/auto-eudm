@@ -20,6 +20,7 @@ import webbrowser
 from . import eudm_inventory_import as inventory
 from . import eudm_request as eudm
 from . import run_reporting
+from .pc_toolkit import PCToolkitService, normalise_key as normalise_pc_toolkit_key
 from .eudm_config import AppConfig
 from .web_models import (
     CITIES,
@@ -1105,6 +1106,14 @@ class Application:
         self.preferences_path = ROOT / "results" / "web-settings.json"
         self.preferences_lock = threading.Lock()
         self.preferences = self._load_preferences()
+        self.pc_toolkit = PCToolkitService(
+            ROOT / "results" / "pc-toolkit-cache.json",
+            simulate=self.config.simulate,
+            browser_profile=self.config.browser_profile or "",
+            browser_headless=self.config.browser_headless,
+            verbose=self.config.verbose,
+            preferences=lambda: self.preferences,
+        )
         self.allowed_user_statuses = {value for _, value in USER_STATUSES}
         self.allowed_location_statuses = {
             value for _, value in LOCATION_STATUSES
@@ -1148,6 +1157,8 @@ class Application:
             "validate_quick_import": True,
             "validate_workbook_import": True,
             "save_alm_import_drafts": True,
+            "pc_toolkit_enabled": False,
+            "pc_toolkit_model_mappings": [],
             "request_statuses": [
                 value for _, value in USER_STATUSES + LOCATION_STATUSES
             ],
@@ -1191,11 +1202,43 @@ class Application:
             "validate_quick_import",
             "validate_workbook_import",
             "save_alm_import_drafts",
+            "pc_toolkit_enabled",
         ):
             if key in raw and not isinstance(raw[key], bool):
                 raise eudm.EUDMError("A settings toggle had an invalid value.")
             if key in raw:
                 values[key] = raw[key]
+
+        if "pc_toolkit_model_mappings" in raw:
+            mappings = raw["pc_toolkit_model_mappings"]
+            if not isinstance(mappings, list):
+                raise eudm.EUDMError("PC Toolkit model mappings must be a list.")
+            user_statuses = {value for _, value in USER_STATUSES}
+            location_statuses = {value for _, value in LOCATION_STATUSES}
+            normalised_mappings: list[dict[str, str]] = []
+            seen_models: set[str] = set()
+            for mapping in mappings:
+                if not isinstance(mapping, dict):
+                    raise eudm.EUDMError("Each PC Toolkit model mapping must be an object.")
+                model = " ".join(str(mapping.get("model", "") or "").split())
+                user_status = str(mapping.get("user_status", "") or "").strip()
+                location_status = str(mapping.get("location_status", "") or "").strip()
+                key = normalise_pc_toolkit_key(model)
+                if not key:
+                    raise eudm.EUDMError("Each PC Toolkit mapping needs a model name.")
+                if key in seen_models:
+                    raise eudm.EUDMError(f"The model '{model}' is mapped more than once.")
+                if user_status and user_status not in user_statuses:
+                    raise eudm.EUDMError(f"'{user_status}' is not a user deployment status.")
+                if location_status and location_status not in location_statuses:
+                    raise eudm.EUDMError(f"'{location_status}' is not a location deployment status.")
+                seen_models.add(key)
+                normalised_mappings.append({
+                    "model": model,
+                    "user_status": user_status,
+                    "location_status": location_status,
+                })
+            values["pc_toolkit_model_mappings"] = normalised_mappings
 
         if "request_statuses" in raw:
             request_statuses = raw["request_statuses"]
