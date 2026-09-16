@@ -543,24 +543,26 @@ class PCToolkitService:
                 channel="chrome",
                 headless=self.browser_headless,
             )
-            page = context.pages[0] if context.pages else context.new_page()
+            pages = context.pages or [context.new_page()]
+            page = pages[0]
             page.goto(DEFAULT_PORTAL_URL, wait_until="domcontentloaded", timeout=60_000)
             deadline = time.monotonic() + (20 if self.browser_headless else 120)
             while time.monotonic() < deadline:
+                # Use the context request client rather than page JavaScript:
+                # this preserves the persistent browser cookies without being
+                # affected by a welcome-page redirect or cross-origin policy.
                 try:
-                    roles = page.evaluate(
-                        """async (url) => {
-                          const response = await fetch(url, {credentials: 'include'});
-                          if (!response.ok) return [];
-                          const payload = await response.json();
-                          return Array.isArray(payload.maxRoles) ? payload.maxRoles : [];
-                        }""",
-                        DEFAULT_ROLE_URL,
-                    )
-                    if isinstance(roles, list) and roles and clean(roles[0]):
-                        return clean(roles[0])
+                    response = context.request.get(DEFAULT_ROLE_URL, timeout=5_000)
+                    if response.ok:
+                        payload = response.json()
+                        roles = payload.get("maxRoles", []) if isinstance(payload, dict) else []
+                        if isinstance(roles, list) and roles and clean(roles[0]):
+                            return clean(roles[0])
                 except Exception:
                     pass
+                # Some SSO flows finish in a newly opened tab. Refresh the
+                # list so a successful login in that tab is observed too.
+                pages = context.pages or [page]
                 page.wait_for_timeout(1500)
             raise PCToolkitError("PC Toolkit sign-in did not complete. Open it in Chrome and try again.")
         except PCToolkitError:
