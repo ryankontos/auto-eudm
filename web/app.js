@@ -2959,6 +2959,20 @@ async function connect() {
   }
 }
 
+async function startAuthenticationChecks() {
+  const helix = (async () => {
+    await refreshConnection({ verify: true });
+    if (!state.connection?.simulation && ["disconnected", "expired"].includes(state.connection?.state)) {
+      state.connectionAutoStarted = true;
+      await connect();
+    }
+  })();
+  const pcToolkit = state.preferences?.pc_toolkit_enabled
+    ? connectPcToolkit()
+    : Promise.resolve();
+  await Promise.allSettled([helix, pcToolkit]);
+}
+
 function bindConnectionSheetEvents() {
   if (state.connectionSheetEventsBound) return;
   state.connectionSheetEventsBound = true;
@@ -7294,6 +7308,7 @@ function bindEvents() {
   });
   $("#saveSettingsButton").addEventListener("click", async () => {
     const button = $("#saveSettingsButton");
+    const pcToolkitWasEnabled = state.preferences?.pc_toolkit_enabled === true;
     const columns = {
       username: $("#spreadsheetUsernameColumnInput").value.trim(),
       deployment_serial: $("#spreadsheetDeploymentColumnInput").value.trim(),
@@ -7331,6 +7346,8 @@ function bindEvents() {
         method: "POST",
         body: JSON.stringify(preferences),
       });
+      renderConnectionSheet();
+      if (state.preferences.pc_toolkit_enabled && !pcToolkitWasEnabled) void connectPcToolkit();
       if (state.preferences.save_alm_import_drafts === false) {
         state.importDrafts = [];
       } else {
@@ -7860,6 +7877,7 @@ async function init() {
       api("/api/preferences"),
     ]);
     await refreshPcToolkitStatus();
+    void startAuthenticationChecks();
     await loadPersistedQueue();
     if (state.preferences.save_alm_import_drafts !== false) await loadImportDrafts();
     const spreadsheetEnabled = Boolean(state.config.spreadsheet_import_enabled);
@@ -7869,18 +7887,12 @@ async function init() {
     if (spreadsheetSettings) spreadsheetSettings.hidden = !spreadsheetEnabled;
     configureConcurrency(state.config.concurrency);
     bindEvents();
-    if (state.preferences.pc_toolkit_enabled) void connectPcToolkit();
     await window.autoAnimateReady;
     setupOptionalListAnimation();
     renderAll();
     await restoreSubmissionFromHistory();
     await refreshDiagnosticsStatus();
     renderConnectionSheet();
-    await refreshConnection({ verify: true });
-    if (!state.connection?.simulation && ["disconnected", "expired"].includes(state.connection?.state)) {
-      state.connectionAutoStarted = true;
-      void connect();
-    }
     state.connectionHeartbeatTimer = window.setInterval(checkConnection, 30_000);
     state.diagnosticsStatusTimer = window.setInterval(refreshDiagnosticsStatus, 5_000);
     renderAll();
