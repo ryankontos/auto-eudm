@@ -11,6 +11,7 @@ from unittest import mock
 from auto_eudm import run_reporting
 from auto_eudm.pc_toolkit import (
     DEFAULT_PC_TOOLKIT_ROLE,
+    PC_TOOLKIT_CONNECTION_PROBE,
     PCToolkitClient,
     PCToolkitError,
     PCToolkitService,
@@ -122,10 +123,14 @@ class PCToolkitCacheTests(unittest.TestCase):
             with mock.patch.object(run_reporting, "_PC_TOOLKIT_LOG_DIR", Path(folder)):
                 run_reporting.configure_logging(enabled=False, command="test")
                 with mock.patch("auto_eudm.pc_toolkit.urllib.request.urlopen", return_value=Response()) as urlopen:
-                    result = PCToolkitClient(base_url="https://example.test/Computers").lookup("ABC123")
+                    result = PCToolkitClient(
+                        base_url="https://example.test/Computers",
+                        access_token="token-for-test",
+                    ).lookup("ABC123")
 
                 request = urlopen.call_args.args[0]
                 self.assertEqual(request.get_header("X-max-elevated-role"), DEFAULT_PC_TOOLKIT_ROLE)
+                self.assertEqual(request.get_header("Authorization"), "Bearer token-for-test")
                 self.assertEqual(request.get_header("Sec-fetch-dest"), "empty")
                 self.assertEqual(request.get_header("Sec-fetch-mode"), "cors")
                 self.assertEqual(request.get_header("Sec-fetch-site"), "same-site")
@@ -228,6 +233,8 @@ class PCToolkitCacheTests(unittest.TestCase):
 
         self.assertEqual(service.status()["state"], "connected")
         self.assertEqual(client.lookup.call_count, 2)
+        self.assertEqual(client.lookup.call_args_list[0].args[0], PC_TOOLKIT_CONNECTION_PROBE)
+        self.assertEqual(client.lookup.call_args_list[1].args[0], PC_TOOLKIT_CONNECTION_PROBE)
         self.assertEqual(
             client.lookup.call_args_list[1].kwargs["purpose"],
             "post_auth_health_check",

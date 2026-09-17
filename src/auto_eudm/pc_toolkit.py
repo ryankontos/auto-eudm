@@ -39,6 +39,13 @@ DEFAULT_PORTAL_URL = (
 DEFAULT_ROLE_URL = (
     "https://portal.platform.infraportal.syd.c1.macquarie.com/auth/session/maxroles"
 )
+DEFAULT_HEARTBEAT_URL = (
+    "https://portal.platform.infraportal.syd.c1.macquarie.com/auth/session/heartbeat"
+)
+# This is deliberately not a real asset or user.  It exercises the same
+# authenticated device route without sending an operator's data while
+# connecting.
+PC_TOOLKIT_CONNECTION_PROBE = "__auto_eudm_connection_probe__"
 # The production PC Toolkit client sends this role on its read requests.  It
 # is also returned by the portal's maxroles endpoint for the normal personal
 # session.  Keeping it as a default means enrichment works immediately after
@@ -71,7 +78,7 @@ def clean(value: Any) -> str:
     return " ".join(str(value or "").split()).strip()
 
 
-def pc_toolkit_request_headers(role: str) -> dict[str, str]:
+def pc_toolkit_request_headers(role: str, access_token: str = "") -> dict[str, str]:
     """Return the request shape used by PC Toolkit's production browser bundle.
 
     The device gateway distinguishes the browser fetch from a generic HTTP
@@ -95,6 +102,8 @@ def pc_toolkit_request_headers(role: str) -> dict[str, str]:
     }
     if role.strip():
         headers["X-Max-Elevated-Role"] = role.strip()
+    if access_token.strip():
+        headers["Authorization"] = f"Bearer {access_token.strip()}"
     return headers
 
 
@@ -308,10 +317,12 @@ class PCToolkitClient:
         self,
         base_url: str = DEFAULT_DEVICE_URL,
         role: str = DEFAULT_PC_TOOLKIT_ROLE,
+        access_token: str = "",
         timeout: float = 18.0,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.role = role.strip()
+        self.access_token = access_token.strip()
         self.timeout = timeout
 
     def lookup(
@@ -338,7 +349,7 @@ class PCToolkitClient:
             raise PCToolkitError("Enter at least two characters for PC Toolkit.")
         url = f"{self.base_url}/{urllib.parse.quote(value, safe='-._')}?sources=cmdb,sccm"
         endpoint_path = urllib.parse.urlsplit(url).path
-        headers = pc_toolkit_request_headers(self.role)
+        headers = pc_toolkit_request_headers(self.role, self.access_token)
         run_reporting.pc_toolkit_event(
             "api_request_started",
             request_id=request_id,
@@ -579,6 +590,9 @@ class PCToolkitService:
         self.cache_write_timer: threading.Timer | None = None
         self.inflight: set[str] = set()
         self.role = os.getenv("PC_TOOLKIT_ROLE", DEFAULT_PC_TOOLKIT_ROLE).strip()
+        # The portal heartbeat token is held in memory only. It is refreshed
+        # during browser authentication and is never written to the cache.
+        self.access_token = ""
         self.state = "simulation" if simulate else "idle"
         self.message = "Simulation data available." if simulate else "Not connected."
         self.last_error = ""
@@ -644,6 +658,7 @@ class PCToolkitService:
             device_endpoint=DEFAULT_DEVICE_URL,
             portal_endpoint=DEFAULT_PORTAL_URL,
             role_endpoint=DEFAULT_ROLE_URL,
+            heartbeat_endpoint=DEFAULT_HEARTBEAT_URL,
         )
 
     def _set_state(
@@ -838,7 +853,7 @@ class PCToolkitService:
         }
 
     def _client(self) -> PCToolkitClient:
-        return PCToolkitClient(role=self.role)
+        return PCToolkitClient(role=self.role, access_token=self.access_token)
 
     def _fetch(
         self,
@@ -1213,7 +1228,7 @@ class PCToolkitService:
             # default, then role discovery remains available for accounts
             # whose session exposes a different role.
             self._client().lookup(
-                "auto-eudm-health-check",
+                PC_TOOLKIT_CONNECTION_PROBE,
                 operation_id=operation_id,
                 purpose="connect_health_check",
             )
@@ -1244,6 +1259,9 @@ class PCToolkitService:
                 )
                 return
             try:
+                # Do not carry a possibly expired bearer token into a new
+                # browser session. The heartbeat must issue a fresh one.
+                self.access_token = ""
                 self.role = self._discover_role(operation_id)
                 authenticated_in_browser = True
             except Exception as exc:
@@ -1268,7 +1286,7 @@ class PCToolkitService:
             # same harmless lookup after SSO before reporting readiness.
             try:
                 self._client().lookup(
-                    "auto-eudm-health-check",
+                    PC_TOOLKIT_CONNECTION_PROBE,
                     operation_id=operation_id,
                     purpose="post_auth_health_check",
                 )
@@ -1326,6 +1344,7 @@ class PCToolkitService:
             operation_id=operation_id,
             portal_url=DEFAULT_PORTAL_URL,
             role_url=DEFAULT_ROLE_URL,
+            heartbeat_url=DEFAULT_HEARTBEAT_URL,
             browser_profile_configured=True,
             browser_headless=self.browser_headless,
         )
@@ -1399,6 +1418,116 @@ class PCToolkitService:
                 if callable(headers):
                     headers = headers()
             return dict(headers) if hasattr(headers, "items") else {}
+
+        def xsrf_token() -> str:
+            """Read the portal's CSRF cookie without retaining its value."""
+            try:
+                cookies = context.cookies([DEFAULT_HEARTBEAT_URL]) if context else []
+            except Exception:
+                return ""
+            for cookie in cookies:
+                name = str(cookie.get("name", "")).casefold()
+                if name in {"xsrf-token", "x-xsrf-token"}:
+                    return urllib.parse.unquote(str(cookie.get("value", "")))
+            return ""
+
+        def refresh_access_token() -> str:
+            """Get the bearer token the portal uses for device API requests."""
+            if context is None:
+                return ""
+            request_id = run_reporting.diagnostic_id("pc-heartbeat")
+            heartbeat_started = time.monotonic()
+            headers = {
+                "Accept": "application/json, text/plain, */*",
+                "Content-Type": "application/json",
+                "Referer": str(page.url or DEFAULT_PORTAL_URL),
+                "User-Agent": PC_TOOLKIT_USER_AGENT,
+            }
+            csrf = xsrf_token()
+            if csrf:
+                headers["X-XSRF-Token"] = csrf
+            try:
+                response = context.request.post(
+                    DEFAULT_HEARTBEAT_URL,
+                    headers=headers,
+                    data="{}",
+                    timeout=5_000,
+                    fail_on_status_code=False,
+                )
+                raw_body = response.body()
+                status = int(response.status)
+                response_url = str(response.url or DEFAULT_HEARTBEAT_URL)
+                response_header_values = response_headers(response)
+                run_reporting.network(
+                    "POST",
+                    urllib.parse.urlsplit(DEFAULT_HEARTBEAT_URL).path,
+                    status=status,
+                    duration_ms=round((time.monotonic() - heartbeat_started) * 1000),
+                    transport="pc-toolkit",
+                    request_url=response_url,
+                    request_headers=headers,
+                    response_headers=response_header_values,
+                    request_body="{}",
+                    response_body=raw_body,
+                    request_id=request_id,
+                    operation_id=operation_id,
+                    details={
+                        "channel": "playwright-context-request",
+                        "purpose": "session_heartbeat",
+                        "browser_cookie_jar_used": True,
+                        "response_body_read": True,
+                    },
+                )
+                payload: Any = None
+                try:
+                    payload = json.loads(raw_body.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    pass
+                token = (
+                    str(payload.get("token", "")).strip()
+                    if isinstance(payload, dict) else ""
+                )
+                run_reporting.pc_toolkit_event(
+                    "heartbeat_result",
+                    service_id=self.service_id,
+                    operation_id=operation_id,
+                    request_id=request_id,
+                    status=status,
+                    ok=bool(response.ok),
+                    duration_ms=round((time.monotonic() - heartbeat_started) * 1000),
+                    response_body_bytes=len(raw_body),
+                    token_present=bool(token),
+                    token_length=len(token) if token else 0,
+                )
+                return token
+            except Exception as exc:
+                run_reporting.network(
+                    "POST",
+                    urllib.parse.urlsplit(DEFAULT_HEARTBEAT_URL).path,
+                    duration_ms=round((time.monotonic() - heartbeat_started) * 1000),
+                    transport="pc-toolkit",
+                    error=type(exc).__name__,
+                    request_url=DEFAULT_HEARTBEAT_URL,
+                    request_headers=headers,
+                    request_body="{}",
+                    request_id=request_id,
+                    operation_id=operation_id,
+                    error_detail=str(exc),
+                    details={
+                        "channel": "playwright-context-request",
+                        "purpose": "session_heartbeat",
+                        "browser_cookie_jar_used": True,
+                        "response_body_read": False,
+                    },
+                )
+                run_reporting.pc_toolkit_event(
+                    "heartbeat_failed",
+                    service_id=self.service_id,
+                    operation_id=operation_id,
+                    request_id=request_id,
+                    exception=run_reporting.exception_details(exc),
+                )
+                return ""
 
         def interesting_browser_request(url: str, resource_type: str) -> bool:
             lowered = url.casefold()
@@ -1738,6 +1867,20 @@ class PCToolkitService:
                 "User-Agent": PC_TOOLKIT_USER_AGENT,
             }
             while time.monotonic() < deadline:
+                # The portal's maxroles response only tells us that SSO is
+                # complete. The device gateway separately requires the bearer
+                # token returned by the portal heartbeat.
+                if not self.access_token:
+                    token = refresh_access_token()
+                    if token:
+                        self.access_token = token
+                        run_reporting.pc_toolkit_event(
+                            "device_api_token_obtained",
+                            service_id=self.service_id,
+                            operation_id=operation_id,
+                            token_length=len(token),
+                            source="portal_heartbeat",
+                        )
                 # Use the context request client rather than page JavaScript:
                 # this preserves the persistent browser cookies without being
                 # affected by a welcome-page redirect or cross-origin policy.
@@ -1806,6 +1949,21 @@ class PCToolkitService:
                     roles = payload.get("maxRoles", []) if isinstance(payload, dict) else []
                     if isinstance(roles, list) and roles and clean(roles[0]):
                         role = clean(roles[0])
+                        if not self.access_token:
+                            token = refresh_access_token()
+                            if token:
+                                self.access_token = token
+                                run_reporting.pc_toolkit_event(
+                                    "device_api_token_obtained",
+                                    service_id=self.service_id,
+                                    operation_id=operation_id,
+                                    token_length=len(token),
+                                    source="portal_heartbeat_after_role",
+                                )
+                        if not self.access_token:
+                            raise PCToolkitError(
+                                "PC Toolkit sign-in completed, but its device API token was not provided."
+                            )
                         run_reporting.pc_toolkit_event(
                             "role_discovered",
                             service_id=self.service_id,
