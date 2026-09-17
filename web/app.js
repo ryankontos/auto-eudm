@@ -3467,19 +3467,39 @@ function applyPcToolkitImportResults(payload, requests, results) {
 }
 
 function pcToolkitImportQueries(request) {
+  if (request?.group === "Pending returns" || request?.has_pending_return_serial) return [];
   return [...new Map([
     String(request?.serials?.[0] || request?.serial || "").trim(),
     String(request?.username || request?.user || request?.returning_user || "").trim(),
   ].filter((value) => value.length >= 2).map((value) => [pcToolkitKey(value), value])).values()];
 }
 
-function updatePcToolkitImportLookupState(requests, completedKeys, results, errors, { final = false } = {}) {
+function pcToolkitRequestHasDetails(request) {
+  const serialResult = request?.pc_toolkit?.serial;
+  const userResult = request?.pc_toolkit?.user;
+  return Boolean(
+    serialResult?.primary
+    || serialResult?.devices?.length
+    || userResult?.primary
+    || userResult?.devices?.length,
+  );
+}
+
+function pcToolkitRelevantFailedQueries(request, failedKeys, payload = state.importPreview) {
+  const serialKey = pcToolkitKey(request?.serials?.[0] || request?.serial);
+  const userKey = pcToolkitKey(request?.username || request?.user || request?.returning_user);
+  const needsUserDetails = importDeploymentNeedsManualReturn(request, payload);
+  return failedKeys.filter((key) => key === serialKey || (needsUserDetails && key === userKey));
+}
+
+function updatePcToolkitImportLookupState(requests, completedKeys, results, errors, { final = false, payload = state.importPreview } = {}) {
   (requests || []).forEach((request) => {
     const keys = pcToolkitImportQueries(request).map(pcToolkitKey);
     if (!keys.length) {
       request.pc_toolkit_loading = false;
       request.pc_toolkit_checked = true;
       request.pc_toolkit_error = "";
+      request.pc_toolkit_failed_queries = [];
       return;
     }
     const complete = final || keys.every((key) => completedKeys.has(key));
@@ -3487,8 +3507,10 @@ function updatePcToolkitImportLookupState(requests, completedKeys, results, erro
     if (!complete) return;
     request.pc_toolkit_checked = true;
     const failed = keys.filter((key) => errors[key] && !results[key]);
-    request.pc_toolkit_error = failed.length
-      ? `${failed.length === keys.length ? "Lookup failed" : "Some details unavailable"}`
+    const relevantFailed = pcToolkitRelevantFailedQueries(request, failed, payload);
+    request.pc_toolkit_failed_queries = relevantFailed;
+    request.pc_toolkit_error = relevantFailed.length
+      ? `${relevantFailed.length === keys.length ? "Lookup failed" : "Some details unavailable"}`
       : "";
   });
 }
@@ -3504,26 +3526,41 @@ function renderPcToolkitImportStatus(payload) {
   const requests = payload.requests || [];
   const total = Number(payload.pc_toolkit_total || 0);
   const completed = Math.min(total, Number(payload.pc_toolkit_completed || 0));
-  const withDetails = requests.filter((request) => request.pc_toolkit?.serial?.primary || request.pc_toolkit?.user?.primary).length;
+  const withDetails = requests.filter(pcToolkitRequestHasDetails).length;
   const failedRequests = requests.filter((request) => request.pc_toolkit_error);
-  const errorCount = failedRequests.length;
-  if (!total && !payload.pc_toolkit_loading && !withDetails && !errorCount) {
+  const serialFailedRequests = failedRequests.filter((request) => {
+    const serialKey = pcToolkitKey(request.serials?.[0] || request.serial);
+    return Array.isArray(request.pc_toolkit_failed_queries)
+      && request.pc_toolkit_failed_queries.includes(serialKey);
+  });
+  const returnCheckFailed = failedRequests.filter((request) => !serialFailedRequests.includes(request));
+  const retryRequests = [...new Set([...serialFailedRequests, ...returnCheckFailed])];
+  const unavailableParts = [
+    serialFailedRequests.length
+      ? `${serialFailedRequests.length} lookup${serialFailedRequests.length === 1 ? "" : "s"} unavailable`
+      : "",
+    returnCheckFailed.length ? "Return suggestions unavailable" : "",
+  ].filter(Boolean);
+  if (!total && !payload.pc_toolkit_loading && !withDetails && !unavailableParts.length) {
     wrapper.hidden = true;
     wrapper.replaceChildren();
     return;
   }
   const message = payload.pc_toolkit_loading
     ? `Checking device details · ${completed} of ${total} lookups`
-    : errorCount
-      ? `${withDetails} row${withDetails === 1 ? "" : "s"} enriched · ${errorCount} row${errorCount === 1 ? "" : "s"} need another try`
+    : unavailableParts.length
+      ? `${withDetails} row${withDetails === 1 ? "" : "s"} enriched · ${unavailableParts.join(" · ")}`
       : withDetails
         ? `${withDetails} row${withDetails === 1 ? "" : "s"} enriched with current PC Toolkit details`
         : "No matching device details found";
   wrapper.hidden = false;
-  wrapper.dataset.state = payload.pc_toolkit_loading ? "loading" : errorCount ? "error" : "ready";
-  wrapper.innerHTML = `<div><strong>PC Toolkit</strong><small>${escapeHtml(message)}</small></div><div class="pc-toolkit-import-summary-actions">${errorCount && !payload.pc_toolkit_loading ? `<button class="button secondary compact" type="button" data-import-pc-retry-failed>${iconMarkup("refresh-cw")}<span>Retry ${errorCount} failed</span></button>` : ""}${payload.pc_toolkit_loading ? '<span class="import-status-spinner" aria-hidden="true"></span>' : ""}</div>`;
+  wrapper.dataset.state = payload.pc_toolkit_loading ? "loading" : unavailableParts.length ? "error" : "ready";
+  const retryLabel = returnCheckFailed.length && !serialFailedRequests.length
+    ? "Retry return suggestions"
+    : `Retry ${retryRequests.length} unavailable`;
+  wrapper.innerHTML = `<div><strong>PC Toolkit</strong><small>${escapeHtml(message)}</small></div><div class="pc-toolkit-import-summary-actions">${retryRequests.length && !payload.pc_toolkit_loading ? `<button class="button secondary compact" type="button" data-import-pc-retry-failed>${iconMarkup("refresh-cw")}<span>${retryLabel}</span></button>` : ""}${payload.pc_toolkit_loading ? '<span class="import-status-spinner" aria-hidden="true"></span>' : ""}</div>`;
   wrapper.querySelector("[data-import-pc-retry-failed]")?.addEventListener("click", () => {
-    void enrichImportPreview(payload, { requests: failedRequests, fresh: true });
+    void enrichImportPreview(payload, { requests: retryRequests, fresh: true });
   });
   refreshIcons(wrapper);
 }
@@ -3547,6 +3584,14 @@ async function enrichImportPreview(payload = state.importPreview, { requests: re
     .map((request) => String(request.username || request.user || "").trim())
     .filter((value) => value.length >= 2);
   const queries = [...new Set([...missingReturnUsers, ...requests.flatMap(pcToolkitImportQueries)])];
+  const lookupRequests = requests.filter((request) => pcToolkitImportQueries(request).length);
+  requests.filter((request) => !lookupRequests.includes(request)).forEach((request) => {
+    request.pc_toolkit_loading = false;
+    request.pc_toolkit_checked = true;
+    request.pc_toolkit_error = "";
+    request.pc_toolkit_failed_queries = [];
+    request.pc_toolkit = null;
+  });
   if (!queries.length) {
     payload.pc_toolkit_loading = false;
     payload.pc_toolkit_total = 0;
@@ -3558,7 +3603,7 @@ async function enrichImportPreview(payload = state.importPreview, { requests: re
   payload.pc_toolkit_loading = true;
   payload.pc_toolkit_total = queries.length;
   payload.pc_toolkit_completed = 0;
-  requests.forEach((request) => {
+  lookupRequests.forEach((request) => {
     request.pc_toolkit_loading = true;
     request.pc_toolkit_error = "";
   });
@@ -3574,7 +3619,7 @@ async function enrichImportPreview(payload = state.importPreview, { requests: re
     Object.assign(accumulatedResults, batchResults || {});
     Object.assign(accumulatedErrors, meta.errors || {});
     applyPcToolkitImportResults(payload, requests, batchResults);
-    updatePcToolkitImportLookupState(requests, completedKeys, accumulatedResults, accumulatedErrors);
+    updatePcToolkitImportLookupState(requests, completedKeys, accumulatedResults, accumulatedErrors, { payload });
     schedulePcToolkitImportRender(payload);
   };
   try {
@@ -3590,7 +3635,7 @@ async function enrichImportPreview(payload = state.importPreview, { requests: re
     if (state.importPreview === payload && epoch === state.pcToolkitEnrichmentEpoch) {
       payload.pc_toolkit_loading = false;
       payload.pc_toolkit_completed = payload.pc_toolkit_total;
-      updatePcToolkitImportLookupState(requests, completedKeys, accumulatedResults, accumulatedErrors, { final: true });
+      updatePcToolkitImportLookupState(requests, completedKeys, accumulatedResults, accumulatedErrors, { final: true, payload });
       payload.pc_toolkit_error_count = (payload.requests || []).filter((request) => request.pc_toolkit_error).length;
       schedulePcToolkitImportRender(payload);
       saveCurrentImportDraft();
@@ -5468,11 +5513,7 @@ function manualReturnEditorMarkup(source, payload) {
     .join(" ") || username || "User";
   const statusOptions = manualReturnStatusOptions();
   const suggestedDevices = pcToolkitReturnCandidates(source);
-  const pendingDevices = pcToolkitPendingReturnDevices(source);
-  const visibleDevices = [
-    ...suggestedDevices.map((device) => ({ device, pending: false })),
-    ...pendingDevices.map((device) => ({ device, pending: true })),
-  ].slice(0, 3);
+  const visibleDevices = suggestedDevices.slice(0, 3).map((device) => ({ device, pending: false }));
   const toolkitEnabled = state.preferences?.pc_toolkit_enabled === true;
   const toolkitChecked = source.pc_toolkit_checked === true && !source.pc_toolkit_loading;
   const candidateMarkup = !added && visibleDevices.length
@@ -5666,6 +5707,7 @@ function clearImportStatuses() {
 }
 
 function pcToolkitImportMarkup(request, { loading = false, backlog = false } = {}) {
+  if (request?.group === "Pending returns" || request?.has_pending_return_serial) return "";
   const result = request?.pc_toolkit?.serial;
   const device = result?.primary;
   const userResult = request?.pc_toolkit?.user;
@@ -5684,8 +5726,9 @@ function pcToolkitImportMarkup(request, { loading = false, backlog = false } = {
   const associatedModel = associated.length === 1 ? (associated[0].model || associated[0].name) : "";
   const title = device?.model || associatedModel || (associated.length ? "Associated device history" : error ? "Details unavailable" : isLoading ? "Checking…" : "No matching details");
   const relation = pcToolkitDeploymentRelation(context, device);
+  const deviceName = device?.name && pcToolkitKey(device.name) !== pcToolkitKey(device.model) ? device.name : "";
   const meta = device
-    ? [relation || device.status].filter(Boolean).join(" · ")
+    ? [deviceName, relation || device.status].filter(Boolean).join(" · ")
     : associated.length
       ? `${associated.length} associated device${associated.length === 1 ? "" : "s"}`
       : "";
