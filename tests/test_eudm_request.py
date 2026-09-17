@@ -138,7 +138,7 @@ class BrowserAuthenticationPageTests(unittest.TestCase):
         )
 
         self.assertIs(active, context.created_pages[0])
-        self.assertFalse(startup.closed)
+        self.assertTrue(startup.closed)
         self.assertEqual(active.url, "https://macquarie-dwp.onbmc.com/dwp/app/")
 
 

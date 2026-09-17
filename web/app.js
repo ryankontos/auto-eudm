@@ -3211,9 +3211,15 @@ async function connectPcToolkit() {
   try {
     state.pcToolkitStatus = await api("/api/pc-toolkit/connect", { method: "POST", body: "{}" });
     renderPcToolkitStatus();
-    for (let attempt = 0; attempt < 80 && state.pcToolkitStatus?.state === "connecting"; attempt += 1) {
+    // Profile handoff can legitimately wait for Helix's SSO window to close.
+    // Keep polling long enough for that handoff, but do not leave the settings
+    // action waiting forever if the backend has become unreachable.
+    for (let attempt = 0; attempt < 220 && state.pcToolkitStatus?.state === "connecting"; attempt += 1) {
       await new Promise((resolve) => window.setTimeout(resolve, 1500));
       await refreshPcToolkitStatus();
+    }
+    if (state.pcToolkitStatus?.state === "connecting") {
+      toast("PC Toolkit is still connecting in the background. You can keep working and check again shortly.", "info");
     }
     if (["connected", "simulation"].includes(state.pcToolkitStatus?.state)) toast("PC Toolkit is ready.", "success");
     else if (state.pcToolkitStatus?.state === "error") toast(state.pcToolkitStatus.message || "PC Toolkit could not connect.", "error");
@@ -3530,6 +3536,7 @@ function openSettings({ tab = "", model = "" } = {}) {
   $("#validateWorkbookImportInput").checked = validationEnabled("validate_workbook_import");
   $("#saveAlmImportDraftsInput").checked = state.preferences.save_alm_import_drafts !== false;
   $("#pcToolkitEnabledInput").checked = state.preferences.pc_toolkit_enabled === true;
+  $("#pcToolkitTransportInput").value = state.preferences.pc_toolkit_transport || "browser";
   renderPcToolkitMappings(model ? { model, user_status: "", location_status: "" } : null);
   renderPcToolkitStatus();
   renderRequestStatusSettings();
@@ -7511,6 +7518,7 @@ function bindEvents() {
   $("#saveSettingsButton").addEventListener("click", async () => {
     const button = $("#saveSettingsButton");
     const pcToolkitWasEnabled = state.preferences?.pc_toolkit_enabled === true;
+    const pcToolkitTransportWas = state.preferences?.pc_toolkit_transport || "browser";
     const columns = {
       username: $("#spreadsheetUsernameColumnInput").value.trim(),
       deployment_serial: $("#spreadsheetDeploymentColumnInput").value.trim(),
@@ -7538,6 +7546,7 @@ function bindEvents() {
       validate_workbook_import: $("#validateWorkbookImportInput").checked,
       save_alm_import_drafts: $("#saveAlmImportDraftsInput").checked,
       pc_toolkit_enabled: $("#pcToolkitEnabledInput").checked,
+      pc_toolkit_transport: $("#pcToolkitTransportInput").value,
       pc_toolkit_model_mappings: readPcToolkitMappings(),
       request_statuses: requestStatuses,
       import_columns: columns,
@@ -7549,7 +7558,10 @@ function bindEvents() {
         body: JSON.stringify(preferences),
       });
       renderConnectionSheet();
-      if (state.preferences.pc_toolkit_enabled && !pcToolkitWasEnabled) void connectPcToolkit();
+      if (state.preferences.pc_toolkit_enabled
+        && (!pcToolkitWasEnabled || state.preferences.pc_toolkit_transport !== pcToolkitTransportWas)) {
+        void connectPcToolkit();
+      }
       if (state.preferences.save_alm_import_drafts === false) {
         state.importDrafts = [];
       } else {

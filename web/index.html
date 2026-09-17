@@ -599,6 +599,13 @@
       </section>
       <section data-settings-panel="pc-toolkit" hidden>
         <label class="settings-checkbox"><input id="pcToolkitEnabledInput" type="checkbox"><span>Use PC Toolkit to enrich devices and users</span></label>
+        <label class="settings-field">Lookup method
+          <select id="pcToolkitTransportInput">
+            <option value="browser">Browser session (recommended)</option>
+            <option value="api">Direct API</option>
+          </select>
+          <small class="settings-help">Browser session keeps the lookup inside Chrome so the portal session, cookies, and browser request rules are preserved.</small>
+        </label>
         <div class="settings-inline-action pc-toolkit-connection">
           <div><strong id="pcToolkitStatusTitle">Not connected</strong><small id="pcToolkitStatusDetail">PC Toolkit is optional and never blocks Helix submissions.</small></div>
           <button id="connectPcToolkitButton" class="button secondary compact" type="button">Connect</button>

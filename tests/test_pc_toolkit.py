@@ -13,6 +13,7 @@ from auto_eudm.pc_toolkit import (
     DEFAULT_PC_TOOLKIT_ROLE,
     PC_TOOLKIT_CONNECTION_PROBE,
     PCToolkitClient,
+    PCToolkitBrowserClient,
     PCToolkitError,
     PCToolkitService,
     normalise_lookup,
@@ -158,7 +159,7 @@ class PCToolkitCacheTests(unittest.TestCase):
             cache_path = Path(folder) / "pc-toolkit-cache.json"
             service = PCToolkitService(
                 cache_path,
-                preferences=lambda: {"pc_toolkit_enabled": True},
+                preferences=lambda: {"pc_toolkit_enabled": True, "pc_toolkit_transport": "api"},
             )
             fetched = normalise_lookup(
                 {"devices": [device("ABC123", status="In Inventory", model="Model 1")]},
@@ -181,7 +182,7 @@ class PCToolkitCacheTests(unittest.TestCase):
 
             restored = PCToolkitService(
                 cache_path,
-                preferences=lambda: {"pc_toolkit_enabled": True},
+                preferences=lambda: {"pc_toolkit_enabled": True, "pc_toolkit_transport": "api"},
             )
             self.assertEqual(restored.status()["models"], ["Model 1"])
             restored.clear_models()
@@ -193,7 +194,7 @@ class PCToolkitCacheTests(unittest.TestCase):
             service = PCToolkitService(
                 Path(folder) / "cache.json",
                 simulate=True,
-                preferences=lambda: {"pc_toolkit_enabled": True},
+                preferences=lambda: {"pc_toolkit_enabled": True, "pc_toolkit_transport": "api"},
             )
             result = service.bulk_lookup(["ABC123", " abc123 ", "example.user"])
 
@@ -217,7 +218,7 @@ class PCToolkitCacheTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             service = PCToolkitService(
                 Path(folder) / "cache.json",
-                preferences=lambda: {"pc_toolkit_enabled": True},
+                preferences=lambda: {"pc_toolkit_enabled": True, "pc_toolkit_transport": "api"},
             )
             service.state = "connecting"
             client = mock.Mock()
@@ -245,7 +246,7 @@ class PCToolkitCacheTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             service = PCToolkitService(
                 Path(folder) / "cache.json",
-                preferences=lambda: {"pc_toolkit_enabled": True},
+                preferences=lambda: {"pc_toolkit_enabled": True, "pc_toolkit_transport": "api"},
             )
             service.state = "connecting"
             client = mock.Mock()
@@ -262,6 +263,65 @@ class PCToolkitCacheTests(unittest.TestCase):
         self.assertEqual(status["state"], "error")
         self.assertIn("device API rejected", status["message"])
         self.assertEqual(client.lookup.call_count, 2)
+
+    def test_browser_client_uses_authenticated_page_fetch_shape(self) -> None:
+        calls: list[dict[str, object]] = []
+
+        class Transport:
+            def get(self, url, headers, *, timeout):
+                calls.append({"url": url, "headers": headers, "timeout": timeout})
+                return {
+                    "status": 200,
+                    "url": url,
+                    "headers": {"content-type": "application/json"},
+                    "body": json.dumps({"devices": [device(
+                        "ABC123", status="In Inventory", model="MacBook Air"
+                    )]}),
+                }
+
+        result = PCToolkitBrowserClient(
+            Transport(),
+            role="maxrole:personal",
+            access_token="test-token",
+        ).lookup("ABC123")
+
+        self.assertEqual(result["primary"]["model"], "MacBook Air")
+        self.assertEqual(calls[0]["headers"]["Authorization"], "Bearer test-token")
+        self.assertEqual(calls[0]["headers"]["X-Max-Elevated-Role"], "maxrole:personal")
+        self.assertNotIn("Connection", calls[0]["headers"])
+        self.assertNotIn("Sec-Fetch-Mode", calls[0]["headers"])
+
+    def test_browser_transport_connection_keeps_profile_and_probes_device_api(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            service = PCToolkitService(
+                Path(folder) / "cache.json",
+                browser_profile=str(Path(folder) / "chrome-profile"),
+                preferences=lambda: {"pc_toolkit_enabled": True},
+            )
+            transport = mock.Mock()
+            client = mock.Mock()
+            client.lookup.return_value = {"found": False, "devices": []}
+            with (
+                mock.patch.object(service, "_discover_role", return_value="maxrole:personal"),
+                mock.patch("auto_eudm.pc_toolkit.PCToolkitBrowserTransport", return_value=transport) as transport_type,
+                mock.patch.object(service, "_client", return_value=client),
+            ):
+                service.state = "connecting"
+                service._connect("pc-browser-connect-test")
+
+        self.assertEqual(service.status()["state"], "connected")
+        transport_type.assert_called_once_with(
+            browser_profile=str(Path(folder) / "chrome-profile"),
+            timeout=18.0,
+            service_id=service.service_id,
+            operation_id="pc-browser-connect-test",
+        )
+        transport.start.assert_called_once_with()
+        client.lookup.assert_called_once_with(
+            PC_TOOLKIT_CONNECTION_PROBE,
+            operation_id="pc-browser-connect-test",
+            purpose="post_auth_health_check",
+        )
 
 
 if __name__ == "__main__":

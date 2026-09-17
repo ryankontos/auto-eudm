@@ -8,7 +8,7 @@ single search can contain both active and stale records for the same device.
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError, as_completed
 from copy import deepcopy
 from datetime import datetime, timezone
 import gzip
@@ -16,6 +16,7 @@ import json
 import os
 import platform
 from pathlib import Path
+import queue
 import sys
 import threading
 import time
@@ -25,7 +26,7 @@ import urllib.parse
 import urllib.request
 import zlib
 
-from .eudm_request import EUDMError
+from .eudm_request import EUDMError, acquire_browser_profile_lock, open_helix_auth_page
 from . import run_reporting
 
 
@@ -36,6 +37,7 @@ DEFAULT_DEVICE_URL = (
 DEFAULT_PORTAL_URL = (
     "https://portal.platform.infraportal.syd.c1.macquarie.com/details/45sf2q7-07c"
 )
+DEFAULT_PORTAL_ORIGIN = "https://portal.platform.infraportal.syd.c1.macquarie.com"
 DEFAULT_ROLE_URL = (
     "https://portal.platform.infraportal.syd.c1.macquarie.com/auth/session/maxroles"
 )
@@ -64,6 +66,7 @@ ACTIVE_CACHE_SECONDS = 10 * 60
 STALE_CACHE_SECONDS = 30 * 24 * 60 * 60
 MAX_CACHE_ENTRIES = 10_000
 MAX_PARALLEL_LOOKUPS = 10
+PC_TOOLKIT_CONNECT_TIMEOUT_SECONDS = 300
 
 
 class PCToolkitError(EUDMError):
@@ -104,6 +107,22 @@ def pc_toolkit_request_headers(role: str, access_token: str = "") -> dict[str, s
         headers["X-Max-Elevated-Role"] = role.strip()
     if access_token.strip():
         headers["Authorization"] = f"Bearer {access_token.strip()}"
+    return headers
+
+
+def pc_toolkit_browser_request_headers(role: str, access_token: str) -> dict[str, str]:
+    """Return only headers a real browser page is allowed to set.
+
+    ``Connection``, ``Sec-Fetch-*`` and ``Accept-Encoding`` are browser-owned
+    headers. Passing those through ``window.fetch`` either gets them silently
+    rewritten or makes the request fail before it reaches the gateway.
+    """
+    headers = {
+        "Accept": "application/json, text/plain, */*",
+        "Authorization": f"Bearer {access_token.strip()}",
+    }
+    if role.strip():
+        headers["X-Max-Elevated-Role"] = role.strip()
     return headers
 
 
@@ -563,6 +582,458 @@ class PCToolkitClient:
         return result
 
 
+class PCToolkitBrowserTransport:
+    """Run PC Toolkit GETs through an actual Chrome page.
+
+    The portal's JavaScript uses a bearer token and browser-managed fetch
+    headers. Some corporate gateways treat a Python HTTP client differently,
+    even when its visible headers match Chrome. This transport keeps the
+    lookup inside a real Chrome page, using the same dedicated profile as the
+    sign-in step so the browser's session and network behaviour are retained.
+
+    Playwright's synchronous objects are thread-affine, so all page work is
+    owned by one worker thread. Callers can still safely issue concurrent
+    enrichment lookups; they are queued and executed by that browser thread.
+    """
+
+    def __init__(
+        self,
+        *,
+        browser_profile: str = "",
+        timeout: float = 18.0,
+        service_id: str = "",
+        operation_id: str | None = None,
+    ) -> None:
+        self.browser_profile = browser_profile
+        self.timeout = max(2.0, float(timeout))
+        self.service_id = service_id
+        self.operation_id = operation_id
+        self._tasks: queue.Queue[tuple[str, dict[str, Any], Future[Any] | None]] = queue.Queue()
+        self._state_lock = threading.Lock()
+        self._started = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._startup_error: BaseException | None = None
+        self._stop_requested = threading.Event()
+        self._closed = False
+
+    def start(self) -> None:
+        with self._state_lock:
+            if self._thread is None:
+                self._thread = threading.Thread(
+                    target=self._run,
+                    name="pc-toolkit-browser-transport",
+                    daemon=True,
+                )
+                self._thread.start()
+        if not self._started.wait(timeout=max(60.0, self.timeout + 30.0)):
+            self.close()
+            raise PCToolkitError(
+                "PC Toolkit's browser transport did not finish starting."
+            )
+        if self._startup_error is not None:
+            error = self._startup_error
+            raise error if isinstance(error, PCToolkitError) else PCToolkitError(
+                "PC Toolkit's browser transport could not be started."
+            ) from error
+
+    def _run(self) -> None:
+        playwright: Any | None = None
+        browser: Any | None = None
+        context: Any | None = None
+        page: Any | None = None
+        profile_lock: threading.Lock | None = None
+        try:
+            from playwright.sync_api import sync_playwright
+
+            if self.browser_profile:
+                profile_wait_started = time.monotonic()
+                profile_wait_deadline = profile_wait_started + max(60.0, self.timeout + 30.0)
+                while _profile_lock_is_live(self.browser_profile):
+                    if self._stop_requested.is_set():
+                        raise PCToolkitError("PC Toolkit's browser transport was cancelled.")
+                    if time.monotonic() >= profile_wait_deadline:
+                        raise PCToolkitError(
+                            "PC Toolkit is waiting for the Helix Chrome profile to be released."
+                        )
+                    time.sleep(0.5)
+                profile_lock = acquire_browser_profile_lock(
+                    self.browser_profile,
+                    timeout=max(60.0, self.timeout + 30.0),
+                )
+                run_reporting.pc_toolkit_event(
+                    "browser_transport_profile_acquired",
+                    service_id=self.service_id,
+                    operation_id=self.operation_id,
+                    profile_wait_ms=round((time.monotonic() - profile_wait_started) * 1000),
+                )
+                if self._stop_requested.is_set():
+                    raise PCToolkitError("PC Toolkit's browser transport was cancelled.")
+
+            playwright = sync_playwright().start()
+            run_reporting.pc_toolkit_event(
+                "browser_transport_launch_started",
+                service_id=self.service_id,
+                operation_id=self.operation_id,
+                channel="chrome",
+                headless=True,
+            )
+            if self.browser_profile:
+                try:
+                    context = playwright.chromium.launch_persistent_context(
+                        user_data_dir=str(Path(self.browser_profile).expanduser()),
+                        channel="chrome",
+                        headless=True,
+                        user_agent=PC_TOOLKIT_USER_AGENT,
+                        extra_http_headers={
+                            "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
+                        },
+                    )
+                except Exception as chrome_error:
+                    # Keep the fallback for machines where Playwright's
+                    # installed Chrome channel is unavailable. The profile is
+                    # still preserved; only the executable changes.
+                    run_reporting.pc_toolkit_event(
+                        "browser_transport_chrome_launch_failed",
+                        service_id=self.service_id,
+                        operation_id=self.operation_id,
+                        exception=run_reporting.exception_details(chrome_error),
+                    )
+                    context = playwright.chromium.launch_persistent_context(
+                        user_data_dir=str(Path(self.browser_profile).expanduser()),
+                        headless=True,
+                        user_agent=PC_TOOLKIT_USER_AGENT,
+                        extra_http_headers={
+                            "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
+                        },
+                    )
+                pages = [candidate for candidate in context.pages if browser_page_is_open(candidate)]
+                page = pages[0] if pages else context.new_page()
+            else:
+                try:
+                    browser = playwright.chromium.launch(channel="chrome", headless=True)
+                except Exception as chrome_error:
+                    run_reporting.pc_toolkit_event(
+                        "browser_transport_chrome_launch_failed",
+                        service_id=self.service_id,
+                        operation_id=self.operation_id,
+                        exception=run_reporting.exception_details(chrome_error),
+                    )
+                    browser = playwright.chromium.launch(headless=True)
+                context = browser.new_context(
+                    user_agent=PC_TOOLKIT_USER_AGENT,
+                    extra_http_headers={
+                        "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
+                    },
+                )
+                page = context.new_page()
+            navigation_started = time.monotonic()
+            try:
+                page = open_helix_auth_page(
+                    context,
+                    DEFAULT_PORTAL_URL,
+                    page,
+                    attach_diagnostics=False,
+                    timeout_ms=30_000,
+                )
+            except Exception as exc:
+                # A portal page can return a non-2xx document while still
+                # giving the page a usable portal origin for CORS fetches.
+                current_url = str(getattr(page, "url", "") or "")
+                run_reporting.pc_toolkit_event(
+                    "browser_transport_navigation_failed",
+                    service_id=self.service_id,
+                    operation_id=self.operation_id,
+                    page_url=current_url,
+                    exception=run_reporting.exception_details(exc),
+                )
+                if not current_url.startswith(("http://", "https://")):
+                    raise PCToolkitError(
+                        "PC Toolkit's browser page could not be opened."
+                    ) from exc
+            current_url = str(getattr(page, "url", "") or "")
+            if not current_url.startswith(("http://", "https://")):
+                raise PCToolkitError(
+                    "PC Toolkit's browser page remained blank after launch."
+                )
+            if not current_url.startswith(DEFAULT_PORTAL_ORIGIN):
+                raise PCToolkitError(
+                    "PC Toolkit's browser session did not return to the portal."
+                )
+            run_reporting.pc_toolkit_event(
+                "browser_transport_started",
+                service_id=self.service_id,
+                operation_id=self.operation_id,
+                page_url=current_url,
+                duration_ms=round((time.monotonic() - navigation_started) * 1000),
+            )
+            self._started.set()
+            while True:
+                task_name, payload, future = self._tasks.get()
+                if task_name == "close":
+                    break
+                if future is None:
+                    continue
+                try:
+                    if task_name != "get":
+                        raise PCToolkitError("Unknown PC Toolkit browser task.")
+                    result = page.evaluate(
+                        """
+                        async ({url, headers, timeoutMs}) => {
+                          const controller = new AbortController();
+                          const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+                          try {
+                            const response = await fetch(url, {
+                              method: "GET",
+                              headers,
+                              credentials: "omit",
+                              cache: "no-store",
+                              signal: controller.signal,
+                            });
+                            return {
+                              status: response.status,
+                              url: response.url,
+                              headers: Object.fromEntries(response.headers.entries()),
+                              body: await response.text(),
+                            };
+                          } finally {
+                            window.clearTimeout(timer);
+                          }
+                        }
+                        """,
+                        {
+                            "url": payload["url"],
+                            "headers": payload["headers"],
+                            "timeoutMs": int(self.timeout * 1000),
+                        },
+                    )
+                    future.set_result(result)
+                except Exception as exc:
+                    future.set_exception(exc)
+                    run_reporting.pc_toolkit_event(
+                        "browser_transport_request_failed",
+                        service_id=self.service_id,
+                        operation_id=self.operation_id,
+                        request_url=payload.get("url"),
+                        exception=run_reporting.exception_details(exc),
+                    )
+        except BaseException as exc:
+            self._startup_error = exc
+            run_reporting.pc_toolkit_event(
+                "browser_transport_failed",
+                service_id=self.service_id,
+                operation_id=self.operation_id,
+                exception=run_reporting.exception_details(exc),
+            )
+        finally:
+            self._started.set()
+            if context is not None:
+                try:
+                    context.close()
+                except Exception:
+                    pass
+            if browser is not None:
+                try:
+                    browser.close()
+                except Exception:
+                    pass
+            if playwright is not None:
+                try:
+                    playwright.stop()
+                except Exception:
+                    pass
+            if profile_lock is not None:
+                try:
+                    profile_lock.release()
+                except RuntimeError:
+                    pass
+            while True:
+                try:
+                    _task_name, _payload, future = self._tasks.get_nowait()
+                except queue.Empty:
+                    break
+                if future is not None and not future.done():
+                    future.set_exception(
+                        PCToolkitError("PC Toolkit's browser transport closed.")
+                    )
+
+    def get(
+        self,
+        url: str,
+        headers: dict[str, str],
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        wait_timeout = max(2.0, float(timeout or self.timeout))
+        with self._state_lock:
+            if self._closed:
+                raise PCToolkitError("PC Toolkit's browser transport is closed.")
+            thread = self._thread
+        if thread is None or not thread.is_alive():
+            raise PCToolkitError("PC Toolkit's browser transport is not running.")
+        future: Future[Any] = Future()
+        self._tasks.put(("get", {"url": url, "headers": dict(headers)}, future))
+        try:
+            result = future.result(timeout=wait_timeout + 5.0)
+        except FutureTimeoutError as exc:
+            raise PCToolkitError("PC Toolkit's browser request timed out.") from exc
+        if not isinstance(result, dict):
+            raise PCToolkitError("PC Toolkit's browser returned an invalid response.")
+        return result
+
+    def close(self) -> None:
+        with self._state_lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._stop_requested.set()
+            thread = self._thread
+        if thread is not None and thread.is_alive():
+            self._tasks.put(("close", {}, None))
+            if thread is not threading.current_thread():
+                thread.join(timeout=8)
+
+
+class PCToolkitBrowserClient:
+    """PC Toolkit client that performs the device request in Chrome fetch."""
+
+    def __init__(
+        self,
+        transport: PCToolkitBrowserTransport,
+        *,
+        role: str = DEFAULT_PC_TOOLKIT_ROLE,
+        access_token: str = "",
+        timeout: float = 18.0,
+    ) -> None:
+        self.transport = transport
+        self.role = role.strip()
+        self.access_token = access_token.strip()
+        self.timeout = timeout
+
+    def lookup(
+        self,
+        query: str,
+        *,
+        request_id: str | None = None,
+        operation_id: str | None = None,
+        purpose: str = "lookup",
+    ) -> dict[str, Any]:
+        value = clean(query)
+        request_id = request_id or run_reporting.diagnostic_id("pc-browser-http")
+        started_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+        started = time.monotonic()
+        if len(value) < 2:
+            raise PCToolkitError("Enter at least two characters for PC Toolkit.")
+        if not self.access_token:
+            raise PCToolkitError("PC Toolkit authentication is required.")
+        url = f"{DEFAULT_DEVICE_URL}/{urllib.parse.quote(value, safe='-._')}?sources=cmdb,sccm"
+        headers = pc_toolkit_browser_request_headers(self.role, self.access_token)
+        run_reporting.pc_toolkit_event(
+            "api_request_started",
+            request_id=request_id,
+            operation_id=operation_id,
+            purpose=purpose,
+            method="GET",
+            query=value,
+            request_url=url,
+            request_headers=headers,
+            timeout_seconds=self.timeout,
+            request_body_present=False,
+            channel="browser-page-fetch",
+            started_at=started_at,
+        )
+        try:
+            response = self.transport.get(url, headers, timeout=self.timeout)
+        except Exception as exc:
+            run_reporting.network(
+                "GET",
+                urllib.parse.urlsplit(url).path,
+                duration_ms=round((time.monotonic() - started) * 1000),
+                transport="pc-toolkit",
+                error=type(exc).__name__,
+                request_url=url,
+                request_headers=headers,
+                request_id=request_id,
+                operation_id=operation_id,
+                error_detail=str(exc),
+                details={
+                    "channel": "browser-page-fetch",
+                    "purpose": purpose,
+                    "query": value,
+                    "started_at": started_at,
+                    "response_body_present": False,
+                },
+            )
+            raise PCToolkitError("PC Toolkit browser request could not be completed.") from exc
+        try:
+            status = int(response.get("status", 0))
+        except (TypeError, ValueError):
+            status = 0
+        response_url = str(response.get("url") or url)
+        response_header_values = response.get("headers")
+        if not isinstance(response_header_values, dict):
+            response_header_values = {}
+        raw = response.get("body", "")
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", errors="replace")
+        if not isinstance(raw, str):
+            raw = str(raw)
+        run_reporting.network(
+            "GET",
+            urllib.parse.urlsplit(url).path,
+            status=status,
+            duration_ms=round((time.monotonic() - started) * 1000),
+            transport="pc-toolkit",
+            request_url=response_url,
+            request_headers=headers,
+            response_headers=response_header_values,
+            response_body=raw,
+            request_id=request_id,
+            operation_id=operation_id,
+            details={
+                "channel": "browser-page-fetch",
+                "purpose": purpose,
+                "query": value,
+                "started_at": started_at,
+                "response_body_present": True,
+            },
+        )
+        if status in {401, 403}:
+            raise PCToolkitError("PC Toolkit authentication is required.")
+        if status >= 400 or status < 200:
+            raise PCToolkitError(f"PC Toolkit returned HTTP {status}.")
+        try:
+            payload = json.loads(raw)
+            result = normalise_lookup(payload, value)
+        except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            run_reporting.pc_toolkit_event(
+                "response_parse_failed",
+                request_id=request_id,
+                operation_id=operation_id,
+                purpose=purpose,
+                query=value,
+                status=status,
+                duration_ms=round((time.monotonic() - started) * 1000),
+                exception=run_reporting.exception_details(exc),
+            )
+            raise PCToolkitError("PC Toolkit returned an unreadable response.") from exc
+        result["duration_ms"] = round((time.monotonic() - started) * 1000)
+        run_reporting.pc_toolkit_event(
+            "response_normalised",
+            request_id=request_id,
+            operation_id=operation_id,
+            purpose=purpose,
+            query=value,
+            status=status,
+            duration_ms=result["duration_ms"],
+            channel="browser-page-fetch",
+            payload_type=type(payload).__name__,
+            payload_keys=sorted(payload.keys()) if isinstance(payload, dict) else [],
+            normalised_device_count=int(result.get("record_count", 0) or 0),
+            active_count=int(result.get("active_count", 0) or 0),
+        )
+        return result
+
+
 class PCToolkitService:
     """Optional enrichment service with a stale-while-revalidate file cache."""
 
@@ -593,6 +1064,9 @@ class PCToolkitService:
         # The portal heartbeat token is held in memory only. It is refreshed
         # during browser authentication and is never written to the cache.
         self.access_token = ""
+        self._browser_transport: PCToolkitBrowserTransport | None = None
+        self._connect_operation_id: str | None = None
+        self._connect_cancel: threading.Event | None = None
         self.state = "simulation" if simulate else "idle"
         self.message = "Simulation data available." if simulate else "Not connected."
         self.last_error = ""
@@ -600,6 +1074,17 @@ class PCToolkitService:
 
     def enabled(self) -> bool:
         return bool(self.preferences().get("pc_toolkit_enabled", False))
+
+    def transport_mode(self) -> str:
+        """Return the configured lookup transport, defaulting to browser."""
+        configured = str(
+            self.preferences().get(
+                "pc_toolkit_transport",
+                os.getenv("PC_TOOLKIT_TRANSPORT", "browser"),
+            )
+            or "browser"
+        ).strip().casefold()
+        return configured if configured in {"api", "browser"} else "browser"
 
     def _log_context(self, *, reason: str, operation_id: str | None = None) -> None:
         """Record the local conditions that affect PC Toolkit connectivity once."""
@@ -612,6 +1097,7 @@ class PCToolkitService:
             browser_profile = self.browser_profile
             browser_headless = self.browser_headless
             role = self.role
+            transport = self.transport_mode()
         profile_path = Path(browser_profile).expanduser() if browser_profile else None
         try:
             profile_exists = bool(profile_path and profile_path.exists())
@@ -637,6 +1123,7 @@ class PCToolkitService:
             browser_profile_is_directory=profile_is_dir,
             browser_profile_readable=profile_readable,
             browser_headless=browser_headless,
+            transport=transport,
             role_configured=bool(role),
             role_source="PC_TOOLKIT_ROLE" if os.getenv("PC_TOOLKIT_ROLE") else "default",
             cache_file=self.cache_path.name,
@@ -675,6 +1162,8 @@ class PCToolkitService:
             self.state = state
             self.message = message
             self.last_error = error
+            if state != "connecting" and self._connect_cancel is not None:
+                self._connect_cancel.set()
         if previous != state or previous_error != error:
             run_reporting.pc_toolkit_event(
                 "state_changed",
@@ -797,6 +1286,7 @@ class PCToolkitService:
                 "cached_queries": len(self.cache),
                 "models": sorted(self.models, key=str.casefold),
                 "last_error": self.last_error,
+                "transport": self.transport_mode(),
             }
         status["log"] = run_reporting.pc_toolkit_log_status()
         return status
@@ -852,7 +1342,56 @@ class PCToolkitService:
             "ambiguous": False, "warning": "", "duration_ms": 5,
         }
 
-    def _client(self) -> PCToolkitClient:
+    def _close_browser_transport(self) -> None:
+        transport = self._browser_transport
+        self._browser_transport = None
+        if transport is not None:
+            transport.close()
+            run_reporting.pc_toolkit_event(
+                "browser_transport_closed",
+                service_id=self.service_id,
+            )
+
+    def _connect_cancelled(self, operation_id: str | None) -> bool:
+        if not operation_id:
+            return False
+        with self.lock:
+            return bool(
+                self._connect_operation_id == operation_id
+                and self._connect_cancel is not None
+                and self._connect_cancel.is_set()
+            )
+
+    def close(self) -> None:
+        """Release browser and deferred-cache resources during server shutdown."""
+        with self.lock:
+            if self._connect_cancel is not None:
+                self._connect_cancel.set()
+        self._close_browser_transport()
+        with self.lock:
+            timer = self.cache_write_timer
+            self.cache_write_timer = None
+        if timer is not None:
+            timer.cancel()
+        with self.lock:
+            try:
+                self._write_cache(reason="shutdown")
+            except Exception as exc:
+                run_reporting.pc_toolkit_event(
+                    "shutdown_cache_write_failed",
+                    service_id=self.service_id,
+                    exception=run_reporting.exception_details(exc),
+                )
+
+    def _client(self) -> PCToolkitClient | PCToolkitBrowserClient:
+        if self.transport_mode() == "browser":
+            if self._browser_transport is None:
+                raise PCToolkitError("PC Toolkit's browser transport is not connected.")
+            return PCToolkitBrowserClient(
+                self._browser_transport,
+                role=self.role,
+                access_token=self.access_token,
+            )
         return PCToolkitClient(role=self.role, access_token=self.access_token)
 
     def _fetch(
@@ -1205,6 +1744,8 @@ class PCToolkitService:
                 return
             self.state = "connecting"
             self.message = "Connecting to PC Toolkit…"
+            self._connect_operation_id = operation_id
+            self._connect_cancel = threading.Event()
             self.last_error = ""
         run_reporting.pc_toolkit_event(
             "connect_started",
@@ -1218,10 +1759,115 @@ class PCToolkitService:
             name="pc-toolkit-connect",
             daemon=True,
         ).start()
+        threading.Thread(
+            target=self._connect_watchdog,
+            args=(operation_id, self._connect_cancel),
+            name="pc-toolkit-connect-watchdog",
+            daemon=True,
+        ).start()
+
+    def _connect_watchdog(
+        self,
+        operation_id: str,
+        cancel: threading.Event | None,
+    ) -> None:
+        if cancel is None or cancel.wait(PC_TOOLKIT_CONNECT_TIMEOUT_SECONDS):
+            return
+        with self.lock:
+            if (
+                self.state != "connecting"
+                or self._connect_operation_id != operation_id
+            ):
+                return
+            self.state = "error"
+            self.message = (
+                "PC Toolkit connection timed out. Check the browser session and try again."
+            )
+            self.last_error = self.message
+        cancel.set()
+        self._close_browser_transport()
+        run_reporting.pc_toolkit_event(
+            "connect_timed_out",
+            service_id=self.service_id,
+            operation_id=operation_id,
+            timeout_seconds=PC_TOOLKIT_CONNECT_TIMEOUT_SECONDS,
+        )
 
     def _connect(self, operation_id: str) -> None:
         started = time.monotonic()
         authenticated_in_browser = False
+        self._close_browser_transport()
+        if self.transport_mode() == "browser":
+            # Browser mode uses the same dedicated profile for SSO and for the
+            # authenticated device fetches. The Helix API client has already
+            # completed its own handoff, so the profile lock can be held here
+            # without interrupting Helix submissions.
+            try:
+                self.access_token = ""
+                self.role = self._discover_role(operation_id)
+                authenticated_in_browser = True
+                browser_transport = PCToolkitBrowserTransport(
+                    browser_profile=self.browser_profile,
+                    timeout=18.0,
+                    service_id=self.service_id,
+                    operation_id=operation_id,
+                )
+                self._browser_transport = browser_transport
+                browser_transport.start()
+                self._client().lookup(
+                    PC_TOOLKIT_CONNECTION_PROBE,
+                    operation_id=operation_id,
+                    purpose="post_auth_health_check",
+                )
+            except Exception as exc:
+                if "authentication" in str(exc).casefold():
+                    message = (
+                        "PC Toolkit signed in, but its device API rejected the connection."
+                    )
+                else:
+                    message = str(exc)
+                self._close_browser_transport()
+                self._set_state(
+                    "error",
+                    message,
+                    operation_id=operation_id,
+                    error=str(exc),
+                )
+                run_reporting.pc_toolkit_event(
+                    "connect_failed",
+                    service_id=self.service_id,
+                    operation_id=operation_id,
+                    error=str(exc),
+                    phase="browser_transport",
+                    role=self.role,
+                    transport="browser",
+                    duration_ms=round((time.monotonic() - started) * 1000),
+                    exception=run_reporting.exception_details(exc),
+                )
+                return
+            with self.lock:
+                if self.state != "connecting" or (
+                    self._connect_operation_id is not None
+                    and self._connect_operation_id != operation_id
+                ):
+                    self._close_browser_transport()
+                    return
+                self.connected_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            self._set_state(
+                "connected",
+                "PC Toolkit enrichment is ready.",
+                operation_id=operation_id,
+            )
+            run_reporting.pc_toolkit_event(
+                "connect_succeeded",
+                service_id=self.service_id,
+                operation_id=operation_id,
+                role=self.role,
+                authenticated_in_browser=authenticated_in_browser,
+                transport="browser",
+                duration_ms=round((time.monotonic() - started) * 1000),
+            )
+            return
         try:
             # Use a harmless query so connecting does not expose a real
             # user/device. The client includes the production portal role by
@@ -1314,6 +1960,12 @@ class PCToolkitService:
                 )
                 return
         with self.lock:
+            if self.state != "connecting" or (
+                self._connect_operation_id is not None
+                and self._connect_operation_id != operation_id
+            ):
+                self._close_browser_transport()
+                return
             self.connected_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         self._set_state(
             "connected",
@@ -1350,8 +2002,13 @@ class PCToolkitService:
         )
         profile_wait_started = time.monotonic()
         profile_wait_logged = False
-        profile_wait_deadline = profile_wait_started + 45
+        # Helix may be waiting for a manual SSO completion in the same
+        # profile. Give that flow enough time to finish before treating the
+        # profile as stuck, but still produce a finite UI error.
+        profile_wait_deadline = profile_wait_started + 180
         while _profile_lock_is_live(self.browser_profile):
+            if self._connect_cancelled(operation_id):
+                raise PCToolkitError("PC Toolkit connection was cancelled.")
             if not profile_wait_logged:
                 profile_wait_logged = True
                 run_reporting.pc_toolkit_event(
@@ -1378,9 +2035,13 @@ class PCToolkitService:
                 operation_id=operation_id,
                 elapsed_ms=round((time.monotonic() - profile_wait_started) * 1000),
             )
+        profile_lock: threading.Lock | None = None
         try:
+            profile_lock = acquire_browser_profile_lock(self.browser_profile, timeout=180)
             from playwright.sync_api import sync_playwright
         except ImportError as exc:
+            if profile_lock is not None:
+                profile_lock.release()
             run_reporting.pc_toolkit_event(
                 "role_discovery_dependency_failed",
                 service_id=self.service_id,
@@ -1388,9 +2049,15 @@ class PCToolkitService:
                 exception=run_reporting.exception_details(exc),
             )
             raise PCToolkitError("Browser support is not installed for PC Toolkit.") from exc
+        except Exception:
+            if profile_lock is not None:
+                profile_lock.release()
+            raise
         try:
             playwright = sync_playwright().start()
         except Exception as exc:
+            if profile_lock is not None:
+                profile_lock.release()
             run_reporting.pc_toolkit_event(
                 "browser_runtime_start_failed",
                 service_id=self.service_id,
@@ -1440,7 +2107,9 @@ class PCToolkitService:
             headers = {
                 "Accept": "application/json, text/plain, */*",
                 "Content-Type": "application/json",
+                "Origin": DEFAULT_PORTAL_ORIGIN,
                 "Referer": str(page.url or DEFAULT_PORTAL_URL),
+                "X-Max-Elevated-Role": self.role,
                 "User-Agent": PC_TOOLKIT_USER_AGENT,
             }
             csrf = xsrf_token()
@@ -1815,10 +2484,12 @@ class PCToolkitService:
                     wait_until="domcontentloaded",
                     timeout_ms=60_000,
                 )
-                navigation_response = page.goto(
+                page = open_helix_auth_page(
+                    context,
                     DEFAULT_PORTAL_URL,
-                    wait_until="domcontentloaded",
-                    timeout=60_000,
+                    page,
+                    attach_diagnostics=False,
+                    timeout_ms=30_000,
                 )
                 run_reporting.pc_toolkit_event(
                     "browser_navigation_completed",
@@ -1827,7 +2498,7 @@ class PCToolkitService:
                     page_id=attached_pages.get(id(page)),
                     requested_url=DEFAULT_PORTAL_URL,
                     final_url=str(page.url or ""),
-                    status=(int(navigation_response.status) if navigation_response else None),
+                    status=None,
                     duration_ms=round((time.monotonic() - navigation_started) * 1000),
                 )
             except Exception as exc:
@@ -1863,10 +2534,14 @@ class PCToolkitService:
             deadline = role_probe_started + role_probe_timeout
             role_request_headers = {
                 "Accept": "application/json, text/plain, */*",
+                "Origin": DEFAULT_PORTAL_ORIGIN,
                 "Referer": str(page.url or DEFAULT_PORTAL_URL),
+                "X-Max-Elevated-Role": self.role,
                 "User-Agent": PC_TOOLKIT_USER_AGENT,
             }
             while time.monotonic() < deadline:
+                if self._connect_cancelled(operation_id):
+                    raise PCToolkitError("PC Toolkit connection was cancelled.")
                 # The portal's maxroles response only tells us that SSO is
                 # complete. The device gateway separately requires the bearer
                 # token returned by the portal heartbeat.
@@ -2065,6 +2740,11 @@ class PCToolkitService:
                         operation_id=operation_id,
                         exception=run_reporting.exception_details(exc),
                     )
+            if profile_lock is not None:
+                try:
+                    profile_lock.release()
+                except RuntimeError:
+                    pass
             try:
                 playwright.stop()
                 run_reporting.pc_toolkit_event(

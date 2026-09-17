@@ -515,7 +515,7 @@ class ClientManager:
             # proven the session and inferred the user, close its private
             # authentication context.
             try:
-                browser.context.close()
+                browser.close()
                 run_reporting.event("Closed Chrome after successful EUDM SSO")
             except Exception:
                 run_reporting.event("Could not close Chrome after EUDM SSO")
@@ -523,7 +523,7 @@ class ClientManager:
         except Exception as exc:
             if browser is not None:
                 try:
-                    browser.context.close()
+                    browser.close()
                 except Exception:
                     pass
             with self.lock:
@@ -1161,6 +1161,7 @@ class Application:
             "validate_workbook_import": True,
             "save_alm_import_drafts": True,
             "pc_toolkit_enabled": False,
+            "pc_toolkit_transport": "browser",
             "pc_toolkit_model_mappings": [],
             "request_statuses": [
                 value for _, value in USER_STATUSES + LOCATION_STATUSES
@@ -1211,6 +1212,14 @@ class Application:
                 raise eudm.EUDMError("A settings toggle had an invalid value.")
             if key in raw:
                 values[key] = raw[key]
+
+        if "pc_toolkit_transport" in raw:
+            transport = str(raw["pc_toolkit_transport"] or "").strip().casefold()
+            if transport not in {"browser", "api"}:
+                raise eudm.EUDMError(
+                    "PC Toolkit lookup method must be Browser session or Direct API."
+                )
+            values["pc_toolkit_transport"] = transport
 
         if "pc_toolkit_model_mappings" in raw:
             mappings = raw["pc_toolkit_model_mappings"]
@@ -1633,6 +1642,10 @@ class Application:
             if timer is not None:
                 timer.cancel()
         self._flush_verification_cache()
+        pc_toolkit = getattr(self, "pc_toolkit", None)
+        close = getattr(pc_toolkit, "close", None)
+        if callable(close):
+            close()
 
     def _load_alm_backlog_ignored(self) -> dict[str, dict[str, str]]:
         try:

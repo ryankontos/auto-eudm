@@ -388,6 +388,18 @@ class RequestStatusPreferenceTests(unittest.TestCase):
             "location_status": "",
         }])
 
+    def test_pc_toolkit_browser_transport_is_the_default_and_api_is_supported(self) -> None:
+        defaults = self.app._normalise_preferences({})
+        self.assertEqual(defaults["pc_toolkit_transport"], "browser")
+        self.assertEqual(
+            self.app._normalise_preferences({"pc_toolkit_transport": " API "})[
+                "pc_toolkit_transport"
+            ],
+            "api",
+        )
+        with self.assertRaises(eudm.EUDMError):
+            self.app._normalise_preferences({"pc_toolkit_transport": "python"})
+
     def test_pc_toolkit_model_names_are_case_insensitively_unique(self) -> None:
         with self.assertRaises(eudm.EUDMError):
             self.app._normalise_preferences({

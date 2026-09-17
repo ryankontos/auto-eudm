@@ -34,12 +34,32 @@ from . import run_reporting
 from . import presentation
 
 
+class EUDMError(RuntimeError):
+    pass
+
+
 DEFAULT_BASE = "https://macquarie-dwp.onbmc.com/dwp/rest"
 DEFAULT_BROWSER_PROFILE = "~/.auto-eudm-chrome"
 
+# Helix and PC Toolkit intentionally share the same installed-Chrome profile
+# so the operator only has to authenticate once. Playwright does not know
+# about another persistent context being launched by this process, so keep a
+# small process-local lock in addition to Chrome's SingletonLock.
+_BROWSER_PROFILE_LOCK_GUARD = threading.Lock()
+_BROWSER_PROFILE_LOCKS: dict[str, threading.Lock] = {}
 
-class EUDMError(RuntimeError):
-    pass
+
+def acquire_browser_profile_lock(profile: str, *, timeout: float = 60.0) -> threading.Lock:
+    """Reserve a persistent Chrome profile for one live browser context."""
+    key = str(Path(profile).expanduser().resolve())
+    with _BROWSER_PROFILE_LOCK_GUARD:
+        lock = _BROWSER_PROFILE_LOCKS.setdefault(key, threading.Lock())
+    if not lock.acquire(timeout=max(0.0, float(timeout))):
+        raise EUDMError(
+            "The shared Chrome profile is being used by another AutoEUDM connection. "
+            "Try again shortly."
+        )
+    return lock
 
 
 class SSOExpiredError(EUDMError):
@@ -215,11 +235,26 @@ class BrowserClient:
         context: Any,
         verbose: bool = False,
         user_agent: str = "auto-eudm/1.0",
+        profile_lock: threading.Lock | None = None,
     ) -> None:
         self.base = base
         self.context = context
         self.verbose = verbose
         self.user_agent = user_agent
+        self._profile_lock = profile_lock
+        self._closed = False
+
+    def close(self) -> None:
+        """Close the browser context and release its shared profile lock."""
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self.context.close()
+        finally:
+            if self._profile_lock is not None:
+                self._profile_lock.release()
+                self._profile_lock = None
 
     def request(self, method: str, path: str, payload: Any | None = None) -> Any:
         started = time.monotonic()
@@ -666,6 +701,9 @@ def open_helix_auth_page(
     context: Any,
     app_url: str,
     startup_page: Any | None = None,
+    *,
+    attach_diagnostics: bool = True,
+    timeout_ms: int = 60_000,
 ) -> Any:
     """Navigate a persistent Chrome context without racing its startup tab.
 
@@ -685,11 +723,15 @@ def open_helix_auth_page(
     last_error: Exception | None = None
 
     for attempt in range(3):
-        if id(page) not in attached:
+        if attach_diagnostics and id(page) not in attached:
             attach_page_api_diagnostics(page)
             attached.add(id(page))
         try:
-            page.goto(app_url, wait_until="domcontentloaded", timeout=60_000)
+            page.goto(
+                app_url,
+                wait_until="domcontentloaded",
+                timeout=max(1_000, int(timeout_ms)),
+            )
         except Exception as exc:
             last_error = exc
             run_reporting.event(
@@ -701,8 +743,18 @@ def open_helix_auth_page(
         candidates = [page, *list(context.pages)]
         active = next((candidate for candidate in candidates if usable_auth_page(candidate)), None)
         if active is not None:
-            if id(active) not in attached:
+            if attach_diagnostics and id(active) not in attached:
                 attach_page_api_diagnostics(active)
+            # Navigation failures can leave the startup document behind as a
+            # visible about:blank tab. Remove only those temporary documents;
+            # never close a real page the user may already have open.
+            for candidate in candidates:
+                if candidate is active or usable_auth_page(candidate):
+                    continue
+                try:
+                    candidate.close()
+                except Exception:
+                    pass
             return active
 
         if attempt < 2:
@@ -710,7 +762,12 @@ def open_helix_auth_page(
                 page.wait_for_timeout(500)
             except Exception:
                 pass
-            page = context.new_page()
+            replacement = context.new_page()
+            try:
+                page.close()
+            except Exception:
+                pass
+            page = replacement
 
     raise EUDMError(
         "Chrome opened but its authentication tab remained blank. Try Authenticate again."
@@ -734,7 +791,9 @@ def browser_client_from_profile(
         ) from exc
     playwright: Any | None = None
     context: Any | None = None
+    profile_lock: threading.Lock | None = None
     try:
+        profile_lock = acquire_browser_profile_lock(profile, timeout=60)
         playwright = sync_playwright().start()
         context = playwright.chromium.launch_persistent_context(
             user_data_dir=str(Path(profile).expanduser()),
@@ -774,6 +833,8 @@ def browser_client_from_profile(
                 context.close()
             except Exception:
                 pass
+        if profile_lock is not None:
+            profile_lock.release()
         if playwright is not None:
             try:
                 playwright.stop()
@@ -802,7 +863,7 @@ def browser_client_from_profile(
     # captures the authenticated API cookies.
     atexit.register(playwright.stop)
     atexit.register(context.close)
-    return BrowserClient(base, context, verbose, user_agent)
+    return BrowserClient(base, context, verbose, user_agent, profile_lock)
 
 
 def open_client(

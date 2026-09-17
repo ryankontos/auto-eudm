@@ -2113,6 +2113,7 @@ input:hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var
 .settings-help { margin: 0; color: var(--muted); line-height: 1.45; font-size: 13px; }
 .settings-card label { display: grid; gap: 7px; color: var(--ink); font-size: 13px; font-weight: 650; }
 .settings-card input, .settings-card select { width: 100%; font-size: 14px; }
+.settings-field .settings-help { font-size: 11px; font-weight: 500; }
 .settings-inline-action { display: flex; justify-content: space-between; gap: 12px; }
 .settings-column-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .settings-column-grid label:last-child { grid-column: 1 / -1; }
