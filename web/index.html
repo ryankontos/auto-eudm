@@ -20,17 +20,16 @@
   <header class="app-header">
     <div class="product-name">AutoEUDM</div>
     <div class="header-actions">
-      <div id="connectionStatus" class="connection-status" role="status" aria-live="polite" hidden>
-        <span class="connection-status-copy">
-          <span class="connection-status-dot" aria-hidden="true"></span>
-          <span id="connectionStatusLabel">Not authenticated</span>
-        </span>
-        <button id="connectionStatusAction" class="button secondary compact connection-status-action" type="button" aria-label="Authenticate with Helix">Authenticate</button>
-      </div>
-      <div id="pcToolkitHeaderStatus" class="connection-status pc-toolkit-header-status" role="status" aria-live="polite" hidden>
-        <span class="connection-status-copy"><span class="connection-status-dot" aria-hidden="true"></span><span id="pcToolkitHeaderLabel">PC Toolkit unavailable</span></span>
-        <button id="pcToolkitHeaderAction" class="button secondary compact connection-status-action" type="button">Connect</button>
-      </div>
+      <button id="connectionStatus" class="connection-status" type="button" aria-live="polite" aria-label="Authenticate with Helix" hidden>
+        <span class="connection-status-dot" aria-hidden="true"></span>
+        <span class="connection-status-service">Helix</span>
+        <span id="connectionStatusLabel" class="connection-status-label">Not authenticated</span>
+      </button>
+      <button id="pcToolkitHeaderStatus" class="connection-status pc-toolkit-header-status" type="button" aria-live="polite" aria-label="Connect to PC Toolkit" hidden>
+        <span class="connection-status-dot" aria-hidden="true"></span>
+        <span class="connection-status-service">PC Toolkit</span>
+        <span id="pcToolkitHeaderLabel" class="connection-status-label">Not connected</span>
+      </button>
       <button id="commandPaletteButton" class="button secondary compact" type="button" aria-label="Open command palette" title="Open command palette (⌘K or Ctrl+K)"><i data-lucide="command"></i><span>Commands</span></button>
       <button id="historyButton" class="button secondary compact" type="button" aria-keyshortcuts="Alt+Shift+H Control+Shift+H" title="Open request history"><i data-lucide="history"></i><span>Request history</span></button>
     </div>

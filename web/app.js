@@ -279,7 +279,6 @@ const elements = {
   queueFilterEmpty: $("#queueFilterEmpty"),
   connectionStatus: $("#connectionStatus"),
   connectionStatusLabel: $("#connectionStatusLabel"),
-  connectionStatusAction: $("#connectionStatusAction"),
   queueValidationNotice: $("#queueValidationNotice"),
   queueValidationMessage: $("#queueValidationMessage"),
   submissionNotice: $("#submissionNotice"),
@@ -2790,9 +2789,8 @@ function connectionHasError(status = state.connection) {
 function renderPcToolkitHeaderStatus() {
   const wrapper = $("#pcToolkitHeaderStatus");
   const label = $("#pcToolkitHeaderLabel");
-  const button = $("#pcToolkitHeaderAction");
   const status = state.pcToolkitStatus || {};
-  if (!wrapper || !label || !button) return;
+  if (!wrapper || !label) return;
   const enabled = state.preferences?.pc_toolkit_enabled === true;
   wrapper.hidden = !enabled;
   if (!enabled) return;
@@ -2800,9 +2798,12 @@ function renderPcToolkitHeaderStatus() {
   const ready = ["connected", "simulation"].includes(status.state);
   const failed = status.state === "error";
   wrapper.dataset.state = ready ? "connected" : failed ? "error" : connecting ? "connecting" : "disconnected";
-  label.textContent = ready ? "PC Toolkit ready" : connecting ? "PC Toolkit connecting…" : failed ? "PC Toolkit unavailable" : "PC Toolkit not connected";
-  button.disabled = connecting;
-  button.textContent = connecting ? "Connecting…" : ready ? "Reconnect" : "Connect";
+  label.textContent = ready ? "Ready" : connecting ? "Connecting…" : failed ? "Unavailable" : "Connect";
+  wrapper.disabled = connecting;
+  wrapper.setAttribute("aria-label", connecting
+    ? "Connecting to PC Toolkit"
+    : ready ? "Reconnect to PC Toolkit" : "Connect to PC Toolkit");
+  wrapper.title = status.message || wrapper.getAttribute("aria-label");
 }
 
 function renderConnectionOptionalStatus() {
@@ -2814,7 +2815,11 @@ function renderConnectionOptionalStatus() {
   const status = state.pcToolkitStatus || {};
   const ready = ["connected", "simulation"].includes(status.state);
   element.dataset.state = ready ? "connected" : status.state === "error" ? "error" : "optional";
-  element.textContent = ready ? "PC Toolkit authenticated (optional)" : status.state === "connecting" ? "PC Toolkit authentication in progress (optional)" : "PC Toolkit authentication is optional";
+  element.textContent = ready
+    ? "PC Toolkit · Ready"
+    : status.state === "connecting"
+      ? "PC Toolkit · Connecting…"
+      : status.state === "error" ? "PC Toolkit · Unavailable" : "PC Toolkit · Optional";
 }
 
 function renderConnectionSheet(status = state.connection) {
@@ -2835,20 +2840,16 @@ function renderConnectionSheet(status = state.connection) {
   elements.connectionStatusLabel.textContent = stateName === "simulation"
     ? "Simulation"
     : ready
-      ? "Authenticated with Helix"
+      ? "Authenticated"
       : stateName === "connecting"
         ? "Authenticating…"
-        : "Not authenticated";
-  elements.connectionStatusAction.hidden = stateName === "simulation";
-  elements.connectionStatusAction.disabled = connecting;
-  elements.connectionStatusAction.textContent = stateName === "connecting"
-    ? "Authenticating…"
-    : ready ? "Reauthenticate" : "Authenticate";
-  elements.connectionStatusAction.setAttribute(
+        : hasError ? "Attention needed" : "Authenticate";
+  elements.connectionStatus.disabled = connecting || stateName === "simulation";
+  elements.connectionStatus.setAttribute(
     "aria-label",
     stateName === "connecting"
       ? "Authenticating with Helix"
-      : ready ? "Reauthenticate with Helix" : "Authenticate with Helix",
+      : ready ? "View Helix connection" : hasError ? "Review Helix authentication error" : "Authenticate with Helix",
   );
   elements.connectionStatus.title = stateName === "simulation"
     ? "Simulation mode"
@@ -2858,7 +2859,7 @@ function renderConnectionSheet(status = state.connection) {
   elements.closeConnectionButton.hidden = !ready;
   elements.connectionSheetTitle.textContent = hasError
     ? "Helix authentication failed"
-    : "Helix Authentication Required";
+    : ready ? "Authenticated with Helix" : "Helix Authentication Required";
   elements.connectionLoading.hidden = !connecting;
   elements.connectionErrorMessage.hidden = !hasError;
   elements.connectionErrorMessage.textContent = hasError
@@ -2886,7 +2887,7 @@ function renderConnectionSheet(status = state.connection) {
   refreshIcons(elements.connectionVisual);
   renderPcToolkitHeaderStatus();
   renderConnectionOptionalStatus();
-  if (ready || connecting) {
+  if (connecting || (ready && !state.connectionSheetManual)) {
     if (elements.connectionDialog.open) elements.connectionDialog.close();
     return;
   }
@@ -2986,8 +2987,15 @@ function bindConnectionSheetEvents() {
   if (state.connectionSheetEventsBound) return;
   state.connectionSheetEventsBound = true;
   elements.connectionAuthenticateButton.addEventListener("click", connect);
-  elements.connectionStatusAction.addEventListener("click", connect);
-  $("#pcToolkitHeaderAction")?.addEventListener("click", connectPcToolkit);
+  elements.connectionStatus.addEventListener("click", () => {
+    if (connectionIsReady() || connectionHasError()) {
+      openConnectionSheet();
+      renderConnectionSheet();
+      return;
+    }
+    void connect();
+  });
+  $("#pcToolkitHeaderStatus")?.addEventListener("click", connectPcToolkit);
   elements.exportDiagnosticsSheetButton?.addEventListener("click", exportDiagnostics);
   elements.downloadDiagnosticsButton?.addEventListener("click", exportDiagnostics);
   elements.closeConnectionButton.addEventListener("click", () => {
@@ -5219,10 +5227,39 @@ function importPersonMarkup(request) {
 function importDeploymentNeedsManualReturn(request, payload) {
   if (request.group !== "Deployments") return false;
   if (request.included === false) return false;
+  if (request.new_joiner === true) return false;
   if (request.manual_return_id && payload.requests.some((item) => item.id === request.manual_return_id)) {
     return false;
   }
   return !request.has_returned_device_serial && !request.has_pending_return_serial;
+}
+
+function pcToolkitReturnCandidates(request) {
+  const deploymentSerial = pcToolkitKey(request.serials?.[0] || request.serial);
+  const username = pcToolkitKey(request.user || request.username);
+  return (request.pc_toolkit?.user?.devices || []).filter((device) => {
+    const serial = pcToolkitKey(device?.serial);
+    const assigned = pcToolkitKey(device?.assigned_user?.login);
+    return device?.active !== false
+      && pcToolkitKey(device?.status) === "deployed"
+      && serial
+      && serial !== deploymentSerial
+      && (!assigned || !username || assigned === username);
+  }).slice(0, 3);
+}
+
+function pcToolkitPendingReturnDevices(request) {
+  const deploymentSerial = pcToolkitKey(request.serials?.[0] || request.serial);
+  const username = pcToolkitKey(request.user || request.username);
+  return (request.pc_toolkit?.user?.devices || []).filter((device) => {
+    const serial = pcToolkitKey(device?.serial);
+    const assigned = pcToolkitKey(device?.assigned_user?.login);
+    return device?.active !== false
+      && pcToolkitKey(device?.status).includes("pending return")
+      && serial
+      && serial !== deploymentSerial
+      && (!assigned || !username || assigned === username);
+  }).slice(0, 2);
 }
 
 function manualReturnStatusOptions() {
@@ -5300,19 +5337,20 @@ function manualReturnEditorMarkup(source, payload) {
     .filter(Boolean)
     .join(" ") || username || "User";
   const statusOptions = manualReturnStatusOptions();
-  const deploymentSerial = pcToolkitKey(source.serials?.[0]);
-  const suggestedDevices = (source.pc_toolkit?.user?.devices || []).filter((device) =>
-    device.active !== false
-    && pcToolkitKey(device.status) === "deployed"
-    && pcToolkitKey(device.serial)
-    && pcToolkitKey(device.serial) !== deploymentSerial
-  );
-  const candidateMarkup = !added && suggestedDevices.length
-    ? `<div class="pc-toolkit-return-candidates"><small>Devices associated with this user in PC Toolkit</small>${suggestedDevices.map((device) => {
+  const suggestedDevices = pcToolkitReturnCandidates(source);
+  const pendingDevices = pcToolkitPendingReturnDevices(source);
+  const toolkitEnabled = state.preferences?.pc_toolkit_enabled === true;
+  const toolkitChecked = Boolean(source.pc_toolkit?.user) && !payload.pc_toolkit_loading;
+  const candidateMarkup = !added && (suggestedDevices.length || pendingDevices.length)
+    ? `<div class="pc-toolkit-return-candidates"><small>PC Toolkit device history</small>${suggestedDevices.map((device) => {
         const model = device.model || device.name || "Device";
-        return `<div class="pc-toolkit-return-candidate"><span><strong>${escapeHtml(device.serial)}</strong><small>${escapeHtml([model, device.status].filter(Boolean).join(" · "))}</small></span><span><button class="text-button" type="button" data-pc-toolkit-return-candidate="${escapeHtml(source.id)}" data-candidate-serial="${escapeHtml(device.serial)}" data-candidate-model="${escapeHtml(device.model || "")}" data-candidate-type="returned_devices">Use as returned</button><button class="text-button" type="button" data-pc-toolkit-return-candidate="${escapeHtml(source.id)}" data-candidate-serial="${escapeHtml(device.serial)}" data-candidate-model="${escapeHtml(device.model || "")}" data-candidate-type="pending_returns">Use as pending return</button></span></div>`;
-      }).join("")}</div>`
-    : "";
+        return `<div class="pc-toolkit-return-candidate"><span><strong>${escapeHtml(device.serial)}</strong><small>${escapeHtml(model)}</small></span><span><button class="text-button" type="button" data-pc-toolkit-return-candidate="${escapeHtml(source.id)}" data-candidate-serial="${escapeHtml(device.serial)}" data-candidate-model="${escapeHtml(device.model || "")}" data-candidate-type="returned_devices">Returned</button><button class="text-button" type="button" data-pc-toolkit-return-candidate="${escapeHtml(source.id)}" data-candidate-serial="${escapeHtml(device.serial)}" data-candidate-model="${escapeHtml(device.model || "")}" data-candidate-type="pending_returns">Pending return</button></span></div>`;
+      }).join("")}${pendingDevices.map((device) => `<div class="pc-toolkit-return-candidate"><span><strong>${escapeHtml(device.serial)}</strong><small>${escapeHtml(device.model || device.name || "Device")}</small></span><span class="pc-toolkit-return-current-state">Already ${escapeHtml(device.status || "Pending Return")}</span></div>`).join("")}</div>`
+    : !added && toolkitEnabled && payload.pc_toolkit_loading
+      ? '<small class="pc-toolkit-return-checking"><span class="import-status-spinner" aria-hidden="true"></span>Checking PC Toolkit for a previous device…</small>'
+      : !added && toolkitEnabled && toolkitChecked
+        ? '<small class="pc-toolkit-return-empty">No other deployed device was found in PC Toolkit.</small>'
+        : "";
   const statusControl = type === "returned_devices"
     ? `<label>Status<select data-import-manual-status="${escapeHtml(source.id)}">
         <option value="">Choose a location status</option>
@@ -5785,12 +5823,18 @@ function renderImportPreview() {
         <button class="button secondary compact" data-import-retry="${escapeHtml(request.id)}" type="button">${iconMarkup("rotate-ccw")}<span>Retry</span></button>
       </div>` : "";
       const destination = locationDisplay(state.importLocation) || "Location stock";
+      const returnCandidates = isDeployment ? pcToolkitReturnCandidates(request) : [];
+      const pendingReturnDevices = isDeployment ? pcToolkitPendingReturnDevices(request) : [];
       const missingReturnWarning = isDeployment
         && !request.has_returned_device_serial
         && !request.has_pending_return_serial
         ? request.new_joiner
           ? '<small class="import-new-joiner">New joiner</small>'
-          : '<small class="import-return-warning">User has no return or pending return</small>'
+          : returnCandidates.length
+            ? `<small class="import-return-suggestion">PC Toolkit found ${returnCandidates.length === 1 ? "a possible return" : "possible returns"}</small>`
+            : pendingReturnDevices.length
+              ? '<small class="import-return-resolved">PC Toolkit already shows a pending return</small>'
+              : '<small class="import-return-warning">User has no return or pending return</small>'
         : "";
       const personColumn = isReturnedDevice
         ? `<div><small class="import-field-title">Destination</small><strong>${escapeHtml(destination)}</strong></div>`
@@ -5807,7 +5851,7 @@ function renderImportPreview() {
     }).join("");
     const manualReturnSection = manualReturnEntries.length
       ? `<div class="import-manual-return-section">
-          <div class="import-manual-return-heading"><div><strong>Missing return details</strong><small>These users have no returned or pending-return serial in the workbook. Add one here if you have it.</small></div><span>${manualReturnEntries.length}</span></div>
+          <div class="import-manual-return-heading"><div><strong>Missing return details</strong><small>These users have no returned or pending-return serial in the workbook. Add one here, or use a PC Toolkit suggestion when available.</small></div><span>${manualReturnEntries.length}</span></div>
           <div class="import-manual-return-list">${manualReturnEntries.map((request) => manualReturnEditorMarkup(request, payload)).join("")}</div>
         </div>`
       : "";
