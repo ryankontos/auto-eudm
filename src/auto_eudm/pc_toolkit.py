@@ -44,10 +44,6 @@ DEFAULT_ROLE_URL = (
 DEFAULT_HEARTBEAT_URL = (
     "https://portal.platform.infraportal.syd.c1.macquarie.com/auth/session/heartbeat"
 )
-# This is deliberately not a real asset or user.  It exercises the same
-# authenticated device route without sending an operator's data while
-# connecting.
-PC_TOOLKIT_CONNECTION_PROBE = "__auto_eudm_connection_probe__"
 # The production PC Toolkit client sends this role on its read requests.  It
 # is also returned by the portal's maxroles endpoint for the normal personal
 # session.  Keeping it as a default means enrichment works immediately after
@@ -79,6 +75,26 @@ def normalise_key(value: Any) -> str:
 
 def clean(value: Any) -> str:
     return " ".join(str(value or "").split()).strip()
+
+
+def xsrf_cookie_value(cookies: Any) -> str:
+    """Return the portal's URL-decoded XSRF cookie value.
+
+    The portal currently calls this cookie ``XSRF_TOKEN`` (with an
+    underscore). Older captures and a few gateway responses have used a
+    hyphenated spelling, so accept both without logging the value itself.
+    """
+    if not isinstance(cookies, list):
+        return ""
+    for cookie in cookies:
+        if not isinstance(cookie, dict):
+            continue
+        name = clean(cookie.get("name")).casefold().replace("-", "_")
+        if name not in {"xsrf_token", "x_xsrf_token"}:
+            continue
+        value = str(cookie.get("value", "") or "")
+        return urllib.parse.unquote(value)
+    return ""
 
 
 def pc_toolkit_request_headers(role: str, access_token: str = "") -> dict[str, str]:
@@ -603,11 +619,13 @@ class PCToolkitBrowserTransport:
         timeout: float = 18.0,
         service_id: str = "",
         operation_id: str | None = None,
+        headless: bool = False,
     ) -> None:
         self.browser_profile = browser_profile
         self.timeout = max(2.0, float(timeout))
         self.service_id = service_id
         self.operation_id = operation_id
+        self.headless = bool(headless)
         self._tasks: queue.Queue[tuple[str, dict[str, Any], Future[Any] | None]] = queue.Queue()
         self._state_lock = threading.Lock()
         self._started = threading.Event()
@@ -675,14 +693,14 @@ class PCToolkitBrowserTransport:
                 service_id=self.service_id,
                 operation_id=self.operation_id,
                 channel="chrome",
-                headless=True,
+                headless=self.headless,
             )
             if self.browser_profile:
                 try:
                     context = playwright.chromium.launch_persistent_context(
                         user_data_dir=str(Path(self.browser_profile).expanduser()),
                         channel="chrome",
-                        headless=True,
+                        headless=self.headless,
                         user_agent=PC_TOOLKIT_USER_AGENT,
                         extra_http_headers={
                             "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
@@ -700,7 +718,7 @@ class PCToolkitBrowserTransport:
                     )
                     context = playwright.chromium.launch_persistent_context(
                         user_data_dir=str(Path(self.browser_profile).expanduser()),
-                        headless=True,
+                        headless=self.headless,
                         user_agent=PC_TOOLKIT_USER_AGENT,
                         extra_http_headers={
                             "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
@@ -710,7 +728,9 @@ class PCToolkitBrowserTransport:
                 page = pages[0] if pages else context.new_page()
             else:
                 try:
-                    browser = playwright.chromium.launch(channel="chrome", headless=True)
+                    browser = playwright.chromium.launch(
+                        channel="chrome", headless=self.headless
+                    )
                 except Exception as chrome_error:
                     run_reporting.pc_toolkit_event(
                         "browser_transport_chrome_launch_failed",
@@ -718,7 +738,7 @@ class PCToolkitBrowserTransport:
                         operation_id=self.operation_id,
                         exception=run_reporting.exception_details(chrome_error),
                     )
-                    browser = playwright.chromium.launch(headless=True)
+                    browser = playwright.chromium.launch(headless=self.headless)
                 context = browser.new_context(
                     user_agent=PC_TOOLKIT_USER_AGENT,
                     extra_http_headers={
@@ -1811,25 +1831,15 @@ class PCToolkitService:
                     timeout=18.0,
                     service_id=self.service_id,
                     operation_id=operation_id,
+                    headless=self.browser_headless,
                 )
                 self._browser_transport = browser_transport
                 browser_transport.start()
-                self._client().lookup(
-                    PC_TOOLKIT_CONNECTION_PROBE,
-                    operation_id=operation_id,
-                    purpose="post_auth_health_check",
-                )
             except Exception as exc:
-                if "authentication" in str(exc).casefold():
-                    message = (
-                        "PC Toolkit signed in, but its device API rejected the connection."
-                    )
-                else:
-                    message = str(exc)
                 self._close_browser_transport()
                 self._set_state(
                     "error",
-                    message,
+                    str(exc),
                     operation_id=operation_id,
                     error=str(exc),
                 )
@@ -1869,96 +1879,32 @@ class PCToolkitService:
             )
             return
         try:
-            # Use a harmless query so connecting does not expose a real
-            # user/device. The client includes the production portal role by
-            # default, then role discovery remains available for accounts
-            # whose session exposes a different role.
-            self._client().lookup(
-                PC_TOOLKIT_CONNECTION_PROBE,
+            # The device endpoint does not have a ping route. A fabricated
+            # serial can be rejected even when the authenticated session is
+            # valid, which used to make every connection report a false
+            # device-API failure. Authenticate through the portal first and
+            # let the first real lookup validate the device route.
+            self.access_token = ""
+            self.role = self._discover_role(operation_id)
+            authenticated_in_browser = True
+        except Exception as exc:
+            self._set_state(
+                "error",
+                str(exc),
                 operation_id=operation_id,
-                purpose="connect_health_check",
+                error=str(exc),
             )
-        except Exception as first_error:
             run_reporting.pc_toolkit_event(
-                "connect_probe_failed",
+                "connect_failed",
                 service_id=self.service_id,
                 operation_id=operation_id,
-                phase="health_check",
+                error=str(exc),
+                phase="role_discovery",
+                transport="api",
                 duration_ms=round((time.monotonic() - started) * 1000),
-                exception=run_reporting.exception_details(first_error),
+                exception=run_reporting.exception_details(exc),
             )
-            if "authentication" not in str(first_error).casefold():
-                self._set_state(
-                    "error",
-                    str(first_error),
-                    operation_id=operation_id,
-                    error=str(first_error),
-                )
-                run_reporting.pc_toolkit_event(
-                    "connect_failed",
-                    service_id=self.service_id,
-                    operation_id=operation_id,
-                    error=str(first_error),
-                    phase="health_check",
-                    duration_ms=round((time.monotonic() - started) * 1000),
-                    exception=run_reporting.exception_details(first_error),
-                )
-                return
-            try:
-                # Do not carry a possibly expired bearer token into a new
-                # browser session. The heartbeat must issue a fresh one.
-                self.access_token = ""
-                self.role = self._discover_role(operation_id)
-                authenticated_in_browser = True
-            except Exception as exc:
-                self._set_state(
-                    "error",
-                    str(exc),
-                    operation_id=operation_id,
-                    error=str(exc),
-                )
-                run_reporting.pc_toolkit_event(
-                    "connect_failed",
-                    service_id=self.service_id,
-                    operation_id=operation_id,
-                    error=str(exc),
-                    phase="role_discovery",
-                    duration_ms=round((time.monotonic() - started) * 1000),
-                    exception=run_reporting.exception_details(exc),
-                )
-                return
-            # A working portal session and an elevated role do not prove that
-            # the separate device gateway accepts our request.  Re-run the
-            # same harmless lookup after SSO before reporting readiness.
-            try:
-                self._client().lookup(
-                    PC_TOOLKIT_CONNECTION_PROBE,
-                    operation_id=operation_id,
-                    purpose="post_auth_health_check",
-                )
-            except Exception as verification_error:
-                message = (
-                    "PC Toolkit signed in, but its device API rejected the connection."
-                    if "authentication" in str(verification_error).casefold()
-                    else str(verification_error)
-                )
-                self._set_state(
-                    "error",
-                    message,
-                    operation_id=operation_id,
-                    error=str(verification_error),
-                )
-                run_reporting.pc_toolkit_event(
-                    "connect_failed",
-                    service_id=self.service_id,
-                    operation_id=operation_id,
-                    error=str(verification_error),
-                    phase="post_auth_health_check",
-                    role=self.role,
-                    duration_ms=round((time.monotonic() - started) * 1000),
-                    exception=run_reporting.exception_details(verification_error),
-                )
-                return
+            return
         with self.lock:
             if self.state != "connecting" or (
                 self._connect_operation_id is not None
@@ -1978,6 +1924,7 @@ class PCToolkitService:
             operation_id=operation_id,
             role=self.role,
             authenticated_in_browser=authenticated_in_browser,
+            transport="api",
             duration_ms=round((time.monotonic() - started) * 1000),
         )
 
@@ -2092,13 +2039,9 @@ class PCToolkitService:
                 cookies = context.cookies([DEFAULT_HEARTBEAT_URL]) if context else []
             except Exception:
                 return ""
-            for cookie in cookies:
-                name = str(cookie.get("name", "")).casefold()
-                if name in {"xsrf-token", "x-xsrf-token"}:
-                    return urllib.parse.unquote(str(cookie.get("value", "")))
-            return ""
+            return xsrf_cookie_value(cookies)
 
-        def refresh_access_token() -> str:
+        def refresh_access_token(role: str | None = None) -> str:
             """Get the bearer token the portal uses for device API requests."""
             if context is None:
                 return ""
@@ -2109,9 +2052,11 @@ class PCToolkitService:
                 "Content-Type": "application/json",
                 "Origin": DEFAULT_PORTAL_ORIGIN,
                 "Referer": str(page.url or DEFAULT_PORTAL_URL),
-                "X-Max-Elevated-Role": self.role,
                 "User-Agent": PC_TOOLKIT_USER_AGENT,
             }
+            requested_role = clean(role if role is not None else self.role)
+            if requested_role:
+                headers["X-Max-Elevated-Role"] = requested_role
             csrf = xsrf_token()
             if csrf:
                 headers["X-XSRF-Token"] = csrf
@@ -2546,7 +2491,9 @@ class PCToolkitService:
                 # complete. The device gateway separately requires the bearer
                 # token returned by the portal heartbeat.
                 if not self.access_token:
-                    token = refresh_access_token()
+                    # Match the portal's first heartbeat: the elevated role
+                    # is added after maxroles has selected it.
+                    token = refresh_access_token(role="")
                     if token:
                         self.access_token = token
                         run_reporting.pc_toolkit_event(
@@ -2556,13 +2503,21 @@ class PCToolkitService:
                             token_length=len(token),
                             source="portal_heartbeat",
                         )
+                csrf = xsrf_token()
+                if csrf:
+                    role_request_headers["X-XSRF-Token"] = csrf
                 # Use the context request client rather than page JavaScript:
                 # this preserves the persistent browser cookies without being
                 # affected by a welcome-page redirect or cross-origin policy.
                 request_id = run_reporting.diagnostic_id("pc-role")
                 probe_started = time.monotonic()
                 try:
-                    response = context.request.get(DEFAULT_ROLE_URL, timeout=5_000)
+                    response = context.request.get(
+                        DEFAULT_ROLE_URL,
+                        headers=role_request_headers,
+                        timeout=5_000,
+                        fail_on_status_code=False,
+                    )
                     try:
                         raw_body = response.body()
                         body_error = None
@@ -2624,17 +2579,24 @@ class PCToolkitService:
                     roles = payload.get("maxRoles", []) if isinstance(payload, dict) else []
                     if isinstance(roles, list) and roles and clean(roles[0]):
                         role = clean(roles[0])
-                        if not self.access_token:
-                            token = refresh_access_token()
-                            if token:
-                                self.access_token = token
-                                run_reporting.pc_toolkit_event(
-                                    "device_api_token_obtained",
-                                    service_id=self.service_id,
-                                    operation_id=operation_id,
-                                    token_length=len(token),
-                                    source="portal_heartbeat_after_role",
-                                )
+                        # The role returned by maxroles is the role that must
+                        # accompany the device request. Refresh once more
+                        # after discovering it so the bearer token and role
+                        # cannot be out of sync (the portal does this too).
+                        token = refresh_access_token(role)
+                        if token:
+                            self.access_token = token
+                            run_reporting.pc_toolkit_event(
+                                "device_api_token_obtained",
+                                service_id=self.service_id,
+                                operation_id=operation_id,
+                                token_length=len(token),
+                                source="portal_heartbeat_after_role",
+                            )
+                        else:
+                            # Never carry a token issued for the previous
+                            # role/session into a device request.
+                            self.access_token = ""
                         if not self.access_token:
                             raise PCToolkitError(
                                 "PC Toolkit sign-in completed, but its device API token was not provided."

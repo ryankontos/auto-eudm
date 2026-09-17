@@ -11,12 +11,12 @@ from unittest import mock
 from auto_eudm import run_reporting
 from auto_eudm.pc_toolkit import (
     DEFAULT_PC_TOOLKIT_ROLE,
-    PC_TOOLKIT_CONNECTION_PROBE,
     PCToolkitClient,
     PCToolkitBrowserClient,
     PCToolkitError,
     PCToolkitService,
     normalise_lookup,
+    xsrf_cookie_value,
 )
 
 
@@ -60,6 +60,20 @@ def device(
 
 
 class PCToolkitNormalisationTests(unittest.TestCase):
+    def test_xsrf_cookie_accepts_portal_name_and_decodes_value(self) -> None:
+        self.assertEqual(
+            xsrf_cookie_value([
+                {"name": "XSRF_TOKEN", "value": "csrf%2Bvalue"},
+            ]),
+            "csrf+value",
+        )
+        self.assertEqual(
+            xsrf_cookie_value([
+                {"name": "XSRF-TOKEN", "value": "legacy-value"},
+            ]),
+            "legacy-value",
+        )
+
     def test_active_sccm_record_wins_over_stale_delete_record(self) -> None:
         result = normalise_lookup(
             {"devices": [
@@ -214,55 +228,49 @@ class PCToolkitCacheTests(unittest.TestCase):
 
         self.assertEqual(service.status()["models"], ["Latitude 7440"])
 
-    def test_connect_rechecks_device_api_after_browser_authentication(self) -> None:
+    def test_connect_authenticates_without_fabricated_device_probe(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             service = PCToolkitService(
                 Path(folder) / "cache.json",
                 preferences=lambda: {"pc_toolkit_enabled": True, "pc_toolkit_transport": "api"},
             )
             service.state = "connecting"
-            client = mock.Mock()
-            client.lookup.side_effect = [
-                PCToolkitError("PC Toolkit authentication is required."),
-                {"found": False, "devices": []},
-            ]
             with (
-                mock.patch.object(service, "_client", return_value=client),
                 mock.patch.object(service, "_discover_role", return_value="maxrole:personal") as discover,
             ):
                 service._connect("pc-connect-test")
 
         self.assertEqual(service.status()["state"], "connected")
-        self.assertEqual(client.lookup.call_count, 2)
-        self.assertEqual(client.lookup.call_args_list[0].args[0], PC_TOOLKIT_CONNECTION_PROBE)
-        self.assertEqual(client.lookup.call_args_list[1].args[0], PC_TOOLKIT_CONNECTION_PROBE)
-        self.assertEqual(
-            client.lookup.call_args_list[1].kwargs["purpose"],
-            "post_auth_health_check",
-        )
         discover.assert_called_once_with("pc-connect-test")
 
-    def test_connect_does_not_claim_ready_when_device_api_still_rejects_it(self) -> None:
+    def test_real_device_api_auth_error_marks_service_unavailable(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             service = PCToolkitService(
                 Path(folder) / "cache.json",
                 preferences=lambda: {"pc_toolkit_enabled": True, "pc_toolkit_transport": "api"},
             )
-            service.state = "connecting"
             client = mock.Mock()
             client.lookup.side_effect = PCToolkitError(
                 "PC Toolkit authentication is required."
             )
-            with (
-                mock.patch.object(service, "_client", return_value=client),
-                mock.patch.object(service, "_discover_role", return_value="maxrole:personal"),
-            ):
-                service._connect("pc-connect-test")
+            with mock.patch.object(service, "_client", return_value=client):
+                with self.assertRaises(PCToolkitError):
+                    service._fetch(
+                        "ABC123",
+                        request_id="pc-request-test",
+                        operation_id="pc-operation-test",
+                        purpose="lookup",
+                    )
 
         status = service.status()
         self.assertEqual(status["state"], "error")
         self.assertIn("device API rejected", status["message"])
-        self.assertEqual(client.lookup.call_count, 2)
+        client.lookup.assert_called_once_with(
+            "ABC123",
+            request_id="pc-request-test",
+            operation_id="pc-operation-test",
+            purpose="lookup",
+        )
 
     def test_browser_client_uses_authenticated_page_fetch_shape(self) -> None:
         calls: list[dict[str, object]] = []
@@ -291,7 +299,7 @@ class PCToolkitCacheTests(unittest.TestCase):
         self.assertNotIn("Connection", calls[0]["headers"])
         self.assertNotIn("Sec-Fetch-Mode", calls[0]["headers"])
 
-    def test_browser_transport_connection_keeps_profile_and_probes_device_api(self) -> None:
+    def test_browser_transport_connection_keeps_profile_without_fabricated_probe(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             service = PCToolkitService(
                 Path(folder) / "cache.json",
@@ -300,7 +308,6 @@ class PCToolkitCacheTests(unittest.TestCase):
             )
             transport = mock.Mock()
             client = mock.Mock()
-            client.lookup.return_value = {"found": False, "devices": []}
             with (
                 mock.patch.object(service, "_discover_role", return_value="maxrole:personal"),
                 mock.patch("auto_eudm.pc_toolkit.PCToolkitBrowserTransport", return_value=transport) as transport_type,
@@ -315,13 +322,10 @@ class PCToolkitCacheTests(unittest.TestCase):
             timeout=18.0,
             service_id=service.service_id,
             operation_id="pc-browser-connect-test",
+            headless=False,
         )
         transport.start.assert_called_once_with()
-        client.lookup.assert_called_once_with(
-            PC_TOOLKIT_CONNECTION_PROBE,
-            operation_id="pc-browser-connect-test",
-            purpose="post_auth_health_check",
-        )
+        client.lookup.assert_not_called()
 
 
 if __name__ == "__main__":
