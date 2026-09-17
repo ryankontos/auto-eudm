@@ -11,6 +11,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from datetime import datetime, timezone
+import gzip
 import json
 import os
 import platform
@@ -22,6 +23,7 @@ from typing import Any, Callable
 import urllib.error
 import urllib.parse
 import urllib.request
+import zlib
 
 from .eudm_request import EUDMError
 from . import run_reporting
@@ -48,6 +50,9 @@ PC_TOOLKIT_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"
 )
+PC_TOOLKIT_CLIENT_HINT = (
+    '"Chromium";v="152", "Not?A_Brand";v="24", "Google Chrome";v="152"'
+)
 ACTIVE_CACHE_SECONDS = 10 * 60
 STALE_CACHE_SECONDS = 30 * 24 * 60 * 60
 MAX_CACHE_ENTRIES = 10_000
@@ -64,6 +69,90 @@ def normalise_key(value: Any) -> str:
 
 def clean(value: Any) -> str:
     return " ".join(str(value or "").split()).strip()
+
+
+def pc_toolkit_request_headers(role: str) -> dict[str, str]:
+    """Return the request shape used by PC Toolkit's production browser bundle.
+
+    The device gateway distinguishes the browser fetch from a generic HTTP
+    client.  Keep these headers aligned with a current successful browser
+    capture instead of sending only Origin and the elevated role.
+    """
+    headers = {
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Encoding": "gzip, deflate",
+        "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
+        "Connection": "keep-alive",
+        "Origin": "https://portal.platform.infraportal.syd.c1.macquarie.com",
+        "Referer": "https://portal.platform.infraportal.syd.c1.macquarie.com/",
+        "Sec-CH-UA": PC_TOOLKIT_CLIENT_HINT,
+        "Sec-CH-UA-Mobile": "?0",
+        "Sec-CH-UA-Platform": '"macOS"',
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-site",
+        "User-Agent": PC_TOOLKIT_USER_AGENT,
+    }
+    if role.strip():
+        headers["X-Max-Elevated-Role"] = role.strip()
+    return headers
+
+
+def _decoded_http_body(raw: bytes, headers: Any) -> bytes:
+    """Decode the encodings advertised by ``pc_toolkit_request_headers``."""
+    try:
+        encoding = str(headers.get("Content-Encoding", "")).casefold().strip()
+    except (AttributeError, TypeError):
+        encoding = ""
+    if encoding == "gzip":
+        return gzip.decompress(raw)
+    if encoding == "deflate":
+        try:
+            return zlib.decompress(raw)
+        except zlib.error:
+            return zlib.decompress(raw, -zlib.MAX_WBITS)
+    return raw
+
+
+def _playwright_request_key(request: Any) -> int:
+    """Use Playwright's shared implementation object across event wrappers."""
+    return id(getattr(request, "_impl_obj", request))
+
+
+def _profile_lock_is_live(profile: str) -> bool:
+    """Return whether Chrome's profile lock belongs to a live local process."""
+    if platform.system() != "Darwin":
+        return False
+    lock_path = Path(profile).expanduser() / "SingletonLock"
+    if not os.path.lexists(lock_path):
+        return False
+    try:
+        target = os.readlink(lock_path)
+        pid = int(target.rsplit("-", 1)[-1])
+    except (OSError, TypeError, ValueError):
+        # An unfamiliar lock format is safer to wait on briefly than to launch
+        # a second Chrome process into the same profile.
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _profile_in_use_error(exc: BaseException) -> bool:
+    detail = " ".join(str(exc).split()).casefold()
+    return any(
+        marker in detail
+        for marker in (
+            "opening in existing browser session",
+            "processsingleton",
+            "profile appears to be in use",
+            "user data directory is already in use",
+        )
+    )
 
 
 def _people(raw: Any) -> list[dict[str, str]]:
@@ -249,17 +338,7 @@ class PCToolkitClient:
             raise PCToolkitError("Enter at least two characters for PC Toolkit.")
         url = f"{self.base_url}/{urllib.parse.quote(value, safe='-._')}?sources=cmdb,sccm"
         endpoint_path = urllib.parse.urlsplit(url).path
-        # The device service is behind the portal's elevated-role gateway.
-        # These are the same origin/referrer headers sent by the portal's
-        # browser client; without them the gateway can reject a valid role.
-        headers = {
-            "Accept": "application/json, text/plain, */*",
-            "Origin": "https://portal.platform.infraportal.syd.c1.macquarie.com",
-            "Referer": "https://portal.platform.infraportal.syd.c1.macquarie.com/",
-            "User-Agent": PC_TOOLKIT_USER_AGENT,
-        }
-        if self.role:
-            headers["X-Max-Elevated-Role"] = self.role
+        headers = pc_toolkit_request_headers(self.role)
         run_reporting.pc_toolkit_event(
             "api_request_started",
             request_id=request_id,
@@ -285,6 +364,7 @@ class PCToolkitClient:
                     response_headers = {
                         str(key): str(value) for key, value in raw_headers.items()
                     }
+                raw = _decoded_http_body(raw, raw_headers)
         except urllib.error.HTTPError as exc:
             try:
                 error_body = exc.read()
@@ -295,6 +375,13 @@ class PCToolkitClient:
                 response_headers = {
                     str(key): str(value) for key, value in raw_headers.items()
                 }
+            if error_body is not None:
+                try:
+                    error_body = _decoded_http_body(error_body, raw_headers)
+                except (OSError, EOFError, zlib.error):
+                    # Preserve the original bytes in diagnostics if a gateway
+                    # labels an error response with the wrong encoding.
+                    pass
             run_reporting.network(
                 "GET", endpoint_path, status=exc.code,
                 duration_ms=round((time.monotonic() - started) * 1000),
@@ -569,10 +656,11 @@ class PCToolkitService:
     ) -> None:
         with self.lock:
             previous = self.state
+            previous_error = self.last_error
             self.state = state
             self.message = message
             self.last_error = error
-        if previous != state or error:
+        if previous != state or previous_error != error:
             run_reporting.pc_toolkit_event(
                 "state_changed",
                 service_id=self.service_id,
@@ -800,6 +888,13 @@ class PCToolkitService:
                 duration_ms=round((time.monotonic() - started) * 1000),
                 exception=run_reporting.exception_details(exc),
             )
+            if "authentication" in str(exc).casefold():
+                self._set_state(
+                    "error",
+                    "PC Toolkit's device API rejected the connection.",
+                    operation_id=operation_id,
+                    error=str(exc),
+                )
             raise
         key = normalise_key(query)
         stored = {"fetched_at": time.time(), "result": result}
@@ -1111,6 +1206,7 @@ class PCToolkitService:
 
     def _connect(self, operation_id: str) -> None:
         started = time.monotonic()
+        authenticated_in_browser = False
         try:
             # Use a harmless query so connecting does not expose a real
             # user/device. The client includes the production portal role by
@@ -1149,6 +1245,7 @@ class PCToolkitService:
                 return
             try:
                 self.role = self._discover_role(operation_id)
+                authenticated_in_browser = True
             except Exception as exc:
                 self._set_state(
                     "error",
@@ -1166,16 +1263,51 @@ class PCToolkitService:
                     exception=run_reporting.exception_details(exc),
                 )
                 return
+            # A working portal session and an elevated role do not prove that
+            # the separate device gateway accepts our request.  Re-run the
+            # same harmless lookup after SSO before reporting readiness.
+            try:
+                self._client().lookup(
+                    "auto-eudm-health-check",
+                    operation_id=operation_id,
+                    purpose="post_auth_health_check",
+                )
+            except Exception as verification_error:
+                message = (
+                    "PC Toolkit signed in, but its device API rejected the connection."
+                    if "authentication" in str(verification_error).casefold()
+                    else str(verification_error)
+                )
+                self._set_state(
+                    "error",
+                    message,
+                    operation_id=operation_id,
+                    error=str(verification_error),
+                )
+                run_reporting.pc_toolkit_event(
+                    "connect_failed",
+                    service_id=self.service_id,
+                    operation_id=operation_id,
+                    error=str(verification_error),
+                    phase="post_auth_health_check",
+                    role=self.role,
+                    duration_ms=round((time.monotonic() - started) * 1000),
+                    exception=run_reporting.exception_details(verification_error),
+                )
+                return
         with self.lock:
-            self.state = "connected"
-            self.message = "PC Toolkit enrichment is ready."
-            self.last_error = ""
             self.connected_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        self._set_state(
+            "connected",
+            "PC Toolkit enrichment is ready.",
+            operation_id=operation_id,
+        )
         run_reporting.pc_toolkit_event(
             "connect_succeeded",
             service_id=self.service_id,
             operation_id=operation_id,
             role=self.role,
+            authenticated_in_browser=authenticated_in_browser,
             duration_ms=round((time.monotonic() - started) * 1000),
         )
 
@@ -1197,6 +1329,36 @@ class PCToolkitService:
             browser_profile_configured=True,
             browser_headless=self.browser_headless,
         )
+        profile_wait_started = time.monotonic()
+        profile_wait_logged = False
+        profile_wait_deadline = profile_wait_started + 45
+        while _profile_lock_is_live(self.browser_profile):
+            if not profile_wait_logged:
+                profile_wait_logged = True
+                run_reporting.pc_toolkit_event(
+                    "browser_profile_wait_started",
+                    service_id=self.service_id,
+                    operation_id=operation_id,
+                    reason="profile_in_use",
+                )
+            if time.monotonic() >= profile_wait_deadline:
+                run_reporting.pc_toolkit_event(
+                    "browser_profile_wait_timed_out",
+                    service_id=self.service_id,
+                    operation_id=operation_id,
+                    elapsed_ms=round((time.monotonic() - profile_wait_started) * 1000),
+                )
+                raise PCToolkitError(
+                    "PC Toolkit is waiting for the Helix Chrome window to close. Try again shortly."
+                )
+            time.sleep(0.5)
+        if profile_wait_logged:
+            run_reporting.pc_toolkit_event(
+                "browser_profile_released",
+                service_id=self.service_id,
+                operation_id=operation_id,
+                elapsed_ms=round((time.monotonic() - profile_wait_started) * 1000),
+            )
         try:
             from playwright.sync_api import sync_playwright
         except ImportError as exc:
@@ -1296,7 +1458,7 @@ class PCToolkitService:
                         body = request.post_data
                     except Exception:
                         body = None
-                    browser_requests[id(request)] = {
+                    browser_requests[_playwright_request_key(request)] = {
                         "request_id": request_id,
                         "started": started,
                         "method": str(request.method or "GET"),
@@ -1333,7 +1495,7 @@ class PCToolkitService:
                     request = response.request
                     url = str(response.url or getattr(request, "url", "") or "")
                     resource_type = str(getattr(request, "resource_type", "") or "")
-                    metadata = browser_requests.pop(id(request), None)
+                    metadata = browser_requests.pop(_playwright_request_key(request), None)
                     if metadata is None and not interesting_browser_request(url, resource_type):
                         return
                     if metadata is None:
@@ -1403,7 +1565,7 @@ class PCToolkitService:
                     )
 
             def on_request_failed(request: Any) -> None:
-                metadata = browser_requests.pop(id(request), None)
+                metadata = browser_requests.pop(_playwright_request_key(request), None)
                 if metadata is None:
                     return
                 try:
@@ -1477,11 +1639,31 @@ class PCToolkitService:
                 headless=self.browser_headless,
                 user_data_dir_configured=bool(self.browser_profile),
             )
-            context = playwright.chromium.launch_persistent_context(
-                user_data_dir=str(Path(self.browser_profile).expanduser()),
-                channel="chrome",
-                headless=self.browser_headless,
-            )
+            launch_error: BaseException | None = None
+            for launch_attempt in range(1, 4):
+                try:
+                    context = playwright.chromium.launch_persistent_context(
+                        user_data_dir=str(Path(self.browser_profile).expanduser()),
+                        channel="chrome",
+                        headless=self.browser_headless,
+                    )
+                    launch_error = None
+                    break
+                except Exception as exc:
+                    launch_error = exc
+                    if not _profile_in_use_error(exc) or launch_attempt >= 3:
+                        raise
+                    run_reporting.pc_toolkit_event(
+                        "browser_launch_retry",
+                        service_id=self.service_id,
+                        operation_id=operation_id,
+                        attempt=launch_attempt,
+                        reason="profile_in_use",
+                        exception=run_reporting.exception_details(exc),
+                    )
+                    time.sleep(1.5 * launch_attempt)
+            if context is None and launch_error is not None:
+                raise launch_error
             run_reporting.pc_toolkit_event(
                 "browser_launch_succeeded",
                 service_id=self.service_id,

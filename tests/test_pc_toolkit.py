@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import json
 from pathlib import Path
 import tempfile
@@ -11,6 +12,7 @@ from auto_eudm import run_reporting
 from auto_eudm.pc_toolkit import (
     DEFAULT_PC_TOOLKIT_ROLE,
     PCToolkitClient,
+    PCToolkitError,
     PCToolkitService,
     normalise_lookup,
 )
@@ -103,6 +105,7 @@ class PCToolkitCacheTests(unittest.TestCase):
             status = 200
             headers = {
                 "Content-Type": "application/json",
+                "Content-Encoding": "gzip",
                 "Set-Cookie": "private-cookie",
             }
 
@@ -113,7 +116,7 @@ class PCToolkitCacheTests(unittest.TestCase):
                 return False
 
             def read(self) -> bytes:
-                return json.dumps(payload).encode("utf-8")
+                return gzip.compress(json.dumps(payload).encode("utf-8"))
 
         with tempfile.TemporaryDirectory() as folder:
             with mock.patch.object(run_reporting, "_PC_TOOLKIT_LOG_DIR", Path(folder)):
@@ -123,6 +126,12 @@ class PCToolkitCacheTests(unittest.TestCase):
 
                 request = urlopen.call_args.args[0]
                 self.assertEqual(request.get_header("X-max-elevated-role"), DEFAULT_PC_TOOLKIT_ROLE)
+                self.assertEqual(request.get_header("Sec-fetch-dest"), "empty")
+                self.assertEqual(request.get_header("Sec-fetch-mode"), "cors")
+                self.assertEqual(request.get_header("Sec-fetch-site"), "same-site")
+                self.assertEqual(request.get_header("Sec-ch-ua-platform"), '"macOS"')
+                self.assertEqual(request.get_header("Accept-language"), "en-GB,en-US;q=0.9,en;q=0.8")
+                self.assertEqual(request.get_header("Connection"), "keep-alive")
                 self.assertEqual(result["primary"]["model"], "MacBook Pro (14-inch, 2023)")
                 log_status = run_reporting.pc_toolkit_log_status()
                 log_text = Path(log_status["path"]).read_text(encoding="utf-8")
@@ -198,6 +207,54 @@ class PCToolkitCacheTests(unittest.TestCase):
             service = PCToolkitService(cache_path)
 
         self.assertEqual(service.status()["models"], ["Latitude 7440"])
+
+    def test_connect_rechecks_device_api_after_browser_authentication(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            service = PCToolkitService(
+                Path(folder) / "cache.json",
+                preferences=lambda: {"pc_toolkit_enabled": True},
+            )
+            service.state = "connecting"
+            client = mock.Mock()
+            client.lookup.side_effect = [
+                PCToolkitError("PC Toolkit authentication is required."),
+                {"found": False, "devices": []},
+            ]
+            with (
+                mock.patch.object(service, "_client", return_value=client),
+                mock.patch.object(service, "_discover_role", return_value="maxrole:personal") as discover,
+            ):
+                service._connect("pc-connect-test")
+
+        self.assertEqual(service.status()["state"], "connected")
+        self.assertEqual(client.lookup.call_count, 2)
+        self.assertEqual(
+            client.lookup.call_args_list[1].kwargs["purpose"],
+            "post_auth_health_check",
+        )
+        discover.assert_called_once_with("pc-connect-test")
+
+    def test_connect_does_not_claim_ready_when_device_api_still_rejects_it(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            service = PCToolkitService(
+                Path(folder) / "cache.json",
+                preferences=lambda: {"pc_toolkit_enabled": True},
+            )
+            service.state = "connecting"
+            client = mock.Mock()
+            client.lookup.side_effect = PCToolkitError(
+                "PC Toolkit authentication is required."
+            )
+            with (
+                mock.patch.object(service, "_client", return_value=client),
+                mock.patch.object(service, "_discover_role", return_value="maxrole:personal"),
+            ):
+                service._connect("pc-connect-test")
+
+        status = service.status()
+        self.assertEqual(status["state"], "error")
+        self.assertIn("device API rejected", status["message"])
+        self.assertEqual(client.lookup.call_count, 2)
 
 
 if __name__ == "__main__":
