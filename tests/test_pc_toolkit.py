@@ -4,7 +4,6 @@ import gzip
 import json
 from pathlib import Path
 import tempfile
-import threading
 import time
 import unittest
 from unittest import mock
@@ -267,7 +266,7 @@ class PCToolkitCacheTests(unittest.TestCase):
         status = service.status()
         self.assertEqual(status["state"], "error")
         self.assertIn("device API rejected", status["message"])
-        self.assertEqual(client.lookup.call_count, 2)
+        self.assertEqual(client.lookup.call_count, 3)
         client.lookup.assert_called_with(
             "ABC123",
             request_id="pc-request-test",
@@ -298,31 +297,47 @@ class PCToolkitCacheTests(unittest.TestCase):
         self.assertTrue(result["cached"])
         self.assertTrue(result["stale"])
 
-    def test_browser_bulk_lookups_are_serial_to_avoid_queue_timeouts(self) -> None:
+    def test_browser_bulk_lookups_use_one_concurrent_page_batch(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             service = PCToolkitService(
                 Path(folder) / "cache.json",
                 preferences=lambda: {"pc_toolkit_enabled": True, "pc_toolkit_transport": "browser"},
             )
-            active = 0
-            peak = 0
-            active_lock = threading.Lock()
-
-            def lookup(query, **_kwargs):
-                nonlocal active, peak
-                with active_lock:
-                    active += 1
-                    peak = max(peak, active)
-                time.sleep(0.01)
-                with active_lock:
-                    active -= 1
-                return {"query": query, "found": False, "devices": []}
-
-            with mock.patch.object(service, "lookup", side_effect=lookup):
+            client = mock.Mock(spec=PCToolkitBrowserClient)
+            client.lookup_many.return_value = ({
+                key: {"query": value, "found": False, "devices": []}
+                for key, value in {
+                    "abc123": "ABC123", "def456": "DEF456", "ghi789": "GHI789",
+                }.items()
+            }, {})
+            with mock.patch.object(service, "_client", return_value=client):
                 result = service.bulk_lookup(["ABC123", "DEF456", "GHI789"])
 
         self.assertFalse(result["errors"])
-        self.assertEqual(peak, 1)
+        client.lookup_many.assert_called_once_with(
+            ["ABC123", "DEF456", "GHI789"],
+            operation_id=mock.ANY,
+        )
+
+    def test_browser_bulk_retry_only_resubmits_failed_queries(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            service = PCToolkitService(
+                Path(folder) / "cache.json",
+                preferences=lambda: {"pc_toolkit_enabled": True, "pc_toolkit_transport": "browser"},
+            )
+            client = mock.Mock(spec=PCToolkitBrowserClient)
+            client.lookup_many.side_effect = [
+                ({"abc123": {"query": "ABC123", "found": False, "devices": []}},
+                 {"def456": "temporary failure"}),
+                ({"def456": {"query": "DEF456", "found": False, "devices": []}}, {}),
+            ]
+            with mock.patch.object(service, "_client", return_value=client):
+                result = service.bulk_lookup(["ABC123", "DEF456"])
+
+        self.assertFalse(result["errors"])
+        self.assertEqual(client.lookup_many.call_count, 2)
+        self.assertEqual(client.lookup_many.call_args_list[0].args[0], ["ABC123", "DEF456"])
+        self.assertEqual(client.lookup_many.call_args_list[1].args[0], ["DEF456"])
 
     def test_browser_client_uses_authenticated_page_fetch_shape(self) -> None:
         calls: list[dict[str, object]] = []
@@ -350,6 +365,42 @@ class PCToolkitCacheTests(unittest.TestCase):
         self.assertEqual(calls[0]["headers"]["X-Max-Elevated-Role"], "maxrole:personal")
         self.assertNotIn("Connection", calls[0]["headers"])
         self.assertNotIn("Sec-Fetch-Mode", calls[0]["headers"])
+
+    def test_browser_client_normalises_concurrent_batch_results_and_errors(self) -> None:
+        class Transport:
+            def get_many(self, requests, *, timeout):
+                self.requests = requests
+                self.timeout = timeout
+                return [{
+                    "query": "ABC123",
+                    "status": 200,
+                    "url": requests[0]["url"],
+                    "headers": {"content-type": "application/json"},
+                    "body": json.dumps({"devices": [device(
+                        "ABC123", status="In Inventory", model="MacBook Air"
+                    )]}),
+                }, {
+                    "query": "DEF456",
+                    "status": 503,
+                    "url": requests[1]["url"],
+                    "headers": {},
+                    "body": "",
+                }]
+
+        transport = Transport()
+        results, errors = PCToolkitBrowserClient(
+            transport,
+            role="maxrole:personal",
+            access_token="test-token",
+        ).lookup_many(["ABC123", "DEF456"])
+
+        self.assertEqual(results["abc123"]["primary"]["model"], "MacBook Air")
+        self.assertIn("503", errors["def456"])
+        self.assertEqual(len(transport.requests), 2)
+        self.assertEqual(
+            transport.requests[0]["headers"]["Authorization"],
+            "Bearer test-token",
+        )
 
     def test_browser_transport_connection_keeps_profile_without_fabricated_probe(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

@@ -3264,11 +3264,11 @@ async function pcToolkitEnrichQueries(queries, { fresh = false, onBatch = null }
   ).values()];
   const results = {};
   const errors = {};
-  // The captured service can take 5–12 seconds per lookup. Ten server-side
-  // workers keeps each local HTTP request below its timeout without flooding
-  // the internal API when a workbook contains hundreds of rows.
-  for (let index = 0; index < unique.length; index += 10) {
-    const batch = unique.slice(index, index + 10);
+  // The browser transport performs each batch concurrently inside Chrome.
+  // Sixty is large enough for normal workbooks without sending an unbounded
+  // burst to the internal service.
+  for (let index = 0; index < unique.length; index += 60) {
+    const batch = unique.slice(index, index + 60);
     try {
       const payload = await api("/api/pc-toolkit/enrich", {
         method: "POST",
@@ -3284,6 +3284,7 @@ async function pcToolkitEnrichQueries(queries, { fresh = false, onBatch = null }
         completed: Math.min(index + batch.length, unique.length),
         total: unique.length,
         errors: payload.errors || {},
+        queries: batch,
       });
     } catch (error) {
       const batchErrors = {};
@@ -3297,6 +3298,7 @@ async function pcToolkitEnrichQueries(queries, { fresh = false, onBatch = null }
         completed: Math.min(index + batch.length, unique.length),
         total: unique.length,
         errors: batchErrors,
+        queries: batch,
       });
     }
   }
@@ -3454,6 +3456,33 @@ function applyPcToolkitImportResults(payload, requests, results) {
   });
 }
 
+function pcToolkitImportQueries(request) {
+  return [...new Map([
+    String(request?.serials?.[0] || request?.serial || "").trim(),
+    String(request?.username || request?.user || request?.returning_user || "").trim(),
+  ].filter((value) => value.length >= 2).map((value) => [pcToolkitKey(value), value])).values()];
+}
+
+function updatePcToolkitImportLookupState(requests, completedKeys, results, errors, { final = false } = {}) {
+  (requests || []).forEach((request) => {
+    const keys = pcToolkitImportQueries(request).map(pcToolkitKey);
+    if (!keys.length) {
+      request.pc_toolkit_loading = false;
+      request.pc_toolkit_checked = true;
+      request.pc_toolkit_error = "";
+      return;
+    }
+    const complete = final || keys.every((key) => completedKeys.has(key));
+    request.pc_toolkit_loading = !complete;
+    if (!complete) return;
+    request.pc_toolkit_checked = true;
+    const failed = keys.filter((key) => errors[key] && !results[key]);
+    request.pc_toolkit_error = failed.length
+      ? `${failed.length === keys.length ? "Lookup failed" : "Some details unavailable"}`
+      : "";
+  });
+}
+
 function renderPcToolkitImportStatus(payload) {
   const wrapper = $("#pcToolkitImportStatus");
   if (!wrapper) return;
@@ -3466,8 +3495,9 @@ function renderPcToolkitImportStatus(payload) {
   const total = Number(payload.pc_toolkit_total || 0);
   const completed = Math.min(total, Number(payload.pc_toolkit_completed || 0));
   const withDetails = requests.filter((request) => request.pc_toolkit?.serial?.primary || request.pc_toolkit?.user?.primary).length;
-  const errorCount = Number(payload.pc_toolkit_error_count || 0);
-  if (!total && !payload.pc_toolkit_loading && !withDetails) {
+  const failedRequests = requests.filter((request) => request.pc_toolkit_error);
+  const errorCount = failedRequests.length;
+  if (!total && !payload.pc_toolkit_loading && !withDetails && !errorCount) {
     wrapper.hidden = true;
     wrapper.replaceChildren();
     return;
@@ -3475,10 +3505,17 @@ function renderPcToolkitImportStatus(payload) {
   const message = payload.pc_toolkit_loading
     ? `Checking device details · ${completed} of ${total} lookups`
     : errorCount
-      ? `${withDetails} row${withDetails === 1 ? "" : "s"} enriched · ${errorCount} lookup${errorCount === 1 ? "" : "s"} failed`
-      : `${withDetails} row${withDetails === 1 ? "" : "s"} enriched with current PC Toolkit details`;
+      ? `${withDetails} row${withDetails === 1 ? "" : "s"} enriched · ${errorCount} row${errorCount === 1 ? "" : "s"} need another try`
+      : withDetails
+        ? `${withDetails} row${withDetails === 1 ? "" : "s"} enriched with current PC Toolkit details`
+        : "No matching device details found";
   wrapper.hidden = false;
-  wrapper.innerHTML = `<div><strong>PC Toolkit</strong><small>${escapeHtml(message)}</small></div>${payload.pc_toolkit_loading ? '<span class="import-status-spinner" aria-hidden="true"></span>' : ""}`;
+  wrapper.dataset.state = payload.pc_toolkit_loading ? "loading" : errorCount ? "error" : "ready";
+  wrapper.innerHTML = `<div><strong>PC Toolkit</strong><small>${escapeHtml(message)}</small></div><div class="pc-toolkit-import-summary-actions">${errorCount && !payload.pc_toolkit_loading ? `<button class="button secondary compact" type="button" data-import-pc-retry-failed>${iconMarkup("refresh-cw")}<span>Retry ${errorCount} failed</span></button>` : ""}${payload.pc_toolkit_loading ? '<span class="import-status-spinner" aria-hidden="true"></span>' : ""}</div>`;
+  wrapper.querySelector("[data-import-pc-retry-failed]")?.addEventListener("click", () => {
+    void enrichImportPreview(payload, { requests: failedRequests, fresh: true });
+  });
+  refreshIcons(wrapper);
 }
 
 function schedulePcToolkitImportRender(payload) {
@@ -3491,18 +3528,15 @@ function schedulePcToolkitImportRender(payload) {
   });
 }
 
-async function enrichImportPreview(payload = state.importPreview) {
+async function enrichImportPreview(payload = state.importPreview, { requests: requested = null, fresh = false } = {}) {
   if (!payload || !state.preferences.pc_toolkit_enabled) return;
   const epoch = ++state.pcToolkitEnrichmentEpoch;
-  const requests = payload.requests || [];
+  const requests = requested || payload.requests || [];
   const missingReturnUsers = requests
     .filter((request) => importDeploymentNeedsManualReturn(request, payload))
     .map((request) => String(request.username || request.user || "").trim())
     .filter((value) => value.length >= 2);
-  const queries = [...new Set([...missingReturnUsers, ...requests.flatMap((request) => [
-    String(request.serials?.[0] || request.serial || "").trim(),
-    String(request.username || request.user || request.returning_user || "").trim(),
-  ])].filter((value) => value.length >= 2))];
+  const queries = [...new Set([...missingReturnUsers, ...requests.flatMap(pcToolkitImportQueries)])];
   if (!queries.length) {
     payload.pc_toolkit_loading = false;
     payload.pc_toolkit_total = 0;
@@ -3514,20 +3548,31 @@ async function enrichImportPreview(payload = state.importPreview) {
   payload.pc_toolkit_loading = true;
   payload.pc_toolkit_total = queries.length;
   payload.pc_toolkit_completed = 0;
-  payload.pc_toolkit_error_count = 0;
+  requests.forEach((request) => {
+    request.pc_toolkit_loading = true;
+    request.pc_toolkit_error = "";
+  });
   renderPcToolkitImportStatus(payload);
+  schedulePcToolkitImportRender(payload);
+  const completedKeys = new Set();
+  const accumulatedResults = {};
+  const accumulatedErrors = {};
   const onBatch = (batchResults, meta = {}) => {
     if (state.importPreview !== payload || epoch !== state.pcToolkitEnrichmentEpoch) return;
     payload.pc_toolkit_completed = Number(meta.completed || payload.pc_toolkit_completed || 0);
-    payload.pc_toolkit_error_count += Object.keys(meta.errors || {}).length;
+    (meta.queries || []).forEach((query) => completedKeys.add(pcToolkitKey(query)));
+    Object.assign(accumulatedResults, batchResults || {});
+    Object.assign(accumulatedErrors, meta.errors || {});
     applyPcToolkitImportResults(payload, requests, batchResults);
+    updatePcToolkitImportLookupState(requests, completedKeys, accumulatedResults, accumulatedErrors);
     schedulePcToolkitImportRender(payload);
   };
   try {
-    const response = await pcToolkitEnrichQueries(queries, { onBatch });
+    const response = await pcToolkitEnrichQueries(queries, { fresh, onBatch });
     if (state.importPreview !== payload || epoch !== state.pcToolkitEnrichmentEpoch) return;
     const results = response.results || {};
-    payload.pc_toolkit_error_count = Object.keys(response.errors || {}).length;
+    Object.assign(accumulatedResults, results);
+    Object.assign(accumulatedErrors, response.errors || {});
     applyPcToolkitImportResults(payload, requests, results);
   } catch (_) {
     // Keep the workbook fully usable when the optional service is unavailable.
@@ -3535,6 +3580,8 @@ async function enrichImportPreview(payload = state.importPreview) {
     if (state.importPreview === payload && epoch === state.pcToolkitEnrichmentEpoch) {
       payload.pc_toolkit_loading = false;
       payload.pc_toolkit_completed = payload.pc_toolkit_total;
+      updatePcToolkitImportLookupState(requests, completedKeys, accumulatedResults, accumulatedErrors, { final: true });
+      payload.pc_toolkit_error_count = (payload.requests || []).filter((request) => request.pc_toolkit_error).length;
       schedulePcToolkitImportRender(payload);
       saveCurrentImportDraft();
     }
@@ -5366,14 +5413,18 @@ function manualReturnEditorMarkup(source, payload) {
   const statusOptions = manualReturnStatusOptions();
   const suggestedDevices = pcToolkitReturnCandidates(source);
   const pendingDevices = pcToolkitPendingReturnDevices(source);
+  const visibleDevices = [
+    ...suggestedDevices.map((device) => ({ device, pending: false })),
+    ...pendingDevices.map((device) => ({ device, pending: true })),
+  ].slice(0, 3);
   const toolkitEnabled = state.preferences?.pc_toolkit_enabled === true;
-  const toolkitChecked = Boolean(source.pc_toolkit?.user) && !payload.pc_toolkit_loading;
-  const candidateMarkup = !added && (suggestedDevices.length || pendingDevices.length)
-    ? `<div class="pc-toolkit-return-candidates"><small>PC Toolkit device history</small>${suggestedDevices.map((device) => {
+  const toolkitChecked = source.pc_toolkit_checked === true && !source.pc_toolkit_loading;
+  const candidateMarkup = !added && visibleDevices.length
+    ? `<div class="pc-toolkit-return-candidates"><div class="pc-toolkit-return-heading"><span>Possible previous devices</span><small>PC Toolkit</small></div>${visibleDevices.map(({ device, pending }) => {
         const model = device.model || device.name || "Device";
-        return `<div class="pc-toolkit-return-candidate"><span><strong>${escapeHtml(device.serial)}</strong><small>${escapeHtml(model)}</small></span><span><button class="text-button" type="button" data-pc-toolkit-return-candidate="${escapeHtml(source.id)}" data-candidate-serial="${escapeHtml(device.serial)}" data-candidate-model="${escapeHtml(device.model || "")}" data-candidate-type="returned_devices">Returned</button><button class="text-button" type="button" data-pc-toolkit-return-candidate="${escapeHtml(source.id)}" data-candidate-serial="${escapeHtml(device.serial)}" data-candidate-model="${escapeHtml(device.model || "")}" data-candidate-type="pending_returns">Pending return</button></span></div>`;
-      }).join("")}${pendingDevices.map((device) => `<div class="pc-toolkit-return-candidate"><span><strong>${escapeHtml(device.serial)}</strong><small>${escapeHtml(device.model || device.name || "Device")}</small></span><span class="pc-toolkit-return-current-state">Already ${escapeHtml(device.status || "Pending Return")}</span></div>`).join("")}</div>`
-    : !added && toolkitEnabled && payload.pc_toolkit_loading
+        return `<div class="pc-toolkit-return-candidate"><span><strong>${escapeHtml(device.serial)}</strong><small>${escapeHtml(model)}</small></span>${pending ? `<span class="pc-toolkit-return-current-state">Already ${escapeHtml(device.status || "Pending Return")}</span>` : `<span><button class="text-button" type="button" data-pc-toolkit-return-candidate="${escapeHtml(source.id)}" data-candidate-serial="${escapeHtml(device.serial)}" data-candidate-model="${escapeHtml(device.model || "")}" data-candidate-type="returned_devices">Returned</button><button class="text-button" type="button" data-pc-toolkit-return-candidate="${escapeHtml(source.id)}" data-candidate-serial="${escapeHtml(device.serial)}" data-candidate-model="${escapeHtml(device.model || "")}" data-candidate-type="pending_returns">Pending</button></span>`}</div>`;
+      }).join("")}</div>`
+    : !added && toolkitEnabled && source.pc_toolkit_loading
       ? '<small class="pc-toolkit-return-checking"><span class="import-status-spinner" aria-hidden="true"></span>Checking PC Toolkit for a previous device…</small>'
       : !added && toolkitEnabled && toolkitChecked
         ? '<small class="pc-toolkit-return-empty">No other deployed device was found in PC Toolkit.</small>'
@@ -5565,26 +5616,34 @@ function pcToolkitImportMarkup(request, { loading = false, backlog = false } = {
   const associated = (userResult?.devices || [])
     .filter((item) => item?.active !== false)
     .slice(0, 4);
-  if (!device && !associated.length && !loading) return "";
+  const isLoading = request.pc_toolkit_loading === true || (loading && request.pc_toolkit_checked !== true);
+  const checked = request.pc_toolkit_checked === true;
+  const error = String(request.pc_toolkit_error || "");
+  if (!device && !associated.length && !isLoading && !checked && !error) return "";
   const context = backlog ? { ...request, kind: "user", group: "Deployments" } : request;
   const model = device?.model || "";
   const suggestion = request.pc_toolkit_suggested_status || pcToolkitSuggestedStatus(context, model);
   const conflict = request.pc_toolkit_conflict || pcToolkitConflictFor(context);
   const mapping = pcToolkitMappingFor(model);
   const mappedForKind = context.group === "Deployments" ? mapping?.user_status : mapping?.location_status;
-  const details = device
-    ? [device.model, device.status, pcToolkitAssignedLabel(device)].filter(Boolean).join(" · ")
+  const title = device?.model || (associated.length ? "User device history available" : error ? "Details unavailable" : isLoading ? "Checking…" : "No matching details");
+  const meta = device
+    ? [device.status, pcToolkitAssignedLabel(device)].filter(Boolean).join(" · ")
     : associated.length
-      ? `Associated device${associated.length === 1 ? "" : "s"}: ${associated.map((item) => [item.serial || item.name, item.model].filter(Boolean).join(" · ")).join("; ")}`
-      : "Checking device details…";
-  return `<div class="pc-toolkit-import-facts">
-    <small class="pc-toolkit-import-label">PC Toolkit · ${escapeHtml(details)}</small>
+      ? `${associated.length} active device${associated.length === 1 ? "" : "s"}`
+      : "";
+  return `<div class="pc-toolkit-import-facts" data-state="${isLoading ? "loading" : error ? "error" : device || associated.length ? "ready" : "empty"}">
+    <div class="pc-toolkit-import-main">
+      <span class="pc-toolkit-import-source">PC Toolkit</span>
+      <span class="pc-toolkit-import-copy"><strong>${escapeHtml(title)}</strong>${meta ? `<small>${escapeHtml(meta)}</small>` : ""}</span>
+      ${isLoading ? '<span class="import-status-spinner" aria-hidden="true"></span>' : `<button class="pc-toolkit-row-retry" type="button" data-import-pc-retry="${escapeHtml(request.id)}" aria-label="Retry PC Toolkit lookup" title="Retry PC Toolkit lookup">${iconMarkup("refresh-cw")}</button>`}
+    </div>
     ${result?.ambiguous ? '<span class="pc-toolkit-import-warning">Multiple active records</span>' : ""}
     ${conflict ? `<span class="pc-toolkit-import-${escapeHtml(conflict.level)}">${escapeHtml(conflict.text)}</span>` : ""}
-    <span class="pc-toolkit-import-actions">
+    <div class="pc-toolkit-import-actions">
       ${suggestion && request.status !== suggestion ? `<button class="text-button" type="button" data-import-pc-use="${escapeHtml(request.id)}" data-status="${escapeHtml(suggestion)}">Use ${escapeHtml(suggestion)}</button>` : ""}
       ${model && request.status && !mappedForKind ? `<button class="text-button" type="button" data-import-pc-remember="${escapeHtml(request.id)}">Remember for this model</button>` : ""}
-    </span>
+    </div>
   </div>`;
 }
 
@@ -5775,6 +5834,10 @@ function renderBacklogPreview(payload) {
     const request = requests.find((item) => item.id === button.dataset.importPcRemember);
     if (request) void rememberPcToolkitMapping({ ...request, kind: "user" });
   }));
+  $("#importPreviewList").querySelectorAll("[data-import-pc-retry]").forEach((button) => button.addEventListener("click", () => {
+    const request = requests.find((item) => item.id === button.dataset.importPcRetry);
+    if (request) void enrichImportPreview(payload, { requests: [request], fresh: true });
+  }));
   refreshIcons($("#importPreviewList"));
   saveCurrentImportDraft();
 }
@@ -5928,6 +5991,10 @@ function renderImportPreview() {
   $("#importPreviewList").querySelectorAll("[data-import-pc-remember]").forEach((button) => button.addEventListener("click", () => {
     const request = payload.requests.find((item) => item.id === button.dataset.importPcRemember);
     if (request) void rememberPcToolkitMapping(request);
+  }));
+  $("#importPreviewList").querySelectorAll("[data-import-pc-retry]").forEach((button) => button.addEventListener("click", () => {
+    const request = payload.requests.find((item) => item.id === button.dataset.importPcRetry);
+    if (request) void enrichImportPreview(payload, { requests: [request], fresh: true });
   }));
   $("#importPreviewList").querySelectorAll("[data-pc-toolkit-return-candidate]").forEach((button) => button.addEventListener("click", () => {
     const source = payload.requests.find((item) => item.id === button.dataset.pcToolkitReturnCandidate);

@@ -68,8 +68,8 @@ PC_TOOLKIT_CLIENT_HINT = (
 ACTIVE_CACHE_SECONDS = 10 * 60
 STALE_CACHE_SECONDS = 30 * 24 * 60 * 60
 MAX_CACHE_ENTRIES = 10_000
-MAX_PARALLEL_LOOKUPS = 10
-MAX_LOOKUP_ATTEMPTS = 2
+MAX_PARALLEL_LOOKUPS = 60
+MAX_LOOKUP_ATTEMPTS = 3
 PC_TOOLKIT_CONNECT_TIMEOUT_SECONDS = 300
 PUPPETEER_CONNECT_TIMEOUT_SECONDS = 180
 PUPPETEER_BRIDGE_PATH = Path(__file__).with_name("pc_toolkit_puppeteer.cjs")
@@ -807,6 +807,67 @@ class PCToolkitBrowserTransport:
                 if future is None:
                     continue
                 try:
+                    if task_name == "get_many":
+                        batch_result = page.evaluate(
+                            """
+                            async ({requests, timeoutMs}) => {
+                              const role = requests[0]?.headers?.["X-Max-Elevated-Role"] || "";
+                              let refreshedToken = "";
+                              try {
+                                const heartbeatController = new AbortController();
+                                const heartbeatTimer = window.setTimeout(() => heartbeatController.abort(), 5000);
+                                const cookie = document.cookie.split(";").map((value) => value.trim())
+                                  .find((value) => /^(XSRF_TOKEN|XSRF-TOKEN)=/i.test(value));
+                                const csrf = cookie ? decodeURIComponent(cookie.split("=").slice(1).join("=")) : "";
+                                const heartbeatHeaders = {"Accept": "application/json, text/plain, */*", "Content-Type": "application/json"};
+                                if (csrf) heartbeatHeaders["X-XSRF-Token"] = csrf;
+                                if (role) heartbeatHeaders["X-Max-Elevated-Role"] = role;
+                                const heartbeat = await fetch("/auth/session/heartbeat", {
+                                  method: "POST", headers: heartbeatHeaders, body: "{}",
+                                  credentials: "include", cache: "no-store",
+                                  signal: heartbeatController.signal,
+                                });
+                                window.clearTimeout(heartbeatTimer);
+                                const heartbeatPayload = await heartbeat.json().catch(() => null);
+                                refreshedToken = heartbeatPayload && typeof heartbeatPayload.token === "string"
+                                  ? heartbeatPayload.token.trim() : "";
+                              } catch (_) {
+                                // The current bearer may still be valid.
+                              }
+                              const responses = await Promise.all(requests.map(async (request) => {
+                                const controller = new AbortController();
+                                const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+                                const headers = {...request.headers};
+                                if (refreshedToken) headers.Authorization = `Bearer ${refreshedToken}`;
+                                try {
+                                  const response = await fetch(request.url, {
+                                    method: "GET", headers, credentials: "omit",
+                                    cache: "no-store", signal: controller.signal,
+                                  });
+                                  return {
+                                    query: request.query, status: response.status, url: response.url,
+                                    headers: Object.fromEntries(response.headers.entries()),
+                                    body: await response.text(),
+                                  };
+                                } catch (error) {
+                                  return {query: request.query, status: 0, url: request.url, headers: {}, body: "", error: String(error?.message || error)};
+                                } finally {
+                                  window.clearTimeout(timer);
+                                }
+                              }));
+                              return {responses, refreshedToken};
+                            }
+                            """,
+                            {
+                                "requests": payload["requests"],
+                                "timeoutMs": int(self.timeout * 1000),
+                            },
+                        )
+                        refreshed_token = clean(batch_result.pop("refreshedToken", ""))
+                        if refreshed_token:
+                            self._access_token = refreshed_token
+                        future.set_result(batch_result.get("responses", []))
+                        continue
                     if task_name != "get":
                         raise PCToolkitError("Unknown PC Toolkit browser task.")
                     request_headers = dict(payload["headers"])
@@ -949,6 +1010,31 @@ class PCToolkitBrowserTransport:
         if not isinstance(result, dict):
             raise PCToolkitError("PC Toolkit's browser returned an invalid response.")
         return result
+
+    def get_many(
+        self,
+        requests: list[dict[str, Any]],
+        *,
+        timeout: float | None = None,
+    ) -> list[dict[str, Any]]:
+        if not requests:
+            return []
+        wait_timeout = max(2.0, float(timeout or self.timeout))
+        with self._state_lock:
+            if self._closed:
+                raise PCToolkitError("PC Toolkit's browser transport is closed.")
+            thread = self._thread
+        if thread is None or not thread.is_alive():
+            raise PCToolkitError("PC Toolkit's browser transport is not running.")
+        future: Future[Any] = Future()
+        self._tasks.put(("get_many", {"requests": requests}, future))
+        try:
+            result = future.result(timeout=wait_timeout + 12.0)
+        except FutureTimeoutError as exc:
+            raise PCToolkitError("PC Toolkit's browser batch timed out.") from exc
+        if not isinstance(result, list):
+            raise PCToolkitError("PC Toolkit's browser returned an invalid batch response.")
+        return [item for item in result if isinstance(item, dict)]
 
     def close(self) -> None:
         with self._state_lock:
@@ -1494,6 +1580,94 @@ class PCToolkitBrowserClient:
             active_count=int(result.get("active_count", 0) or 0),
         )
         return result
+
+    def lookup_many(
+        self,
+        queries: list[str],
+        *,
+        operation_id: str | None = None,
+        purpose: str = "bulk_lookup",
+    ) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
+        values = [clean(query) for query in queries if len(clean(query)) >= 2]
+        requests = [{
+            "query": value,
+            "url": f"{DEFAULT_DEVICE_URL}/{urllib.parse.quote(value, safe='-._')}?sources=cmdb,sccm",
+            "headers": pc_toolkit_browser_request_headers(self.role, self.access_token),
+        } for value in values]
+        started = time.monotonic()
+        run_reporting.pc_toolkit_event(
+            "browser_batch_started",
+            operation_id=operation_id,
+            purpose=purpose,
+            query_count=len(requests),
+            parallel_limit=MAX_PARALLEL_LOOKUPS,
+        )
+        responses = self.transport.get_many(requests, timeout=self.timeout)
+        by_query = {normalise_key(item.get("query")): item for item in responses}
+        request_by_query = {normalise_key(item["query"]): item for item in requests}
+        results: dict[str, dict[str, Any]] = {}
+        errors: dict[str, str] = {}
+        for value in values:
+            key = normalise_key(value)
+            response = by_query.get(key)
+            if response is None:
+                errors[key] = "PC Toolkit returned no response."
+                continue
+            try:
+                status = int(response.get("status", 0) or 0)
+            except (TypeError, ValueError):
+                status = 0
+            request = request_by_query[key]
+            run_reporting.network(
+                "GET",
+                urllib.parse.urlsplit(request["url"]).path,
+                status=status or None,
+                duration_ms=round((time.monotonic() - started) * 1000),
+                transport="pc-toolkit",
+                request_url=str(response.get("url") or request["url"]),
+                request_headers=request["headers"],
+                response_headers=response.get("headers") if isinstance(response.get("headers"), dict) else {},
+                response_body=response.get("body", ""),
+                operation_id=operation_id,
+                error_detail=clean(response.get("error")) or None,
+                details={
+                    "channel": "browser-page-batch",
+                    "purpose": purpose,
+                    "query": value,
+                },
+            )
+            if status in {401, 403}:
+                errors[key] = "PC Toolkit authentication is required."
+                continue
+            if status < 200 or status >= 400:
+                detail = clean(response.get("error"))
+                errors[key] = detail or f"PC Toolkit returned HTTP {status}."
+                continue
+            raw = response.get("body", "")
+            try:
+                payload = json.loads(raw if isinstance(raw, str) else str(raw))
+                result = normalise_lookup(payload, value)
+            except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                errors[key] = "PC Toolkit returned an unreadable response."
+                run_reporting.pc_toolkit_event(
+                    "browser_batch_item_parse_failed",
+                    operation_id=operation_id,
+                    query=value,
+                    exception=run_reporting.exception_details(exc),
+                )
+                continue
+            result["duration_ms"] = round((time.monotonic() - started) * 1000)
+            results[key] = result
+        run_reporting.pc_toolkit_event(
+            "browser_batch_complete",
+            operation_id=operation_id,
+            purpose=purpose,
+            query_count=len(values),
+            result_count=len(results),
+            error_count=len(errors),
+            duration_ms=round((time.monotonic() - started) * 1000),
+        )
+        return results, errors
 
 
 class PCToolkitPuppeteerClient:
@@ -2348,6 +2522,106 @@ class PCToolkitService:
                 return result
             raise
 
+    def _browser_bulk_lookup(
+        self,
+        unique: dict[str, str],
+        *,
+        fresh: bool,
+        operation_id: str,
+    ) -> tuple[dict[str, Any], dict[str, str]]:
+        now = time.time()
+        with self.lock:
+            cached_entries = {key: deepcopy(self.cache.get(key)) for key in unique}
+        results: dict[str, Any] = {}
+        pending: dict[str, str] = {}
+        for key, value in unique.items():
+            cached = cached_entries.get(key)
+            try:
+                age = max(0.0, now - float(cached.get("fetched_at", 0))) if cached else STALE_CACHE_SECONDS + 1
+            except (TypeError, ValueError):
+                age = STALE_CACHE_SECONDS + 1
+            cached_result = cached.get("result") if isinstance(cached, dict) else None
+            if not fresh and age <= STALE_CACHE_SECONDS and isinstance(cached_result, dict):
+                result = deepcopy(cached_result)
+                result["cached"] = True
+                result["stale"] = age > ACTIVE_CACHE_SECONDS
+                result["age_seconds"] = round(age)
+                results[key] = result
+            else:
+                pending[key] = value
+
+        fetched: dict[str, dict[str, Any]] = {}
+        errors: dict[str, str] = {}
+        client = self._client()
+        if not hasattr(client, "lookup_many"):
+            raise PCToolkitError("PC Toolkit's browser transport is not connected.")
+        pending_items = list(pending.items())
+        for offset in range(0, len(pending_items), MAX_PARALLEL_LOOKUPS):
+            chunk = dict(pending_items[offset:offset + MAX_PARALLEL_LOOKUPS])
+            remaining = dict(chunk)
+            chunk_errors: dict[str, str] = {}
+            for attempt in range(1, MAX_LOOKUP_ATTEMPTS + 1):
+                if not remaining:
+                    break
+                try:
+                    batch_results, batch_errors = client.lookup_many(
+                        list(remaining.values()),
+                        operation_id=operation_id,
+                    )
+                except Exception as exc:
+                    batch_results = {}
+                    batch_errors = {key: str(exc) for key in remaining}
+                fetched.update(batch_results)
+                chunk_errors.update(batch_errors)
+                remaining = {
+                    key: value for key, value in remaining.items()
+                    if key not in batch_results
+                }
+                if remaining and attempt < MAX_LOOKUP_ATTEMPTS:
+                    run_reporting.pc_toolkit_event(
+                        "browser_batch_retry_scheduled",
+                        service_id=self.service_id,
+                        operation_id=operation_id,
+                        attempt=attempt,
+                        next_attempt=attempt + 1,
+                        query_count=len(remaining),
+                    )
+                    time.sleep(0.35 * attempt)
+            for key in remaining:
+                errors[key] = chunk_errors.get(key, "PC Toolkit lookup failed.")
+
+        results.update(fetched)
+        for key in list(errors):
+            cached = cached_entries.get(key)
+            cached_result = cached.get("result") if isinstance(cached, dict) else None
+            if not isinstance(cached_result, dict):
+                continue
+            result = deepcopy(cached_result)
+            result["cached"] = True
+            result["stale"] = True
+            try:
+                result["age_seconds"] = round(max(0.0, now - float(cached.get("fetched_at", 0))))
+            except (TypeError, ValueError):
+                result["age_seconds"] = round(STALE_CACHE_SECONDS + 1)
+            results[key] = result
+            errors.pop(key, None)
+
+        if fetched:
+            fetched_at = time.time()
+            with self.lock:
+                for key, result in fetched.items():
+                    self._remember_models_locked(result)
+                    self.cache.pop(key, None)
+                    self.cache[key] = {"fetched_at": fetched_at, "result": result}
+                while len(self.cache) > MAX_CACHE_ENTRIES:
+                    self.cache.pop(next(iter(self.cache)))
+                self._schedule_cache_write_locked()
+                self.state = "connected"
+                self.message = "PC Toolkit enrichment is ready."
+                self.last_error = ""
+                self.connected_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        return results, errors
+
     def bulk_lookup(self, queries: list[str], *, fresh: bool = False) -> dict[str, Any]:
         operation_id = run_reporting.diagnostic_id("pc-bulk")
         started = time.monotonic()
@@ -2371,36 +2645,40 @@ class PCToolkitService:
             invalid_count=invalid_count,
             fresh=bool(fresh),
         )
-        results: dict[str, Any] = {}
-        errors: dict[str, str] = {}
-        # Browser-backed transports own one page and therefore execute fetches
-        # serially. Submitting ten callers at once previously made most of them
-        # time out while merely waiting in the page queue.
-        worker_limit = 1 if self.transport_mode() in {"browser", "puppeteer"} else MAX_PARALLEL_LOOKUPS
-        with ThreadPoolExecutor(max_workers=min(worker_limit, max(1, len(unique)))) as executor:
-            futures = {
-                executor.submit(
-                    self.lookup,
-                    value,
-                    fresh=fresh,
-                    operation_id=operation_id,
-                    purpose="bulk_lookup",
-                ): key
-                for key, value in unique.items()
-            }
-            for future in as_completed(futures):
-                key = futures[future]
-                try:
-                    results[key] = future.result()
-                except Exception as exc:
-                    errors[key] = str(exc)
-                    run_reporting.pc_toolkit_event(
-                        "bulk_lookup_item_failed",
-                        service_id=self.service_id,
+        if self.transport_mode() == "browser" and not self.simulate:
+            results, errors = self._browser_bulk_lookup(
+                unique,
+                fresh=fresh,
+                operation_id=operation_id,
+            )
+        else:
+            results = {}
+            errors = {}
+            worker_limit = 1 if self.transport_mode() == "puppeteer" else MAX_PARALLEL_LOOKUPS
+            with ThreadPoolExecutor(max_workers=min(worker_limit, max(1, len(unique)))) as executor:
+                futures = {
+                    executor.submit(
+                        self.lookup,
+                        value,
+                        fresh=fresh,
                         operation_id=operation_id,
-                        query=unique[key],
-                        exception=run_reporting.exception_details(exc),
-                    )
+                        purpose="bulk_lookup",
+                    ): key
+                    for key, value in unique.items()
+                }
+                for future in as_completed(futures):
+                    key = futures[future]
+                    try:
+                        results[key] = future.result()
+                    except Exception as exc:
+                        errors[key] = str(exc)
+                        run_reporting.pc_toolkit_event(
+                            "bulk_lookup_item_failed",
+                            service_id=self.service_id,
+                            operation_id=operation_id,
+                            query=unique[key],
+                            exception=run_reporting.exception_details(exc),
+                        )
         run_reporting.pc_toolkit_event(
             "bulk_lookup_complete",
             service_id=self.service_id,
