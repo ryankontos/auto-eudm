@@ -4,6 +4,7 @@ import gzip
 import json
 from pathlib import Path
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -266,12 +267,62 @@ class PCToolkitCacheTests(unittest.TestCase):
         status = service.status()
         self.assertEqual(status["state"], "error")
         self.assertIn("device API rejected", status["message"])
-        client.lookup.assert_called_once_with(
+        self.assertEqual(client.lookup.call_count, 2)
+        client.lookup.assert_called_with(
             "ABC123",
             request_id="pc-request-test",
             operation_id="pc-operation-test",
             purpose="lookup",
         )
+
+    def test_failed_lookup_falls_back_to_even_an_old_cached_result(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            service = PCToolkitService(
+                Path(folder) / "cache.json",
+                preferences=lambda: {"pc_toolkit_enabled": True, "pc_toolkit_transport": "api"},
+            )
+            cached_result = normalise_lookup(
+                {"devices": [device("ABC123", status="Deployed", model="Known model")]},
+                "ABC123",
+            )
+            service.cache["abc123"] = {
+                "fetched_at": time.time() - (31 * 24 * 60 * 60),
+                "result": cached_result,
+            }
+            client = mock.Mock()
+            client.lookup.side_effect = PCToolkitError("temporary gateway failure")
+            with mock.patch.object(service, "_client", return_value=client):
+                result = service.lookup("ABC123")
+
+        self.assertEqual(result["primary"]["model"], "Known model")
+        self.assertTrue(result["cached"])
+        self.assertTrue(result["stale"])
+
+    def test_browser_bulk_lookups_are_serial_to_avoid_queue_timeouts(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            service = PCToolkitService(
+                Path(folder) / "cache.json",
+                preferences=lambda: {"pc_toolkit_enabled": True, "pc_toolkit_transport": "browser"},
+            )
+            active = 0
+            peak = 0
+            active_lock = threading.Lock()
+
+            def lookup(query, **_kwargs):
+                nonlocal active, peak
+                with active_lock:
+                    active += 1
+                    peak = max(peak, active)
+                time.sleep(0.01)
+                with active_lock:
+                    active -= 1
+                return {"query": query, "found": False, "devices": []}
+
+            with mock.patch.object(service, "lookup", side_effect=lookup):
+                result = service.bulk_lookup(["ABC123", "DEF456", "GHI789"])
+
+        self.assertFalse(result["errors"])
+        self.assertEqual(peak, 1)
 
     def test_browser_client_uses_authenticated_page_fetch_shape(self) -> None:
         calls: list[dict[str, object]] = []

@@ -69,6 +69,7 @@ ACTIVE_CACHE_SECONDS = 10 * 60
 STALE_CACHE_SECONDS = 30 * 24 * 60 * 60
 MAX_CACHE_ENTRIES = 10_000
 MAX_PARALLEL_LOOKUPS = 10
+MAX_LOOKUP_ATTEMPTS = 2
 PC_TOOLKIT_CONNECT_TIMEOUT_SECONDS = 300
 PUPPETEER_CONNECT_TIMEOUT_SECONDS = 180
 PUPPETEER_BRIDGE_PATH = Path(__file__).with_name("pc_toolkit_puppeteer.cjs")
@@ -644,6 +645,7 @@ class PCToolkitBrowserTransport:
         self._startup_error: BaseException | None = None
         self._stop_requested = threading.Event()
         self._closed = False
+        self._access_token = ""
 
     def start(self) -> None:
         with self._state_lock:
@@ -807,24 +809,58 @@ class PCToolkitBrowserTransport:
                 try:
                     if task_name != "get":
                         raise PCToolkitError("Unknown PC Toolkit browser task.")
+                    request_headers = dict(payload["headers"])
+                    if self._access_token:
+                        request_headers["Authorization"] = f"Bearer {self._access_token}"
                     result = page.evaluate(
                         """
                         async ({url, headers, timeoutMs}) => {
                           const controller = new AbortController();
                           const timer = window.setTimeout(() => controller.abort(), timeoutMs);
                           try {
-                            const response = await fetch(url, {
+                            let response = await fetch(url, {
                               method: "GET",
                               headers,
                               credentials: "omit",
                               cache: "no-store",
                               signal: controller.signal,
                             });
+                            let refreshedToken = "";
+                            if (response.status === 401 || response.status === 403) {
+                              const cookie = document.cookie.split(";").map((value) => value.trim())
+                                .find((value) => /^(XSRF_TOKEN|XSRF-TOKEN)=/i.test(value));
+                              const csrf = cookie ? decodeURIComponent(cookie.split("=").slice(1).join("=")) : "";
+                              const heartbeatHeaders = {"Accept": "application/json, text/plain, */*", "Content-Type": "application/json"};
+                              if (csrf) heartbeatHeaders["X-XSRF-Token"] = csrf;
+                              const selectedRole = headers["X-Max-Elevated-Role"] || "";
+                              if (selectedRole) heartbeatHeaders["X-Max-Elevated-Role"] = selectedRole;
+                              const heartbeat = await fetch("/auth/session/heartbeat", {
+                                method: "POST",
+                                headers: heartbeatHeaders,
+                                body: "{}",
+                                credentials: "include",
+                                cache: "no-store",
+                                signal: controller.signal,
+                              });
+                              const heartbeatPayload = await heartbeat.json().catch(() => null);
+                              refreshedToken = heartbeatPayload && typeof heartbeatPayload.token === "string"
+                                ? heartbeatPayload.token.trim() : "";
+                              if (refreshedToken) {
+                                response = await fetch(url, {
+                                  method: "GET",
+                                  headers: {...headers, Authorization: `Bearer ${refreshedToken}`},
+                                  credentials: "omit",
+                                  cache: "no-store",
+                                  signal: controller.signal,
+                                });
+                              }
+                            }
                             return {
                               status: response.status,
                               url: response.url,
                               headers: Object.fromEntries(response.headers.entries()),
                               body: await response.text(),
+                              refreshedToken,
                             };
                           } finally {
                             window.clearTimeout(timer);
@@ -833,10 +869,13 @@ class PCToolkitBrowserTransport:
                         """,
                         {
                             "url": payload["url"],
-                            "headers": payload["headers"],
+                            "headers": request_headers,
                             "timeoutMs": int(self.timeout * 1000),
                         },
                     )
+                    refreshed_token = clean(result.pop("refreshedToken", ""))
+                    if refreshed_token:
+                        self._access_token = refreshed_token
                     future.set_result(result)
                 except Exception as exc:
                     future.set_exception(exc)
@@ -921,7 +960,7 @@ class PCToolkitBrowserTransport:
             if thread is not None and thread.is_alive():
                 self._tasks.put(("close", {}, None))
                 if thread is not threading.current_thread():
-                    thread.join(timeout=8)
+                    thread.join(timeout=self.timeout + 10)
 
 
 class PCToolkitPuppeteerTransport:
@@ -1935,6 +1974,23 @@ class PCToolkitService:
         self._close_browser_transport()
         self._close_puppeteer_transport()
 
+    def pause_for_helix_auth(self) -> None:
+        """Release the shared Chrome profile before Helix opens its SSO flow."""
+        with self.lock:
+            if self._connect_cancel is not None:
+                self._connect_cancel.set()
+            previous = self.state
+            self.state = "idle"
+            self.message = "Waiting until Helix authentication is complete."
+            self.last_error = ""
+        self._close_transports()
+        if previous != "idle":
+            run_reporting.pc_toolkit_event(
+                "paused_for_helix_auth",
+                service_id=self.service_id,
+                previous_state=previous,
+            )
+
     def _connect_cancelled(self, operation_id: str | None) -> bool:
         if not operation_id:
             return False
@@ -2012,12 +2068,33 @@ class PCToolkitService:
                     record_count=int(result.get("record_count", 0) or 0),
                 )
             else:
-                result = self._client().lookup(
-                    value,
-                    request_id=request_id,
-                    operation_id=operation_id,
-                    purpose=purpose,
-                )
+                result = None
+                for attempt in range(1, MAX_LOOKUP_ATTEMPTS + 1):
+                    try:
+                        result = self._client().lookup(
+                            value,
+                            request_id=request_id,
+                            operation_id=operation_id,
+                            purpose=purpose,
+                        )
+                        break
+                    except Exception as lookup_error:
+                        if attempt >= MAX_LOOKUP_ATTEMPTS:
+                            raise
+                        run_reporting.pc_toolkit_event(
+                            "lookup_retry_scheduled",
+                            service_id=self.service_id,
+                            request_id=request_id,
+                            operation_id=operation_id,
+                            purpose=purpose,
+                            query=value,
+                            attempt=attempt,
+                            next_attempt=attempt + 1,
+                            exception=run_reporting.exception_details(lookup_error),
+                        )
+                        time.sleep(0.35 * attempt)
+                if result is None:
+                    raise PCToolkitError("PC Toolkit did not return a lookup result.")
         except Exception as exc:
             run_reporting.pc_toolkit_event(
                 "fetch_failed",
@@ -2238,12 +2315,38 @@ class PCToolkitService:
                                 daemon=True,
                             ).start()
                 return result
-        return self._fetch(
-            value,
-            request_id=request_id,
-            operation_id=operation_id,
-            purpose=purpose,
-        )
+        try:
+            return self._fetch(
+                value,
+                request_id=request_id,
+                operation_id=operation_id,
+                purpose=purpose,
+            )
+        except Exception as exc:
+            # A stale answer is still useful enrichment and is safer than
+            # blanking previously known details because an optional internal
+            # service had a transient failure.
+            if cached and isinstance(cached.get("result"), dict):
+                result = deepcopy(cached["result"])
+                try:
+                    age = max(0.0, now - float(cached.get("fetched_at", 0)))
+                except (TypeError, ValueError):
+                    age = STALE_CACHE_SECONDS + 1
+                result["cached"] = True
+                result["stale"] = True
+                result["age_seconds"] = round(age)
+                run_reporting.pc_toolkit_event(
+                    "lookup_stale_fallback",
+                    service_id=self.service_id,
+                    request_id=request_id,
+                    operation_id=operation_id,
+                    purpose=purpose,
+                    query=value,
+                    age_seconds=round(age),
+                    exception=run_reporting.exception_details(exc),
+                )
+                return result
+            raise
 
     def bulk_lookup(self, queries: list[str], *, fresh: bool = False) -> dict[str, Any]:
         operation_id = run_reporting.diagnostic_id("pc-bulk")
@@ -2270,7 +2373,11 @@ class PCToolkitService:
         )
         results: dict[str, Any] = {}
         errors: dict[str, str] = {}
-        with ThreadPoolExecutor(max_workers=min(MAX_PARALLEL_LOOKUPS, max(1, len(unique)))) as executor:
+        # Browser-backed transports own one page and therefore execute fetches
+        # serially. Submitting ten callers at once previously made most of them
+        # time out while merely waiting in the page queue.
+        worker_limit = 1 if self.transport_mode() in {"browser", "puppeteer"} else MAX_PARALLEL_LOOKUPS
+        with ThreadPoolExecutor(max_workers=min(worker_limit, max(1, len(unique)))) as executor:
             futures = {
                 executor.submit(
                     self.lookup,

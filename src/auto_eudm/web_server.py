@@ -433,6 +433,11 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
             ).start()
             return
         if path == "/api/connect":
+            # PC Toolkit's real-browser transports intentionally keep Chrome
+            # open. Release their shared profile before Helix starts SSO so
+            # the primary authentication flow never waits on an optional
+            # enrichment service.
+            self.app.pc_toolkit.pause_for_helix_auth()
             self.app.clients.connect_async()
             self._json(self.app.clients.status(), 202)
             return

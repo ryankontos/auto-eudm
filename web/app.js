@@ -2964,23 +2964,38 @@ async function connect() {
     // "connected". Do not immediately race it with a second health request;
     // the regular heartbeat will verify the settled session shortly after.
     setTimeout(() => refreshConnection(), 700);
+    if (state.preferences?.pc_toolkit_enabled) void connectPcToolkitAfterHelix();
   } catch (error) {
     toast(error.message, "error");
   }
 }
 
-async function startAuthenticationChecks() {
-  const helix = (async () => {
-    await refreshConnection({ verify: true });
-    if (!state.connection?.simulation && ["disconnected", "expired"].includes(state.connection?.state)) {
-      state.connectionAutoStarted = true;
-      await connect();
+async function connectPcToolkitAfterHelix() {
+  if (state.pcToolkitWaitingForHelix) return;
+  state.pcToolkitWaitingForHelix = true;
+  try {
+    // Both products use the same dedicated Chrome profile. Helix is the
+    // required service, so let its browser handoff finish before the optional
+    // PC Toolkit browser is allowed to retain that profile.
+    for (let attempt = 0; attempt < 150 && state.connection?.state === "connecting"; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, 1000));
     }
-  })();
-  const pcToolkit = state.preferences?.pc_toolkit_enabled
-    ? connectPcToolkit()
-    : Promise.resolve();
-  await Promise.allSettled([helix, pcToolkit]);
+    if (state.preferences?.pc_toolkit_enabled && state.connection?.state !== "connecting") {
+      await connectPcToolkit();
+    }
+  } finally {
+    state.pcToolkitWaitingForHelix = false;
+  }
+}
+
+async function startAuthenticationChecks() {
+  await refreshConnection({ verify: true });
+  if (!state.connection?.simulation && ["disconnected", "expired"].includes(state.connection?.state)) {
+    state.connectionAutoStarted = true;
+    await connect();
+    return;
+  }
+  if (state.preferences?.pc_toolkit_enabled) await connectPcToolkitAfterHelix();
 }
 
 function bindConnectionSheetEvents() {
@@ -3206,6 +3221,7 @@ async function refreshPcToolkitStatus() {
 }
 
 async function connectPcToolkit() {
+  if (state.connection?.state === "connecting") return;
   const button = $("#connectPcToolkitButton");
   if (button) button.disabled = true;
   try {
@@ -3479,10 +3495,14 @@ async function enrichImportPreview(payload = state.importPreview) {
   if (!payload || !state.preferences.pc_toolkit_enabled) return;
   const epoch = ++state.pcToolkitEnrichmentEpoch;
   const requests = payload.requests || [];
-  const queries = [...new Set(requests.flatMap((request) => [
+  const missingReturnUsers = requests
+    .filter((request) => importDeploymentNeedsManualReturn(request, payload))
+    .map((request) => String(request.username || request.user || "").trim())
+    .filter((value) => value.length >= 2);
+  const queries = [...new Set([...missingReturnUsers, ...requests.flatMap((request) => [
     String(request.serials?.[0] || request.serial || "").trim(),
     String(request.username || request.user || request.returning_user || "").trim(),
-  ]).filter((value) => value.length >= 2))];
+  ])].filter((value) => value.length >= 2))];
   if (!queries.length) {
     payload.pc_toolkit_loading = false;
     payload.pc_toolkit_total = 0;
@@ -5796,7 +5816,16 @@ function renderImportPreview() {
       detail: "Pending return serials",
     },
   ];
-  $("#importPreviewList").innerHTML = groups.map((group) => {
+  const manualReturnEntries = payload.requests.filter((request) =>
+    importDeploymentNeedsManualReturn(request, payload),
+  );
+  const manualReturnSection = manualReturnEntries.length
+    ? `<div class="import-manual-return-section">
+        <div class="import-manual-return-heading"><div><strong>Missing return details</strong><small>These users have no returned or pending-return serial in the workbook. Add one here, or use a PC Toolkit suggestion when available.</small></div><span>${manualReturnEntries.length}</span></div>
+        <div class="import-manual-return-list">${manualReturnEntries.map((request) => manualReturnEditorMarkup(request, payload)).join("")}</div>
+      </div>`
+    : "";
+  $("#importPreviewList").innerHTML = manualReturnSection + groups.map((group) => {
     const requests = payload.requests.filter((request) => request.group === group.key);
     const missingUsernameWarnings = group.key === "Deployments"
       ? (Array.isArray(payload.warnings?.missing_username_deployments) ? payload.warnings.missing_username_deployments : [])
@@ -5805,9 +5834,6 @@ function renderImportPreview() {
     const selectedCount = requests.filter((request) => request.included !== false).length;
     const expanded = state.importExpandedGroups.has(group.key);
     const visibleRequests = expanded ? requests : requests.slice(0, IMPORT_PREVIEW_ROW_LIMIT);
-    const manualReturnEntries = group.key === "Deployments"
-      ? requests.filter((request) => importDeploymentNeedsManualReturn(request, payload))
-      : [];
     const rows = visibleRequests.map((request, index) => {
       const isDeployment = request.group === "Deployments";
       const isReturnedDevice = request.group === "Returned devices";
@@ -5856,12 +5882,6 @@ function renderImportPreview() {
         <div>${statusControl}${isIncluded ? validation : "<small>Do not deploy</small>"}${editable}</div>
       </div>`;
     }).join("");
-    const manualReturnSection = manualReturnEntries.length
-      ? `<div class="import-manual-return-section">
-          <div class="import-manual-return-heading"><div><strong>Missing return details</strong><small>These users have no returned or pending-return serial in the workbook. Add one here, or use a PC Toolkit suggestion when available.</small></div><span>${manualReturnEntries.length}</span></div>
-          <div class="import-manual-return-list">${manualReturnEntries.map((request) => manualReturnEditorMarkup(request, payload)).join("")}</div>
-        </div>`
-      : "";
     const missingUsernameWarning = missingUsernameWarnings.length
       ? `<div class="import-data-warning" role="status"><div class="import-data-warning-heading">${iconMarkup("user-round-x")}<strong>Deployment serial${missingUsernameWarnings.length === 1 ? "" : "s"} without a username</strong></div><small>These rows have no username in the Username column.</small><ul>${missingUsernameWarnings.map((warning) => `<li>${escapeHtml(warning.serial)} · row ${escapeHtml(warning.row_number)} · ${escapeHtml(warning.date)}</li>`).join("")}</ul></div>`
       : "";
@@ -5882,7 +5902,6 @@ function renderImportPreview() {
       </div>
       ${missingUsernameWarning}
       ${rows}
-      ${manualReturnSection}
       ${visibleRequests.length < requests.length ? `<button class="import-show-more" type="button" data-import-expand="${escapeHtml(group.key)}">${iconMarkup("chevron-down")}<span>Show ${requests.length - visibleRequests.length} more</span></button>` : ""}
     </section>`;
   }).join("");

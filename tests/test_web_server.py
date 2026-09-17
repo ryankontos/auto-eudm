@@ -15,9 +15,15 @@ from auto_eudm.web_server import AutoEUDMServer, MAX_BODY, MAX_SEARCH_QUERY
 class FakeClients:
     request_for = "request.user"
 
+    def __init__(self) -> None:
+        self.connected = False
+
     @staticmethod
     def status() -> dict[str, object]:
         return {"state": "ready"}
+
+    def connect_async(self) -> None:
+        self.connected = True
 
 
 class FakeJobs:
@@ -35,12 +41,16 @@ class FakePCToolkit:
         self.connected = False
         self.cache_cleared = False
         self.models_cleared = False
+        self.paused_for_helix = False
 
     def status(self) -> dict[str, object]:
         return {"enabled": True, "state": "connected" if self.connected else "idle"}
 
     def connect_async(self) -> None:
         self.connected = True
+
+    def pause_for_helix_auth(self) -> None:
+        self.paused_for_helix = True
 
     def lookup(self, query: str, *, fresh: bool = False) -> dict[str, object]:
         return {"query": query, "fresh": fresh, "found": True}
@@ -249,6 +259,13 @@ class LocalWebServerTests(unittest.TestCase):
         response, _ = self.request("DELETE", "/api/pc-toolkit/models")
         self.assertEqual(response.status, 200)
         self.assertTrue(self.app.pc_toolkit.models_cleared)
+
+    def test_helix_connect_releases_pc_toolkit_browser_first(self) -> None:
+        response, _ = self.request("POST", "/api/connect", payload={})
+
+        self.assertEqual(response.status, 202)
+        self.assertTrue(self.app.pc_toolkit.paused_for_helix)
+        self.assertTrue(self.app.clients.connected)
 
     def test_import_drafts_are_read_written_and_deleted_through_local_api(self) -> None:
         draft = {
