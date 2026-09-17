@@ -3316,12 +3316,9 @@ function pcToolkitFactsMarkup(result, { compact = false } = {}) {
   const device = result?.primary;
   if (!device) return "";
   const facts = [device.model, device.status, pcToolkitAssignedLabel(device), device.location].filter(Boolean);
-  const warning = result.ambiguous
-    ? '<small class="pc-toolkit-warning">Multiple active PC Toolkit records need review.</small>'
-    : "";
   return `<div class="pc-toolkit-facts ${compact ? "compact" : ""}">
     <strong>${escapeHtml(device.model || device.name || device.serial || "PC Toolkit device")}</strong>
-    <small>${escapeHtml(facts.slice(device.model ? 1 : 0).join(" · "))}</small>${warning}
+    <small>${escapeHtml(facts.slice(device.model ? 1 : 0).join(" · "))}</small>
   </div>`;
 }
 
@@ -3418,7 +3415,10 @@ function pcToolkitConflictFor(request) {
   const result = request?.pc_toolkit?.serial;
   const device = result?.primary;
   if (!device) return null;
-  if (result.ambiguous) return { level: "warning", text: "Multiple active PC Toolkit records" };
+  // PC Toolkit can return more than one active record. The enrichment is a
+  // useful hint, but it should never turn into a confusing record-management
+  // decision in the review UI.
+  if (result.ambiguous) return null;
   const target = pcToolkitKey(request.username || request.user || request.returning_user);
   const assigned = pcToolkitKey(device.assigned_user?.login);
   const group = request.group || (request.kind === "user" ? "Deployments" : "");
@@ -3430,6 +3430,16 @@ function pcToolkitConflictFor(request) {
     return { level: "danger", text: `PC Toolkit assigns this device to ${device.assigned_user.login}` };
   }
   return null;
+}
+
+function pcToolkitDeploymentRelation(request, device) {
+  if (!device) return "";
+  const group = request?.group || (request?.kind === "user" ? "Deployments" : "");
+  if (group !== "Deployments" || pcToolkitKey(device.status) !== "deployed") return "";
+  const target = pcToolkitKey(request.username || request.user || request.returning_user);
+  if (!target) return "";
+  const assigned = pcToolkitKey(device.assigned_user?.login);
+  return assigned === target ? "Deployed to this user" : "Not deployed to this user";
 }
 
 function applyPcToolkitImportResults(payload, requests, results) {
@@ -4305,12 +4315,25 @@ function updateImportDates() {
   const previous = new Set(selectedImportDates());
   const today = new Date();
   const todayValue = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+  const yesterdayDate = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1);
+  const yesterdayValue = `${yesterdayDate.getFullYear()}-${String(yesterdayDate.getMonth() + 1).padStart(2, "0")}-${String(yesterdayDate.getDate()).padStart(2, "0")}`;
   const retained = dates.filter((entry) => previous.has(entry.value)).map((entry) => entry.value);
+  const validDeploymentDates = dates.filter((entry) => Number(entry.deployment_count || 0) > 0);
+  const todayHasDeployments = validDeploymentDates.some((entry) => entry.value === todayValue);
+  const yesterdayHasDeployments = validDeploymentDates.some((entry) => entry.value === yesterdayValue);
   const selected = retained.length
     ? retained
-    : dates.some((entry) => entry.value === todayValue)
-      ? [todayValue]
-      : dates[0]?.value ? [dates[0].value] : [];
+    : todayHasDeployments && yesterdayHasDeployments
+      ? [todayValue, yesterdayValue]
+      : todayHasDeployments
+        ? [todayValue]
+        : yesterdayHasDeployments
+          ? [yesterdayValue]
+          : validDeploymentDates[0]?.value
+            ? [validDeploymentDates[0].value]
+            : dates.some((entry) => entry.value === todayValue)
+              ? [todayValue]
+              : dates[0]?.value ? [dates[0].value] : [];
   state.importSelectedDates = selected;
   renderImportDateDialog();
   updateImportDateSummary();
@@ -4444,10 +4467,11 @@ function updateImportGroupChoices() {
     const groups = entry.groups || [];
     const selected = previous[entry.value];
     const validPrevious = selected === "all" || groups.some((group) => group.value === selected);
+    const selectedGroup = validPrevious ? selected : "all";
     return `<label class="import-date-group-row"><span>${escapeHtml(entry.label)}</span><select data-import-group-date="${escapeHtml(entry.value)}">
       <option value="">Choose a section</option>
-      ${groups.map((group, index) => `<option value="${escapeHtml(group.value)}" ${validPrevious && selected === group.value ? "selected" : ""}>Section ${index + 1} · ${group.eligible_row_count ?? 0} valid-user rows</option>`).join("")}
-      <option value="all" ${validPrevious && (selected === "all" || !selected) ? "selected" : ""}>All sections</option>
+      ${groups.map((group, index) => `<option value="${escapeHtml(group.value)}" ${selectedGroup === group.value ? "selected" : ""}>Section ${index + 1} · ${group.eligible_row_count ?? 0} valid-user rows</option>`).join("")}
+      <option value="all" ${selectedGroup === "all" ? "selected" : ""}>All sections</option>
     </select></label>`;
   }).join("");
   wrapper.hidden = false;
@@ -4977,11 +5001,12 @@ function renderImportDrafts() {
 function renderLatestImportDraft() {
   const button = $("#resumeLatestImportButton");
   const clearButton = $("#clearLatestImportButton");
+  const control = $("#resumeLatestImportControl");
   if (!button) return;
   const latest = readImportDrafts()[0];
   const visible = state.preferences.save_alm_import_drafts !== false && Boolean(latest);
   button.hidden = !visible;
-  if (clearButton) clearButton.hidden = !visible;
+  if (control) control.hidden = !visible;
   if (!visible) return;
   $("#resumeImportDraftTitle").textContent = `Resume ${latest.filename || "ALM import"}`;
   const timestamp = new Date(latest.saved_at || "");
@@ -5397,6 +5422,37 @@ function manualReturnRequest(source, serial, type, status) {
   };
 }
 
+function addManualReturnToReview(payload, source, { requireStatus = true } = {}) {
+  const serial = String(source.manual_return_serial || "").trim();
+  const type = source.manual_return_type === "pending_returns"
+    ? "pending_returns"
+    : "returned_devices";
+  const status = type === "returned_devices"
+    ? String(source.manual_return_status || "").trim()
+    : "";
+  let error = "";
+  if (!manualReturnSerialIsValid(serial)) {
+    error = "Enter a valid serial number (at least 6 letters or numbers).";
+  } else if (manualReturnSerialAlreadyInReview(payload, serial)) {
+    error = "That serial is already listed elsewhere in this review.";
+  } else if (requireStatus
+    && type === "returned_devices"
+    && !manualReturnStatusOptions().some((option) => option.value === status)) {
+    error = "Choose the returned-device deployment status.";
+  } else if (type === "returned_devices" && !hasCompleteLocation(state.importLocation || preferredImportLocation())) {
+    error = "Choose a complete destination in Options before adding a returned device.";
+  }
+  if (error) {
+    source.manual_return_error = error;
+    return null;
+  }
+  const added = manualReturnRequest(source, serial, type, status);
+  payload.requests.push(added);
+  source.manual_return_id = added.id;
+  source.manual_return_error = "";
+  return added;
+}
+
 function manualReturnEditorMarkup(source, payload) {
   const type = source.manual_return_type === "pending_returns"
     ? "pending_returns"
@@ -5623,14 +5679,15 @@ function pcToolkitImportMarkup(request, { loading = false, backlog = false } = {
   const context = backlog ? { ...request, kind: "user", group: "Deployments" } : request;
   const model = device?.model || "";
   const suggestion = request.pc_toolkit_suggested_status || pcToolkitSuggestedStatus(context, model);
-  const conflict = request.pc_toolkit_conflict || pcToolkitConflictFor(context);
   const mapping = pcToolkitMappingFor(model);
   const mappedForKind = context.group === "Deployments" ? mapping?.user_status : mapping?.location_status;
-  const title = device?.model || (associated.length ? "User device history available" : error ? "Details unavailable" : isLoading ? "Checking…" : "No matching details");
+  const associatedModel = associated.length === 1 ? (associated[0].model || associated[0].name) : "";
+  const title = device?.model || associatedModel || (associated.length ? "Associated device history" : error ? "Details unavailable" : isLoading ? "Checking…" : "No matching details");
+  const relation = pcToolkitDeploymentRelation(context, device);
   const meta = device
-    ? [device.status, pcToolkitAssignedLabel(device)].filter(Boolean).join(" · ")
+    ? [relation || device.status].filter(Boolean).join(" · ")
     : associated.length
-      ? `${associated.length} active device${associated.length === 1 ? "" : "s"}`
+      ? `${associated.length} associated device${associated.length === 1 ? "" : "s"}`
       : "";
   return `<div class="pc-toolkit-import-facts" data-state="${isLoading ? "loading" : error ? "error" : device || associated.length ? "ready" : "empty"}">
     <div class="pc-toolkit-import-main">
@@ -5638,8 +5695,6 @@ function pcToolkitImportMarkup(request, { loading = false, backlog = false } = {
       <span class="pc-toolkit-import-copy"><strong>${escapeHtml(title)}</strong>${meta ? `<small>${escapeHtml(meta)}</small>` : ""}</span>
       ${isLoading ? '<span class="import-status-spinner" aria-hidden="true"></span>' : `<button class="pc-toolkit-row-retry" type="button" data-import-pc-retry="${escapeHtml(request.id)}" aria-label="Retry PC Toolkit lookup" title="Retry PC Toolkit lookup">${iconMarkup("refresh-cw")}</button>`}
     </div>
-    ${result?.ambiguous ? '<span class="pc-toolkit-import-warning">Multiple active records</span>' : ""}
-    ${conflict ? `<span class="pc-toolkit-import-${escapeHtml(conflict.level)}">${escapeHtml(conflict.text)}</span>` : ""}
     <div class="pc-toolkit-import-actions">
       ${suggestion && request.status !== suggestion ? `<button class="text-button" type="button" data-import-pc-use="${escapeHtml(request.id)}" data-status="${escapeHtml(suggestion)}">Use ${escapeHtml(suggestion)}</button>` : ""}
       ${model && request.status && !mappedForKind ? `<button class="text-button" type="button" data-import-pc-remember="${escapeHtml(request.id)}">Remember for this model</button>` : ""}
@@ -6006,9 +6061,11 @@ function renderImportPreview() {
     source.manual_return_status = source.manual_return_type === "returned_devices"
       ? pcToolkitSuggestedStatus({ kind: "location" }, candidateModel)
       : "";
-    source.manual_return_error = "";
+    const added = addManualReturnToReview(payload, source, { requireStatus: false });
     renderImportPreview();
+    updateImportPrepareButton(payload);
     saveCurrentImportDraft();
+    if (added) void validateImportPreview([added]);
   }));
   $("#importPreviewList").querySelectorAll("[data-import-status-all]").forEach((select) => select.addEventListener("change", () => {
     const status = select.value;
@@ -6055,43 +6112,18 @@ function renderImportPreview() {
   $("#importPreviewList").querySelectorAll("[data-import-manual-add]").forEach((button) => button.addEventListener("click", () => {
     const source = payload.requests.find((request) => request.id === button.dataset.importManualAdd);
     if (!source) return;
-    const serial = String($(`[data-import-manual-serial="${button.dataset.importManualAdd}"]`)?.value || source.manual_return_serial || "").trim();
-    const type = $(`[data-import-manual-type="${button.dataset.importManualAdd}"]`)?.value || source.manual_return_type || "returned_devices";
-    const status = type === "returned_devices"
+    source.manual_return_serial = String($(`[data-import-manual-serial="${button.dataset.importManualAdd}"]`)?.value || source.manual_return_serial || "").trim();
+    source.manual_return_type = $(`[data-import-manual-type="${button.dataset.importManualAdd}"]`)?.value || source.manual_return_type || "returned_devices";
+    source.manual_return_status = source.manual_return_type === "returned_devices"
       ? $(`[data-import-manual-status="${button.dataset.importManualAdd}"]`)?.value || source.manual_return_status || ""
       : "";
-    let error = "";
-    if (!manualReturnSerialIsValid(serial)) {
-      error = "Enter a valid serial number (at least 6 letters or numbers).";
-    } else if (manualReturnSerialAlreadyInReview(payload, serial)) {
-      error = "That serial is already listed elsewhere in this review.";
-    } else if (type === "returned_devices" && !manualReturnStatusOptions().some((option) => option.value === status)) {
-      error = "Choose the returned-device deployment status.";
-    } else if (type === "returned_devices" && !hasCompleteLocation(state.importLocation || preferredImportLocation())) {
-      error = "Choose a complete destination in Options before adding a returned device.";
-    }
-    if (error) {
-      source.manual_return_serial = serial;
-      source.manual_return_type = type;
-      source.manual_return_status = status;
-      source.manual_return_error = error;
-      renderImportPreview();
-      updateImportPrepareButton(payload);
-      saveCurrentImportDraft();
-      return;
-    }
-    recordImportEdit();
-    source.manual_return_serial = serial;
-    source.manual_return_type = type;
-    source.manual_return_status = status;
-    source.manual_return_error = "";
-    const added = manualReturnRequest(source, serial, type, status);
-    payload.requests.push(added);
-    source.manual_return_id = added.id;
+    const alreadyAdded = Boolean(source.manual_return_id);
+    if (!alreadyAdded) recordImportEdit();
+    const added = alreadyAdded ? null : addManualReturnToReview(payload, source);
     renderImportPreview();
     updateImportPrepareButton(payload);
     saveCurrentImportDraft();
-    void validateImportPreview([added]);
+    if (added) void validateImportPreview([added]);
   }));
   $("#importPreviewList").querySelectorAll("[data-import-manual-remove]").forEach((button) => button.addEventListener("click", () => {
     const source = payload.requests.find((request) => request.id === button.dataset.importManualRemove);

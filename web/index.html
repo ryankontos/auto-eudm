@@ -53,11 +53,13 @@
           <span class="tool-icon import-icon backlog-icon" aria-hidden="true"><i data-lucide="search-check"></i></span>
           <span class="tool-copy"><strong>ALM backlog</strong><small>Find undeployed devices</small></span>
         </button>
-        <button id="resumeLatestImportButton" class="tool-button resume-import-tool" type="button" hidden>
+        <div id="resumeLatestImportControl" class="resume-import-control" hidden>
+          <button id="resumeLatestImportButton" class="tool-button resume-import-tool" type="button">
           <span class="tool-icon resume-icon" aria-hidden="true"><i data-lucide="rotate-ccw"></i></span>
           <span class="tool-copy"><strong id="resumeImportDraftTitle">Resume ALM import</strong><small id="resumeImportDraftDetail"></small></span>
-        </button>
-        <button id="clearLatestImportButton" class="text-button clear-resume-import" type="button" hidden><i data-lucide="x"></i><span>Clear saved import</span></button>
+          </button>
+          <button id="clearLatestImportButton" class="icon-button clear-resume-import" type="button" aria-label="Clear saved import" title="Clear saved import"><i data-lucide="x"></i></button>
+        </div>
       </div>
 
       <div class="rail-bottom-action">

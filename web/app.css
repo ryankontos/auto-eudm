@@ -1476,6 +1476,22 @@ input:hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var
 }
 .resume-import-tool:hover { border-color: var(--amber); background: var(--amber-soft); }
 .resume-import-tool .tool-icon { color: var(--amber); }
+.resume-import-control { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.resume-import-control .resume-import-tool { flex: 1 1 auto; min-width: 0; }
+.resume-import-control .clear-resume-import {
+  flex: 0 0 26px;
+  width: 26px;
+  height: 26px;
+  margin-right: 1px;
+  color: var(--subtle);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .14s ease, color .14s ease, background-color .14s ease;
+}
+.resume-import-control:hover .clear-resume-import,
+.resume-import-control:focus-within .clear-resume-import { opacity: 1; pointer-events: auto; }
+.resume-import-control .clear-resume-import:hover,
+.resume-import-control .clear-resume-import:focus-visible { color: var(--danger); }
 .import-busy {
   display: grid;
   grid-template-columns: 28px minmax(0, 1fr) auto;
