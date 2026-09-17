@@ -31,7 +31,7 @@ AutoEUDM is a local web UI I developed to speed up device-management work in EUD
 - Queue entries, request history, ALM drafts, settings, verification cache, and backlog exclusions belong in `results/`, not browser storage.
 - ALM inventory imports accept `.xlsx`, `.xlsm`, and `.csv`/CSV UTF-8. CSV uses the same heading mapping but has one value-only table, so sheet selection, date-fill sections, and font-colour status hints do not apply.
 - Every ALM inventory upload and mapped parse attempt writes a detailed, content-safe diagnostic to `results/alm-workbook-load-logs/`; the import status exposes its path on failure.
-- PC Toolkit requests and connection probes are saved as compact JSON-lines in `results/pc-toolkit-logs/`; Settings can download the current session log. Response bodies and request context are retained for troubleshooting, while credential-bearing fields are redacted.
+- PC Toolkit requests, connection probes, browser navigation, SSO/API responses, cache events, and exception chains are saved as credential-safe, schema-versioned JSON-lines in `results/pc-toolkit-logs/`; Settings can download the current session log. Response/request bodies and correlation IDs are retained for troubleshooting, while credential-bearing fields are redacted and oversized bodies carry a hash plus an explicit truncation marker.
 - Submission jobs are asynchronous. Preserve queue state, progress, request IDs, and failed rows if the UI is closed while a job runs.
 - Workbook columns are selected by heading. ALM drafts must be saved while editing and removed when their requests enter the queue; late verification must not recreate a completed draft.
 - Validation remains active even when cached verification fills a result immediately.

@@ -130,6 +130,11 @@ class PCToolkitCacheTests(unittest.TestCase):
             self.assertTrue(log_status["available"])
             self.assertIn("MacBook Pro (14-inch, 2023)", log_text)
             self.assertIn("example.test/Computers/ABC123", log_text)
+            self.assertIn('"event":"api_request_started"', log_text)
+            self.assertIn('"event":"response_normalised"', log_text)
+            self.assertIn('"request_body_present":false', log_text)
+            self.assertIn('"response_body_sha256"', log_text)
+            self.assertIn('"status_class":"2xx"', log_text)
             self.assertNotIn("private-cookie", log_text)
 
         run_reporting.configure_logging(enabled=False, command="test")
@@ -151,7 +156,10 @@ class PCToolkitCacheTests(unittest.TestCase):
 
             self.assertEqual(first["primary"]["model"], "Model 1")
             self.assertTrue(second["cached"])
-            lookup.assert_called_once_with("ABC123")
+            lookup.assert_called_once()
+            self.assertEqual(lookup.call_args.args, ("ABC123",))
+            self.assertEqual(lookup.call_args.kwargs["purpose"], "lookup")
+            self.assertIn("operation_id", lookup.call_args.kwargs)
             time.sleep(0.6)
             saved = json.loads(cache_path.read_text(encoding="utf-8"))
             self.assertIn("abc123", saved["entries"])

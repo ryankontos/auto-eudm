@@ -13,7 +13,9 @@ from copy import deepcopy
 from datetime import datetime, timezone
 import json
 import os
+import platform
 from pathlib import Path
+import sys
 import threading
 import time
 from typing import Any, Callable
@@ -42,6 +44,10 @@ DEFAULT_ROLE_URL = (
 # discovery browser pass.  PC_TOOLKIT_ROLE still overrides it for accounts
 # with a different elevated role.
 DEFAULT_PC_TOOLKIT_ROLE = "maxrole:personal"
+PC_TOOLKIT_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"
+)
 ACTIVE_CACHE_SECONDS = 10 * 60
 STALE_CACHE_SECONDS = 30 * 24 * 60 * 60
 MAX_CACHE_ENTRIES = 10_000
@@ -219,11 +225,30 @@ class PCToolkitClient:
         self.role = role.strip()
         self.timeout = timeout
 
-    def lookup(self, query: str) -> dict[str, Any]:
+    def lookup(
+        self,
+        query: str,
+        *,
+        request_id: str | None = None,
+        operation_id: str | None = None,
+        purpose: str = "lookup",
+    ) -> dict[str, Any]:
         value = clean(query)
+        request_id = request_id or run_reporting.diagnostic_id("pc-http")
+        started_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+        started = time.monotonic()
         if len(value) < 2:
+            run_reporting.pc_toolkit_event(
+                "lookup_rejected",
+                request_id=request_id,
+                operation_id=operation_id,
+                purpose=purpose,
+                query=value,
+                reason="query_too_short",
+            )
             raise PCToolkitError("Enter at least two characters for PC Toolkit.")
         url = f"{self.base_url}/{urllib.parse.quote(value, safe='-._')}?sources=cmdb,sccm"
+        endpoint_path = urllib.parse.urlsplit(url).path
         # The device service is behind the portal's elevated-role gateway.
         # These are the same origin/referrer headers sent by the portal's
         # browser client; without them the gateway can reject a valid role.
@@ -231,11 +256,23 @@ class PCToolkitClient:
             "Accept": "application/json, text/plain, */*",
             "Origin": "https://portal.platform.infraportal.syd.c1.macquarie.com",
             "Referer": "https://portal.platform.infraportal.syd.c1.macquarie.com/",
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
+            "User-Agent": PC_TOOLKIT_USER_AGENT,
         }
         if self.role:
             headers["X-Max-Elevated-Role"] = self.role
-        started = time.monotonic()
+        run_reporting.pc_toolkit_event(
+            "api_request_started",
+            request_id=request_id,
+            operation_id=operation_id,
+            purpose=purpose,
+            method="GET",
+            query=value,
+            request_url=url,
+            request_headers=headers,
+            timeout_seconds=self.timeout,
+            request_body_present=False,
+            started_at=started_at,
+        )
         request = urllib.request.Request(url, headers=headers)
         response_status: int | None = None
         response_headers: dict[str, str] | None = None
@@ -259,48 +296,171 @@ class PCToolkitClient:
                     str(key): str(value) for key, value in raw_headers.items()
                 }
             run_reporting.network(
-                "GET", f"pc-toolkit/v1/Computers/{value}", status=exc.code,
+                "GET", endpoint_path, status=exc.code,
                 duration_ms=round((time.monotonic() - started) * 1000),
                 transport="pc-toolkit", error="HTTPError",
                 request_url=url,
                 request_headers=headers,
                 response_headers=response_headers,
                 response_body=error_body,
+                request_id=request_id,
+                operation_id=operation_id,
+                error_detail=str(exc),
+                details={
+                    "channel": "urllib",
+                    "purpose": purpose,
+                    "query": value,
+                    "started_at": started_at,
+                    "response_body_present": error_body is not None,
+                    "response_body_bytes_read": len(error_body or b""),
+                },
+            )
+            run_reporting.pc_toolkit_event(
+                "api_request_failed",
+                request_id=request_id,
+                operation_id=operation_id,
+                purpose=purpose,
+                query=value,
+                status=exc.code,
+                duration_ms=round((time.monotonic() - started) * 1000),
+                exception=run_reporting.exception_details(exc),
+                response_body_bytes_read=len(error_body or b""),
             )
             if exc.code in {401, 403}:
                 raise PCToolkitError("PC Toolkit authentication is required.") from exc
             raise PCToolkitError(f"PC Toolkit returned HTTP {exc.code}.") from exc
         except (OSError, urllib.error.URLError) as exc:
             run_reporting.network(
-                "GET", f"pc-toolkit/v1/Computers/{value}",
+                "GET", endpoint_path,
                 duration_ms=round((time.monotonic() - started) * 1000),
                 transport="pc-toolkit", error=type(exc).__name__,
                 request_url=url,
                 request_headers=headers,
+                request_id=request_id,
+                operation_id=operation_id,
+                error_detail=str(exc),
+                details={
+                    "channel": "urllib",
+                    "purpose": purpose,
+                    "query": value,
+                    "started_at": started_at,
+                    "response_body_present": False,
+                },
+            )
+            run_reporting.pc_toolkit_event(
+                "api_request_failed",
+                request_id=request_id,
+                operation_id=operation_id,
+                purpose=purpose,
+                query=value,
+                duration_ms=round((time.monotonic() - started) * 1000),
+                exception=run_reporting.exception_details(exc),
             )
             raise PCToolkitError("PC Toolkit could not be reached.") from exc
         try:
             payload = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             run_reporting.network(
-                "GET", f"pc-toolkit/v1/Computers/{value}", status=response_status or 200,
+                "GET", endpoint_path, status=response_status or 200,
                 duration_ms=round((time.monotonic() - started) * 1000),
                 transport="pc-toolkit", error="InvalidJSON",
                 request_url=url,
                 request_headers=headers,
                 response_headers=response_headers,
                 response_body=raw,
+                request_id=request_id,
+                operation_id=operation_id,
+                error_detail=str(exc),
+                details={
+                    "channel": "urllib",
+                    "purpose": purpose,
+                    "query": value,
+                    "started_at": started_at,
+                    "response_body_present": True,
+                },
+            )
+            run_reporting.pc_toolkit_event(
+                "response_parse_failed",
+                request_id=request_id,
+                operation_id=operation_id,
+                purpose=purpose,
+                query=value,
+                status=response_status or 200,
+                duration_ms=round((time.monotonic() - started) * 1000),
+                exception=run_reporting.exception_details(exc),
             )
             raise PCToolkitError("PC Toolkit returned an unreadable response.") from exc
-        result = normalise_lookup(payload, value)
+        try:
+            result = normalise_lookup(payload, value)
+        except Exception as exc:
+            run_reporting.network(
+                "GET", endpoint_path, status=response_status or 200,
+                duration_ms=round((time.monotonic() - started) * 1000),
+                transport="pc-toolkit", error="NormalisationError",
+                request_url=url,
+                request_headers=headers,
+                response_headers=response_headers,
+                response_body=payload,
+                request_id=request_id,
+                operation_id=operation_id,
+                error_detail=str(exc),
+                details={
+                    "channel": "urllib",
+                    "purpose": purpose,
+                    "query": value,
+                    "started_at": started_at,
+                },
+            )
+            run_reporting.pc_toolkit_event(
+                "response_normalisation_failed",
+                request_id=request_id,
+                operation_id=operation_id,
+                purpose=purpose,
+                query=value,
+                status=response_status or 200,
+                duration_ms=round((time.monotonic() - started) * 1000),
+                exception=run_reporting.exception_details(exc),
+            )
+            raise PCToolkitError("PC Toolkit returned an unreadable response.") from exc
         result["duration_ms"] = round((time.monotonic() - started) * 1000)
         run_reporting.network(
-            "GET", f"pc-toolkit/v1/Computers/{value}", status=response_status or 200,
+            "GET", endpoint_path, status=response_status or 200,
             duration_ms=result["duration_ms"], transport="pc-toolkit",
             request_url=url,
             request_headers=headers,
             response_headers=response_headers,
             response_body=payload,
+            request_id=request_id,
+            operation_id=operation_id,
+            details={
+                "channel": "urllib",
+                "purpose": purpose,
+                "query": value,
+                "started_at": started_at,
+                "response_body_present": True,
+            },
+        )
+        run_reporting.pc_toolkit_event(
+            "response_normalised",
+            request_id=request_id,
+            operation_id=operation_id,
+            purpose=purpose,
+            query=value,
+            status=response_status or 200,
+            duration_ms=result["duration_ms"],
+            payload_type=type(payload).__name__,
+            payload_keys=sorted(payload.keys()) if isinstance(payload, dict) else [],
+            raw_device_count=(
+                len(payload.get("devices", []))
+                if isinstance(payload, dict) and isinstance(payload.get("devices"), list)
+                else None
+            ),
+            normalised_device_count=int(result.get("record_count", 0) or 0),
+            active_count=int(result.get("active_count", 0) or 0),
+            lookup_kind=result.get("lookup_kind"),
+            primary_status=(result.get("primary") or {}).get("status") if result.get("primary") else None,
+            primary_model=(result.get("primary") or {}).get("model") if result.get("primary") else None,
+            ambiguous=bool(result.get("ambiguous")),
         )
         return result
 
@@ -325,6 +485,8 @@ class PCToolkitService:
         self.verbose = verbose
         self.preferences = preferences or (lambda: {})
         self.lock = threading.RLock()
+        self.service_id = run_reporting.diagnostic_id("pc-service")
+        self._context_logged = False
         self.cache = self._load_cache()
         self.models = self._load_models()
         self.cache_write_timer: threading.Timer | None = None
@@ -338,10 +500,100 @@ class PCToolkitService:
     def enabled(self) -> bool:
         return bool(self.preferences().get("pc_toolkit_enabled", False))
 
+    def _log_context(self, *, reason: str, operation_id: str | None = None) -> None:
+        """Record the local conditions that affect PC Toolkit connectivity once."""
+        with self.lock:
+            if self._context_logged:
+                return
+            self._context_logged = True
+            enabled = self.enabled()
+            simulate = self.simulate
+            browser_profile = self.browser_profile
+            browser_headless = self.browser_headless
+            role = self.role
+        profile_path = Path(browser_profile).expanduser() if browser_profile else None
+        try:
+            profile_exists = bool(profile_path and profile_path.exists())
+            profile_is_dir = bool(profile_path and profile_path.is_dir())
+            profile_readable = bool(profile_path and os.access(profile_path, os.R_OK))
+        except OSError:
+            profile_exists = profile_is_dir = profile_readable = False
+        try:
+            cache_exists = self.cache_path.exists()
+            cache_bytes = self.cache_path.stat().st_size if cache_exists else 0
+        except OSError:
+            cache_exists = False
+            cache_bytes = 0
+        run_reporting.pc_toolkit_event(
+            "service_context",
+            service_id=self.service_id,
+            operation_id=operation_id,
+            reason=reason,
+            enabled=enabled,
+            simulate=simulate,
+            browser_profile_configured=bool(browser_profile),
+            browser_profile_exists=profile_exists,
+            browser_profile_is_directory=profile_is_dir,
+            browser_profile_readable=profile_readable,
+            browser_headless=browser_headless,
+            role_configured=bool(role),
+            role_source="PC_TOOLKIT_ROLE" if os.getenv("PC_TOOLKIT_ROLE") else "default",
+            cache_file=self.cache_path.name,
+            cache_exists=cache_exists,
+            cache_bytes=cache_bytes,
+            cached_queries=len(self.cache),
+            known_models=len(self.models),
+            python_version=sys.version.split()[0],
+            platform=platform.platform(),
+            machine=platform.machine(),
+            proxy_environment={
+                name: bool(os.getenv(name))
+                for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")
+            },
+            certificate_environment={
+                name: bool(os.getenv(name))
+                for name in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE")
+            },
+            device_endpoint=DEFAULT_DEVICE_URL,
+            portal_endpoint=DEFAULT_PORTAL_URL,
+            role_endpoint=DEFAULT_ROLE_URL,
+        )
+
+    def _set_state(
+        self,
+        state: str,
+        message: str,
+        *,
+        operation_id: str | None = None,
+        error: str = "",
+    ) -> None:
+        with self.lock:
+            previous = self.state
+            self.state = state
+            self.message = message
+            self.last_error = error
+        if previous != state or error:
+            run_reporting.pc_toolkit_event(
+                "state_changed",
+                service_id=self.service_id,
+                operation_id=operation_id,
+                previous_state=previous,
+                state=state,
+                message=message,
+                error=error or None,
+            )
+
     def _load_cache(self) -> dict[str, dict[str, Any]]:
         try:
             raw = json.loads(self.cache_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, TypeError):
+        except (OSError, ValueError, TypeError) as exc:
+            if self.cache_path.exists():
+                run_reporting.pc_toolkit_event(
+                    "cache_load_failed",
+                    service_id=self.service_id,
+                    cache_file=self.cache_path.name,
+                    exception=run_reporting.exception_details(exc),
+                )
             return {}
         entries = raw.get("entries", raw) if isinstance(raw, dict) else {}
         if not isinstance(entries, dict):
@@ -386,12 +638,39 @@ class PCToolkitService:
                 self.models.add(model)
                 existing.add(key)
 
-    def _write_cache(self) -> None:
-        self.cache_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.cache_path.with_suffix(".tmp")
-        payload = {"version": 2, "entries": self.cache, "models": sorted(self.models, key=str.casefold)}
-        temporary.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
-        temporary.replace(self.cache_path)
+    def _write_cache(self, *, reason: str = "update") -> None:
+        started = time.monotonic()
+        try:
+            self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self.cache_path.with_suffix(".tmp")
+            payload = {
+                "version": 2,
+                "entries": self.cache,
+                "models": sorted(self.models, key=str.casefold),
+            }
+            encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
+            temporary.write_text(encoded, encoding="utf-8")
+            temporary.replace(self.cache_path)
+        except Exception as exc:
+            run_reporting.pc_toolkit_event(
+                "cache_write_failed",
+                service_id=self.service_id,
+                cache_file=self.cache_path.name,
+                reason=reason,
+                duration_ms=round((time.monotonic() - started) * 1000),
+                exception=run_reporting.exception_details(exc),
+            )
+            raise
+        run_reporting.pc_toolkit_event(
+            "cache_written",
+            service_id=self.service_id,
+            cache_file=self.cache_path.name,
+            reason=reason,
+            duration_ms=round((time.monotonic() - started) * 1000),
+            cache_bytes=len(encoded.encode("utf-8")),
+            cached_queries=len(self.cache),
+            known_models=len(self.models),
+        )
 
     def _schedule_cache_write_locked(self) -> None:
         if self.cache_write_timer is not None and self.cache_write_timer.is_alive():
@@ -403,7 +682,7 @@ class PCToolkitService:
     def _flush_cache(self) -> None:
         with self.lock:
             self.cache_write_timer = None
-            self._write_cache()
+            self._write_cache(reason="scheduled_update")
 
     def status(self) -> dict[str, Any]:
         with self.lock:
@@ -422,12 +701,18 @@ class PCToolkitService:
     def clear_cache(self) -> None:
         with self.lock:
             self.cache = {}
-            self._write_cache()
+            self._write_cache(reason="clear_cache")
+        run_reporting.pc_toolkit_event(
+            "cache_cleared", service_id=self.service_id, cache_kind="queries"
+        )
 
     def clear_models(self) -> None:
         with self.lock:
             self.models = set()
-            self._write_cache()
+            self._write_cache(reason="clear_models")
+        run_reporting.pc_toolkit_event(
+            "cache_cleared", service_id=self.service_id, cache_kind="models"
+        )
 
     def _simulation_lookup(self, query: str) -> dict[str, Any]:
         value = clean(query)
@@ -467,8 +752,55 @@ class PCToolkitService:
     def _client(self) -> PCToolkitClient:
         return PCToolkitClient(role=self.role)
 
-    def _fetch(self, query: str) -> dict[str, Any]:
-        result = self._simulation_lookup(query) if self.simulate else self._client().lookup(query)
+    def _fetch(
+        self,
+        query: str,
+        *,
+        request_id: str,
+        operation_id: str,
+        purpose: str,
+    ) -> dict[str, Any]:
+        started = time.monotonic()
+        value = clean(query)
+        run_reporting.pc_toolkit_event(
+            "fetch_started",
+            service_id=self.service_id,
+            request_id=request_id,
+            operation_id=operation_id,
+            purpose=purpose,
+            query=value,
+            simulation=self.simulate,
+        )
+        try:
+            if self.simulate:
+                result = self._simulation_lookup(value)
+                run_reporting.pc_toolkit_event(
+                    "simulation_response",
+                    service_id=self.service_id,
+                    request_id=request_id,
+                    operation_id=operation_id,
+                    query=value,
+                    record_count=int(result.get("record_count", 0) or 0),
+                )
+            else:
+                result = self._client().lookup(
+                    value,
+                    request_id=request_id,
+                    operation_id=operation_id,
+                    purpose=purpose,
+                )
+        except Exception as exc:
+            run_reporting.pc_toolkit_event(
+                "fetch_failed",
+                service_id=self.service_id,
+                request_id=request_id,
+                operation_id=operation_id,
+                purpose=purpose,
+                query=value,
+                duration_ms=round((time.monotonic() - started) * 1000),
+                exception=run_reporting.exception_details(exc),
+            )
+            raise
         key = normalise_key(query)
         stored = {"fetched_at": time.time(), "result": result}
         with self.lock:
@@ -478,220 +810,932 @@ class PCToolkitService:
             while len(self.cache) > MAX_CACHE_ENTRIES:
                 self.cache.pop(next(iter(self.cache)))
             self._schedule_cache_write_locked()
-            self.state = "simulation" if self.simulate else "connected"
+            previous_state = self.state
+            next_state = "simulation" if self.simulate else "connected"
+            self.state = next_state
             self.message = "PC Toolkit enrichment is ready."
             self.last_error = ""
             self.connected_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        if previous_state != next_state:
+            run_reporting.pc_toolkit_event(
+                "state_changed",
+                service_id=self.service_id,
+                operation_id=operation_id,
+                previous_state=previous_state,
+                state=next_state,
+                message="PC Toolkit enrichment is ready.",
+            )
         run_reporting.pc_toolkit_event(
             "lookup_stored",
+            service_id=self.service_id,
+            request_id=request_id,
+            operation_id=operation_id,
+            purpose=purpose,
             query=clean(query),
             cached=False,
             found=bool(result.get("found")),
             record_count=int(result.get("record_count", 0) or 0),
+            active_count=int(result.get("active_count", 0) or 0),
+            duration_ms=round((time.monotonic() - started) * 1000),
         )
         return deepcopy(result)
 
-    def _refresh(self, query: str) -> None:
+    def _refresh(self, query: str, operation_id: str) -> None:
         key = normalise_key(query)
+        request_id = run_reporting.diagnostic_id("pc-refresh")
         try:
-            self._fetch(query)
-        except PCToolkitError as exc:
+            self._fetch(
+                query,
+                request_id=request_id,
+                operation_id=operation_id,
+                purpose="stale_cache_refresh",
+            )
             run_reporting.pc_toolkit_event(
-                "background_lookup_failed", query=clean(query), error=str(exc)
+                "background_lookup_complete",
+                service_id=self.service_id,
+                request_id=request_id,
+                operation_id=operation_id,
+                query=clean(query),
+            )
+        except Exception as exc:
+            run_reporting.pc_toolkit_event(
+                "background_lookup_failed",
+                service_id=self.service_id,
+                request_id=request_id,
+                operation_id=operation_id,
+                query=clean(query),
+                exception=run_reporting.exception_details(exc),
             )
             with self.lock:
                 self.last_error = str(exc)
-                if not self.cache.get(key):
+                should_mark_error = not self.cache.get(key)
+                previous_state = self.state
+                if should_mark_error:
                     self.state = "error"
                     self.message = str(exc)
+            if should_mark_error and previous_state != "error":
+                run_reporting.pc_toolkit_event(
+                    "state_changed",
+                    service_id=self.service_id,
+                    operation_id=operation_id,
+                    previous_state=previous_state,
+                    state="error",
+                    message=str(exc),
+                    error=str(exc),
+                )
         finally:
             with self.lock:
                 self.inflight.discard(key)
 
-    def lookup(self, query: str, *, fresh: bool = False) -> dict[str, Any]:
+    def lookup(
+        self,
+        query: str,
+        *,
+        fresh: bool = False,
+        operation_id: str | None = None,
+        purpose: str = "lookup",
+    ) -> dict[str, Any]:
+        operation_id = operation_id or run_reporting.diagnostic_id("pc-lookup")
+        request_id = run_reporting.diagnostic_id("pc-query")
+        started = time.monotonic()
+        value = clean(query)
+        self._log_context(reason=purpose, operation_id=operation_id)
+        run_reporting.pc_toolkit_event(
+            "lookup_started",
+            service_id=self.service_id,
+            request_id=request_id,
+            operation_id=operation_id,
+            purpose=purpose,
+            query=value,
+            fresh=bool(fresh),
+        )
         if not self.enabled() and not self.simulate:
+            run_reporting.pc_toolkit_event(
+                "lookup_rejected",
+                service_id=self.service_id,
+                request_id=request_id,
+                operation_id=operation_id,
+                purpose=purpose,
+                query=value,
+                reason="disabled",
+            )
             raise PCToolkitError("PC Toolkit enrichment is disabled in Settings.")
-        key = normalise_key(query)
+        key = normalise_key(value)
         if len(key) < 2:
+            run_reporting.pc_toolkit_event(
+                "lookup_rejected",
+                service_id=self.service_id,
+                request_id=request_id,
+                operation_id=operation_id,
+                purpose=purpose,
+                query=value,
+                reason="query_too_short",
+            )
             raise PCToolkitError("Enter at least two characters for PC Toolkit.")
         now = time.time()
         with self.lock:
             cached = deepcopy(self.cache.get(key))
         if cached and not fresh:
-            age = max(0.0, now - float(cached.get("fetched_at", 0)))
+            try:
+                age = max(0.0, now - float(cached.get("fetched_at", 0)))
+            except (TypeError, ValueError):
+                age = STALE_CACHE_SECONDS + 1
+                run_reporting.pc_toolkit_event(
+                    "cache_entry_invalid",
+                    service_id=self.service_id,
+                    request_id=request_id,
+                    operation_id=operation_id,
+                    query=value,
+                    reason="invalid_fetched_at",
+                )
             if age <= STALE_CACHE_SECONDS:
                 result = deepcopy(cached.get("result", {}))
+                if not isinstance(result, dict):
+                    run_reporting.pc_toolkit_event(
+                        "cache_entry_invalid",
+                        service_id=self.service_id,
+                        request_id=request_id,
+                        operation_id=operation_id,
+                        query=value,
+                        reason="result_not_object",
+                        result_type=type(result).__name__,
+                    )
+                    result = None
+                if result is None:
+                    return self._fetch(
+                        value,
+                        request_id=request_id,
+                        operation_id=operation_id,
+                        purpose=purpose,
+                    )
                 result["cached"] = True
                 result["stale"] = age > ACTIVE_CACHE_SECONDS
                 result["age_seconds"] = round(age)
                 run_reporting.pc_toolkit_event(
                     "cache_hit",
+                    service_id=self.service_id,
+                    request_id=request_id,
+                    operation_id=operation_id,
+                    purpose=purpose,
                     query=clean(query),
                     age_seconds=round(age),
                     stale=bool(result["stale"]),
+                    record_count=int(result.get("record_count", 0) or 0),
+                    duration_ms=round((time.monotonic() - started) * 1000),
                 )
                 if age > ACTIVE_CACHE_SECONDS:
                     with self.lock:
                         if key not in self.inflight:
                             self.inflight.add(key)
-                            threading.Thread(target=self._refresh, args=(query,), daemon=True).start()
+                            run_reporting.pc_toolkit_event(
+                                "cache_refresh_scheduled",
+                                service_id=self.service_id,
+                                request_id=request_id,
+                                operation_id=operation_id,
+                                query=value,
+                                age_seconds=round(age),
+                            )
+                            threading.Thread(
+                                target=self._refresh,
+                                args=(value, operation_id),
+                                name="pc-toolkit-cache-refresh",
+                                daemon=True,
+                            ).start()
                 return result
-        return self._fetch(query)
+        return self._fetch(
+            value,
+            request_id=request_id,
+            operation_id=operation_id,
+            purpose=purpose,
+        )
 
     def bulk_lookup(self, queries: list[str], *, fresh: bool = False) -> dict[str, Any]:
+        operation_id = run_reporting.diagnostic_id("pc-bulk")
+        started = time.monotonic()
         unique: dict[str, str] = {}
+        invalid_count = 0
         for query in queries:
             value = clean(query)
             key = normalise_key(value)
             if len(key) >= 2:
                 unique.setdefault(key, value)
+            else:
+                invalid_count += 1
+        self._log_context(reason="bulk_lookup", operation_id=operation_id)
+        run_reporting.pc_toolkit_event(
+            "bulk_lookup_started",
+            service_id=self.service_id,
+            operation_id=operation_id,
+            input_count=len(queries),
+            unique_count=len(unique),
+            duplicate_count=max(0, len(queries) - invalid_count - len(unique)),
+            invalid_count=invalid_count,
+            fresh=bool(fresh),
+        )
         results: dict[str, Any] = {}
         errors: dict[str, str] = {}
         with ThreadPoolExecutor(max_workers=min(MAX_PARALLEL_LOOKUPS, max(1, len(unique)))) as executor:
-            futures = {executor.submit(self.lookup, value, fresh=fresh): key for key, value in unique.items()}
+            futures = {
+                executor.submit(
+                    self.lookup,
+                    value,
+                    fresh=fresh,
+                    operation_id=operation_id,
+                    purpose="bulk_lookup",
+                ): key
+                for key, value in unique.items()
+            }
             for future in as_completed(futures):
                 key = futures[future]
                 try:
                     results[key] = future.result()
-                except PCToolkitError as exc:
+                except Exception as exc:
                     errors[key] = str(exc)
+                    run_reporting.pc_toolkit_event(
+                        "bulk_lookup_item_failed",
+                        service_id=self.service_id,
+                        operation_id=operation_id,
+                        query=unique[key],
+                        exception=run_reporting.exception_details(exc),
+                    )
         run_reporting.pc_toolkit_event(
             "bulk_lookup_complete",
+            service_id=self.service_id,
+            operation_id=operation_id,
             query_count=len(unique),
             result_count=len(results),
             error_count=len(errors),
+            invalid_count=invalid_count,
             fresh=bool(fresh),
+            duration_ms=round((time.monotonic() - started) * 1000),
         )
         return {"results": results, "errors": errors, "status": self.status()}
 
     def connect_async(self) -> None:
+        operation_id = run_reporting.diagnostic_id("pc-connect")
+        self._log_context(reason="connect", operation_id=operation_id)
         if self.simulate:
             with self.lock:
                 self.state = "simulation"
                 self.message = "Simulation data available."
-            run_reporting.pc_toolkit_event("connect_simulation")
+            run_reporting.pc_toolkit_event(
+                "connect_simulation",
+                service_id=self.service_id,
+                operation_id=operation_id,
+            )
             return
         with self.lock:
             if self.state == "connecting":
+                run_reporting.pc_toolkit_event(
+                    "connect_ignored",
+                    service_id=self.service_id,
+                    operation_id=operation_id,
+                    reason="already_connecting",
+                )
                 return
             self.state = "connecting"
             self.message = "Connecting to PC Toolkit…"
             self.last_error = ""
-        run_reporting.pc_toolkit_event("connect_started")
-        threading.Thread(target=self._connect, daemon=True).start()
+        run_reporting.pc_toolkit_event(
+            "connect_started",
+            service_id=self.service_id,
+            operation_id=operation_id,
+            state="connecting",
+        )
+        threading.Thread(
+            target=self._connect,
+            args=(operation_id,),
+            name="pc-toolkit-connect",
+            daemon=True,
+        ).start()
 
-    def _connect(self) -> None:
+    def _connect(self, operation_id: str) -> None:
+        started = time.monotonic()
         try:
             # Use a harmless query so connecting does not expose a real
             # user/device. The client includes the production portal role by
             # default, then role discovery remains available for accounts
             # whose session exposes a different role.
-            self._client().lookup("auto-eudm-health-check")
-        except PCToolkitError as first_error:
+            self._client().lookup(
+                "auto-eudm-health-check",
+                operation_id=operation_id,
+                purpose="connect_health_check",
+            )
+        except Exception as first_error:
             run_reporting.pc_toolkit_event(
-                "connect_probe_failed", error=str(first_error)
+                "connect_probe_failed",
+                service_id=self.service_id,
+                operation_id=operation_id,
+                phase="health_check",
+                duration_ms=round((time.monotonic() - started) * 1000),
+                exception=run_reporting.exception_details(first_error),
             )
             if "authentication" not in str(first_error).casefold():
-                with self.lock:
-                    self.state = "error"
-                    self.message = str(first_error)
-                    self.last_error = str(first_error)
+                self._set_state(
+                    "error",
+                    str(first_error),
+                    operation_id=operation_id,
+                    error=str(first_error),
+                )
                 run_reporting.pc_toolkit_event(
-                    "connect_failed", error=str(first_error), phase="health_check"
+                    "connect_failed",
+                    service_id=self.service_id,
+                    operation_id=operation_id,
+                    error=str(first_error),
+                    phase="health_check",
+                    duration_ms=round((time.monotonic() - started) * 1000),
+                    exception=run_reporting.exception_details(first_error),
                 )
                 return
             try:
-                self.role = self._discover_role()
-            except PCToolkitError as exc:
-                with self.lock:
-                    self.state = "error"
-                    self.message = str(exc)
-                    self.last_error = str(exc)
+                self.role = self._discover_role(operation_id)
+            except Exception as exc:
+                self._set_state(
+                    "error",
+                    str(exc),
+                    operation_id=operation_id,
+                    error=str(exc),
+                )
                 run_reporting.pc_toolkit_event(
-                    "connect_failed", error=str(exc), phase="role_discovery"
+                    "connect_failed",
+                    service_id=self.service_id,
+                    operation_id=operation_id,
+                    error=str(exc),
+                    phase="role_discovery",
+                    duration_ms=round((time.monotonic() - started) * 1000),
+                    exception=run_reporting.exception_details(exc),
                 )
                 return
         with self.lock:
             self.state = "connected"
             self.message = "PC Toolkit enrichment is ready."
+            self.last_error = ""
             self.connected_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        run_reporting.pc_toolkit_event("connect_succeeded", role=self.role)
+        run_reporting.pc_toolkit_event(
+            "connect_succeeded",
+            service_id=self.service_id,
+            operation_id=operation_id,
+            role=self.role,
+            duration_ms=round((time.monotonic() - started) * 1000),
+        )
 
-    def _discover_role(self) -> str:
+    def _discover_role(self, operation_id: str | None = None) -> str:
         if not self.browser_profile:
+            run_reporting.pc_toolkit_event(
+                "role_discovery_rejected",
+                service_id=self.service_id,
+                operation_id=operation_id,
+                reason="browser_profile_not_configured",
+            )
             raise PCToolkitError("Open PC Toolkit once, then connect again.")
         run_reporting.pc_toolkit_event(
             "role_discovery_started",
+            service_id=self.service_id,
+            operation_id=operation_id,
             portal_url=DEFAULT_PORTAL_URL,
             role_url=DEFAULT_ROLE_URL,
+            browser_profile_configured=True,
+            browser_headless=self.browser_headless,
         )
         try:
             from playwright.sync_api import sync_playwright
         except ImportError as exc:
+            run_reporting.pc_toolkit_event(
+                "role_discovery_dependency_failed",
+                service_id=self.service_id,
+                operation_id=operation_id,
+                exception=run_reporting.exception_details(exc),
+            )
             raise PCToolkitError("Browser support is not installed for PC Toolkit.") from exc
-        playwright = sync_playwright().start()
-        context = None
         try:
+            playwright = sync_playwright().start()
+        except Exception as exc:
+            run_reporting.pc_toolkit_event(
+                "browser_runtime_start_failed",
+                service_id=self.service_id,
+                operation_id=operation_id,
+                exception=run_reporting.exception_details(exc),
+            )
+            raise PCToolkitError("PC Toolkit browser support could not be started.") from exc
+        context = None
+        browser_requests: dict[int, dict[str, Any]] = {}
+        attached_pages: dict[int, str] = {}
+        last_page_snapshot: tuple[tuple[str, str], ...] | None = None
+
+        def request_headers(request: Any) -> dict[str, Any]:
+            try:
+                headers = request.all_headers()
+            except Exception:
+                headers = getattr(request, "headers", {})
+            return dict(headers) if hasattr(headers, "items") else {}
+
+        def response_headers(response: Any) -> dict[str, Any]:
+            try:
+                headers = response.all_headers()
+            except Exception:
+                headers = getattr(response, "headers", {})
+                if callable(headers):
+                    headers = headers()
+            return dict(headers) if hasattr(headers, "items") else {}
+
+        def interesting_browser_request(url: str, resource_type: str) -> bool:
+            lowered = url.casefold()
+            return resource_type in {"document", "xhr", "fetch"} or any(
+                marker in lowered
+                for marker in (
+                    "/auth/",
+                    "/login",
+                    "/oauth",
+                    "/saml",
+                    "/signin",
+                    "maxroles",
+                    "session",
+                )
+            )
+
+        def page_snapshot() -> tuple[tuple[str, str], ...]:
+            if context is None:
+                return ()
+            snapshot: list[tuple[str, str]] = []
+            for candidate in context.pages:
+                try:
+                    snapshot.append((str(candidate.url or ""), "open"))
+                except Exception:
+                    snapshot.append(("<unreadable>", "open"))
+            return tuple(snapshot)
+
+        def attach_page(candidate: Any) -> None:
+            nonlocal last_page_snapshot
+            identity = id(candidate)
+            if identity in attached_pages:
+                return
+            page_id = run_reporting.diagnostic_id("pc-page")
+            attached_pages[identity] = page_id
+            try:
+                current_url = str(candidate.url or "")
+            except Exception:
+                current_url = ""
+            run_reporting.pc_toolkit_event(
+                "browser_page_opened",
+                service_id=self.service_id,
+                operation_id=operation_id,
+                page_id=page_id,
+                page_url=current_url,
+                page_count=len(context.pages) if context is not None else None,
+            )
+
+            def on_request(request: Any) -> None:
+                try:
+                    url = str(request.url or "")
+                    resource_type = str(request.resource_type or "")
+                    if not interesting_browser_request(url, resource_type):
+                        return
+                    request_id = run_reporting.diagnostic_id("pc-browser")
+                    started = time.monotonic()
+                    try:
+                        body = request.post_data
+                    except Exception:
+                        body = None
+                    browser_requests[id(request)] = {
+                        "request_id": request_id,
+                        "started": started,
+                        "method": str(request.method or "GET"),
+                        "url": url,
+                        "headers": request_headers(request),
+                        "body": body,
+                        "resource_type": resource_type,
+                        "page_id": page_id,
+                    }
+                    run_reporting.pc_toolkit_event(
+                        "browser_request_started",
+                        service_id=self.service_id,
+                        operation_id=operation_id,
+                        request_id=request_id,
+                        page_id=page_id,
+                        method=str(request.method or "GET"),
+                        resource_type=resource_type,
+                        request_url=url,
+                        request_headers=request_headers(request),
+                        request_body=body,
+                        is_navigation=bool(request.is_navigation_request()),
+                    )
+                except Exception as exc:
+                    run_reporting.pc_toolkit_event(
+                        "browser_request_logging_failed",
+                        service_id=self.service_id,
+                        operation_id=operation_id,
+                        page_id=page_id,
+                        exception=run_reporting.exception_details(exc),
+                    )
+
+            def on_response(response: Any) -> None:
+                try:
+                    request = response.request
+                    url = str(response.url or getattr(request, "url", "") or "")
+                    resource_type = str(getattr(request, "resource_type", "") or "")
+                    metadata = browser_requests.pop(id(request), None)
+                    if metadata is None and not interesting_browser_request(url, resource_type):
+                        return
+                    if metadata is None:
+                        metadata = {
+                            "request_id": run_reporting.diagnostic_id("pc-browser"),
+                            "started": time.monotonic(),
+                            "method": str(getattr(request, "method", "GET") or "GET"),
+                            "url": url,
+                            "headers": request_headers(request),
+                            "body": None,
+                            "resource_type": resource_type,
+                            "page_id": page_id,
+                        }
+                    try:
+                        body = response.body()
+                        body_error = None
+                    except Exception as exc:
+                        body = None
+                        body_error = run_reporting.exception_details(exc)
+                    try:
+                        status = int(response.status)
+                    except (TypeError, ValueError, AttributeError):
+                        status = None
+                    run_reporting.network(
+                        metadata["method"],
+                        urllib.parse.urlsplit(url).path or url,
+                        status=status,
+                        duration_ms=round((time.monotonic() - metadata["started"]) * 1000),
+                        transport="pc-toolkit",
+                        request_url=url,
+                        request_headers=metadata["headers"],
+                        response_headers=response_headers(response),
+                        request_body=metadata["body"],
+                        response_body=body,
+                        request_id=metadata["request_id"],
+                        operation_id=operation_id,
+                        error_detail=(str(body_error) if body_error else None),
+                        details={
+                            "channel": "browser-page",
+                            "page_id": page_id,
+                            "resource_type": metadata["resource_type"],
+                            "response_body_read": body_error is None,
+                        },
+                    )
+                    run_reporting.pc_toolkit_event(
+                        "browser_response_received",
+                        service_id=self.service_id,
+                        operation_id=operation_id,
+                        request_id=metadata["request_id"],
+                        page_id=page_id,
+                        method=metadata["method"],
+                        status=status,
+                        response_url=url,
+                        resource_type=metadata["resource_type"],
+                        duration_ms=round((time.monotonic() - metadata["started"]) * 1000),
+                        response_body_bytes=(len(body) if isinstance(body, bytes) else None),
+                        response_body_read=body_error is None,
+                        response_body_error=body_error,
+                    )
+                except Exception as exc:
+                    run_reporting.pc_toolkit_event(
+                        "browser_response_logging_failed",
+                        service_id=self.service_id,
+                        operation_id=operation_id,
+                        page_id=page_id,
+                        exception=run_reporting.exception_details(exc),
+                    )
+
+            def on_request_failed(request: Any) -> None:
+                metadata = browser_requests.pop(id(request), None)
+                if metadata is None:
+                    return
+                try:
+                    failure = request.failure
+                    if callable(failure):
+                        failure = failure()
+                except Exception as exc:
+                    failure = run_reporting.exception_details(exc)
+                run_reporting.pc_toolkit_event(
+                    "browser_request_failed",
+                    service_id=self.service_id,
+                    operation_id=operation_id,
+                    request_id=metadata["request_id"],
+                    page_id=page_id,
+                    method=metadata["method"],
+                    resource_type=metadata["resource_type"],
+                    request_url=metadata["url"],
+                    duration_ms=round((time.monotonic() - metadata["started"]) * 1000),
+                    failure=failure,
+                )
+
+            def on_navigation(frame: Any) -> None:
+                try:
+                    if frame != candidate.main_frame:
+                        return
+                    run_reporting.pc_toolkit_event(
+                        "browser_navigation",
+                        service_id=self.service_id,
+                        operation_id=operation_id,
+                        page_id=page_id,
+                        page_url=str(frame.url or ""),
+                    )
+                except Exception as exc:
+                    run_reporting.pc_toolkit_event(
+                        "browser_navigation_logging_failed",
+                        service_id=self.service_id,
+                        operation_id=operation_id,
+                        page_id=page_id,
+                        exception=run_reporting.exception_details(exc),
+                    )
+
+            candidate.on("request", on_request)
+            candidate.on("response", on_response)
+            candidate.on("requestfailed", on_request_failed)
+            candidate.on("framenavigated", on_navigation)
+            candidate.on(
+                "close",
+                lambda: run_reporting.pc_toolkit_event(
+                    "browser_page_closed",
+                    service_id=self.service_id,
+                    operation_id=operation_id,
+                    page_id=page_id,
+                ),
+            )
+            current_snapshot = page_snapshot()
+            if current_snapshot != last_page_snapshot:
+                last_page_snapshot = current_snapshot
+                run_reporting.pc_toolkit_event(
+                    "browser_pages_snapshot",
+                    service_id=self.service_id,
+                    operation_id=operation_id,
+                    pages=[{"url": url, "state": state} for url, state in current_snapshot],
+                )
+
+        try:
+            run_reporting.pc_toolkit_event(
+                "browser_launch_started",
+                service_id=self.service_id,
+                operation_id=operation_id,
+                channel="chrome",
+                headless=self.browser_headless,
+                user_data_dir_configured=bool(self.browser_profile),
+            )
             context = playwright.chromium.launch_persistent_context(
                 user_data_dir=str(Path(self.browser_profile).expanduser()),
                 channel="chrome",
                 headless=self.browser_headless,
             )
+            run_reporting.pc_toolkit_event(
+                "browser_launch_succeeded",
+                service_id=self.service_id,
+                operation_id=operation_id,
+                page_count=len(context.pages),
+            )
+            context.on("page", attach_page)
             pages = context.pages or [context.new_page()]
+            for candidate in pages:
+                attach_page(candidate)
             page = pages[0]
-            page.goto(DEFAULT_PORTAL_URL, wait_until="domcontentloaded", timeout=60_000)
-            deadline = time.monotonic() + (20 if self.browser_headless else 120)
+            try:
+                navigation_started = time.monotonic()
+                run_reporting.pc_toolkit_event(
+                    "browser_navigation_started",
+                    service_id=self.service_id,
+                    operation_id=operation_id,
+                    page_id=attached_pages.get(id(page)),
+                    page_url=DEFAULT_PORTAL_URL,
+                    wait_until="domcontentloaded",
+                    timeout_ms=60_000,
+                )
+                navigation_response = page.goto(
+                    DEFAULT_PORTAL_URL,
+                    wait_until="domcontentloaded",
+                    timeout=60_000,
+                )
+                run_reporting.pc_toolkit_event(
+                    "browser_navigation_completed",
+                    service_id=self.service_id,
+                    operation_id=operation_id,
+                    page_id=attached_pages.get(id(page)),
+                    requested_url=DEFAULT_PORTAL_URL,
+                    final_url=str(page.url or ""),
+                    status=(int(navigation_response.status) if navigation_response else None),
+                    duration_ms=round((time.monotonic() - navigation_started) * 1000),
+                )
+            except Exception as exc:
+                run_reporting.pc_toolkit_event(
+                    "browser_navigation_failed",
+                    service_id=self.service_id,
+                    operation_id=operation_id,
+                    page_id=attached_pages.get(id(page)),
+                    requested_url=DEFAULT_PORTAL_URL,
+                    final_url=str(page.url or ""),
+                    exception=run_reporting.exception_details(exc),
+                )
+                raise
+            try:
+                cookies = context.cookies()
+                run_reporting.pc_toolkit_event(
+                    "browser_cookie_snapshot",
+                    service_id=self.service_id,
+                    operation_id=operation_id,
+                    cookie_count=len(cookies),
+                    cookie_domains=sorted({str(cookie.get("domain", "")) for cookie in cookies if cookie.get("domain")}),
+                    cookie_names=sorted({str(cookie.get("name", "")) for cookie in cookies if cookie.get("name")}),
+                )
+            except Exception as exc:
+                run_reporting.pc_toolkit_event(
+                    "browser_cookie_snapshot_failed",
+                    service_id=self.service_id,
+                    operation_id=operation_id,
+                    exception=run_reporting.exception_details(exc),
+                )
+            role_probe_started = time.monotonic()
+            role_probe_timeout = 20 if self.browser_headless else 120
+            deadline = role_probe_started + role_probe_timeout
+            role_request_headers = {
+                "Accept": "application/json, text/plain, */*",
+                "Referer": str(page.url or DEFAULT_PORTAL_URL),
+                "User-Agent": PC_TOOLKIT_USER_AGENT,
+            }
             while time.monotonic() < deadline:
                 # Use the context request client rather than page JavaScript:
                 # this preserves the persistent browser cookies without being
                 # affected by a welcome-page redirect or cross-origin policy.
+                request_id = run_reporting.diagnostic_id("pc-role")
+                probe_started = time.monotonic()
                 try:
                     response = context.request.get(DEFAULT_ROLE_URL, timeout=5_000)
-                    if response.ok:
-                        payload = response.json()
-                        raw_response_headers = getattr(response, "headers", {})
-                        if callable(raw_response_headers):
-                            raw_response_headers = raw_response_headers()
-                        if not hasattr(raw_response_headers, "items"):
-                            raw_response_headers = {}
-                        run_reporting.pc_toolkit_event(
-                            "role_probe",
-                            request_url=DEFAULT_ROLE_URL,
-                            status=response.status,
-                            response_headers=raw_response_headers,
-                            response_body=payload,
-                        )
-                        roles = payload.get("maxRoles", []) if isinstance(payload, dict) else []
-                        if isinstance(roles, list) and roles and clean(roles[0]):
-                            run_reporting.pc_toolkit_event(
-                                "role_discovered", role=clean(roles[0])
-                            )
-                            return clean(roles[0])
+                    try:
+                        raw_body = response.body()
+                        body_error = None
+                    except Exception as exc:
+                        raw_body = None
+                        body_error = exc
+                    raw_response_headers = response_headers(response)
+                    status = int(response.status)
+                    run_reporting.network(
+                        "GET",
+                        urllib.parse.urlsplit(DEFAULT_ROLE_URL).path,
+                        status=status,
+                        duration_ms=round((time.monotonic() - probe_started) * 1000),
+                        transport="pc-toolkit",
+                        request_url=str(response.url or DEFAULT_ROLE_URL),
+                        request_headers=role_request_headers,
+                        response_headers=raw_response_headers,
+                        response_body=raw_body,
+                        request_id=request_id,
+                        operation_id=operation_id,
+                        error_detail=(str(body_error) if body_error else None),
+                        details={
+                            "channel": "playwright-context-request",
+                            "purpose": "role_probe",
+                            "response_body_read": body_error is None,
+                            "browser_cookie_jar_used": True,
+                        },
+                    )
+                    payload: Any = None
+                    parse_error: BaseException | None = None
+                    if raw_body is not None:
+                        try:
+                            payload = json.loads(raw_body.decode("utf-8"))
+                        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                            parse_error = exc
                     run_reporting.pc_toolkit_event(
-                        "role_probe", request_url=DEFAULT_ROLE_URL, status=response.status
+                        "role_probe_result",
+                        service_id=self.service_id,
+                        operation_id=operation_id,
+                        request_id=request_id,
+                        request_url=str(response.url or DEFAULT_ROLE_URL),
+                        status=status,
+                        ok=bool(response.ok),
+                        duration_ms=round((time.monotonic() - probe_started) * 1000),
+                        response_body_bytes=(len(raw_body) if isinstance(raw_body, bytes) else None),
+                        response_body_read=body_error is None,
+                        response_body_error=(
+                            run_reporting.exception_details(body_error)
+                            if body_error else None
+                        ),
+                        parse_error=(
+                            run_reporting.exception_details(parse_error)
+                            if parse_error else None
+                        ),
+                        payload_type=type(payload).__name__ if payload is not None else None,
+                        payload_keys=sorted(payload.keys()) if isinstance(payload, dict) else [],
+                        page_urls=[url for url, _ in page_snapshot()],
+                    )
+                    roles = payload.get("maxRoles", []) if isinstance(payload, dict) else []
+                    if isinstance(roles, list) and roles and clean(roles[0]):
+                        role = clean(roles[0])
+                        run_reporting.pc_toolkit_event(
+                            "role_discovered",
+                            service_id=self.service_id,
+                            operation_id=operation_id,
+                            request_id=request_id,
+                            role=role,
+                            role_count=len(roles),
+                        )
+                        return role
+                    run_reporting.pc_toolkit_event(
+                        "role_probe_no_role",
+                        service_id=self.service_id,
+                        operation_id=operation_id,
+                        request_id=request_id,
+                        status=status,
+                        ok=bool(response.ok),
+                        roles_type=type(roles).__name__,
+                        role_count=len(roles) if isinstance(roles, list) else None,
                     )
                 except Exception as exc:
                     run_reporting.pc_toolkit_event(
                         "role_probe_failed",
+                        service_id=self.service_id,
+                        operation_id=operation_id,
+                        request_id=request_id,
                         request_url=DEFAULT_ROLE_URL,
-                        error=type(exc).__name__,
+                        duration_ms=round((time.monotonic() - probe_started) * 1000),
+                        exception=run_reporting.exception_details(exc),
                     )
                 # Some SSO flows finish in a newly opened tab. Refresh the
                 # list so a successful login in that tab is observed too.
                 pages = context.pages or [page]
-                page.wait_for_timeout(1500)
-            raise PCToolkitError("PC Toolkit sign-in did not complete. Open it in Chrome and try again.")
+                for candidate in pages:
+                    attach_page(candidate)
+                current_snapshot = page_snapshot()
+                if current_snapshot != last_page_snapshot:
+                    last_page_snapshot = current_snapshot
+                    run_reporting.pc_toolkit_event(
+                        "browser_pages_snapshot",
+                        service_id=self.service_id,
+                        operation_id=operation_id,
+                        pages=[{"url": url, "state": state} for url, state in current_snapshot],
+                    )
+                wait_page = next(
+                    (
+                        candidate
+                        for candidate in pages
+                        if not bool(getattr(candidate, "is_closed", lambda: False)())
+                    ),
+                    None,
+                )
+                if wait_page is None:
+                    time.sleep(1.5)
+                else:
+                    try:
+                        wait_page.wait_for_timeout(1500)
+                    except Exception as exc:
+                        run_reporting.pc_toolkit_event(
+                            "browser_wait_failed",
+                            service_id=self.service_id,
+                            operation_id=operation_id,
+                            exception=run_reporting.exception_details(exc),
+                        )
+                        time.sleep(1.5)
+            run_reporting.pc_toolkit_event(
+                "role_discovery_timed_out",
+                service_id=self.service_id,
+                operation_id=operation_id,
+                page_urls=[url for url, _ in page_snapshot()],
+                elapsed_ms=round((time.monotonic() - role_probe_started) * 1000),
+                timeout_seconds=role_probe_timeout,
+            )
+            raise PCToolkitError(
+                "PC Toolkit sign-in did not complete. Open it in Chrome and try again."
+            )
         except PCToolkitError:
             raise
         except Exception as exc:
             run_reporting.pc_toolkit_event(
-                "role_discovery_failed", error=type(exc).__name__
+                "role_discovery_failed",
+                service_id=self.service_id,
+                operation_id=operation_id,
+                exception=run_reporting.exception_details(exc),
             )
             raise PCToolkitError("PC Toolkit authentication could not be opened.") from exc
         finally:
             if context is not None:
                 try:
                     context.close()
-                except Exception:
-                    pass
-            playwright.stop()
+                    run_reporting.pc_toolkit_event(
+                        "browser_context_closed",
+                        service_id=self.service_id,
+                        operation_id=operation_id,
+                    )
+                except Exception as exc:
+                    run_reporting.pc_toolkit_event(
+                        "browser_context_close_failed",
+                        service_id=self.service_id,
+                        operation_id=operation_id,
+                        exception=run_reporting.exception_details(exc),
+                    )
+            try:
+                playwright.stop()
+                run_reporting.pc_toolkit_event(
+                    "browser_runtime_stopped",
+                    service_id=self.service_id,
+                    operation_id=operation_id,
+                )
+            except Exception as exc:
+                run_reporting.pc_toolkit_event(
+                    "browser_runtime_stop_failed",
+                    service_id=self.service_id,
+                    operation_id=operation_id,
+                    exception=run_reporting.exception_details(exc),
+                )
