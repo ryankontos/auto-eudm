@@ -710,8 +710,9 @@ def open_helix_auth_page(
     Chrome normally creates one ``about:blank`` page with a persistent
     context. Reusing it is important: closing the only page before opening the
     Helix page can close or invalidate the browser context on some Chrome
-    versions. If navigation still leaves that page blank, retry in a fresh tab
-    while keeping the original context alive.
+    versions. If navigation does not commit immediately, retry that same tab;
+    repeatedly opening replacement tabs leaves the user with a trail of blank
+    windows and can race the identity-provider redirect.
     """
     pages = [page for page in list(context.pages) if browser_page_is_open(page)]
     page = (
@@ -762,12 +763,11 @@ def open_helix_auth_page(
                 page.wait_for_timeout(500)
             except Exception:
                 pass
-            replacement = context.new_page()
-            try:
-                page.close()
-            except Exception:
-                pass
-            page = replacement
+            # Keep the same page for the next attempt. Chrome and the identity
+            # provider may still be committing the redirect asynchronously.
+            # A fresh tab here is the source of the recurring about:blank tabs.
+            if not browser_page_is_open(page):
+                page = context.new_page()
 
     raise EUDMError(
         "Chrome opened but its authentication tab remained blank. Try Authenticate again."

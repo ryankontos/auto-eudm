@@ -128,18 +128,26 @@ class BrowserAuthenticationPageTests(unittest.TestCase):
         self.assertEqual(context.created_pages, [])
         self.assertEqual(startup.goto_calls, ["https://macquarie-dwp.onbmc.com/dwp/app/"])
 
-    def test_retries_in_a_new_tab_if_startup_page_stays_blank(self) -> None:
+    def test_retries_the_same_tab_if_startup_page_stays_blank(self) -> None:
         startup = self.Page(navigates=False)
         context = self.Context(startup)
 
-        active = eudm.open_helix_auth_page(
-            context,
-            "https://macquarie-dwp.onbmc.com/dwp/app/",
-        )
+        with self.assertRaises(eudm.EUDMError):
+            eudm.open_helix_auth_page(
+                context,
+                "https://macquarie-dwp.onbmc.com/dwp/app/",
+            )
 
-        self.assertIs(active, context.created_pages[0])
-        self.assertTrue(startup.closed)
-        self.assertEqual(active.url, "https://macquarie-dwp.onbmc.com/dwp/app/")
+        self.assertEqual(context.created_pages, [])
+        self.assertFalse(startup.closed)
+        self.assertEqual(
+            startup.goto_calls,
+            [
+                "https://macquarie-dwp.onbmc.com/dwp/app/",
+                "https://macquarie-dwp.onbmc.com/dwp/app/",
+                "https://macquarie-dwp.onbmc.com/dwp/app/",
+            ],
+        )
 
 
 if __name__ == "__main__":

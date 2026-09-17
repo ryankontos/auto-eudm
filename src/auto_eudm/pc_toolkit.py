@@ -17,6 +17,8 @@ import os
 import platform
 from pathlib import Path
 import queue
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -26,7 +28,12 @@ import urllib.parse
 import urllib.request
 import zlib
 
-from .eudm_request import EUDMError, acquire_browser_profile_lock, open_helix_auth_page
+from .eudm_request import (
+    EUDMError,
+    acquire_browser_profile_lock,
+    browser_page_is_open,
+    open_helix_auth_page,
+)
 from . import run_reporting
 
 
@@ -63,6 +70,10 @@ STALE_CACHE_SECONDS = 30 * 24 * 60 * 60
 MAX_CACHE_ENTRIES = 10_000
 MAX_PARALLEL_LOOKUPS = 10
 PC_TOOLKIT_CONNECT_TIMEOUT_SECONDS = 300
+PUPPETEER_CONNECT_TIMEOUT_SECONDS = 180
+PUPPETEER_BRIDGE_PATH = Path(__file__).with_name("pc_toolkit_puppeteer.cjs")
+PUPPETEER_PROJECT_ROOT = PUPPETEER_BRIDGE_PATH.parents[2]
+PUPPETEER_INSTALL_TIMEOUT_SECONDS = 120
 
 
 class PCToolkitError(EUDMError):
@@ -907,10 +918,400 @@ class PCToolkitBrowserTransport:
             self._closed = True
             self._stop_requested.set()
             thread = self._thread
-        if thread is not None and thread.is_alive():
-            self._tasks.put(("close", {}, None))
-            if thread is not threading.current_thread():
-                thread.join(timeout=8)
+            if thread is not None and thread.is_alive():
+                self._tasks.put(("close", {}, None))
+                if thread is not threading.current_thread():
+                    thread.join(timeout=8)
+
+
+class PCToolkitPuppeteerTransport:
+    """Keep PC Toolkit authentication and lookups inside a Puppeteer page.
+
+    Puppeteer is a Node package, so the small bridge in
+    ``pc_toolkit_puppeteer.cjs`` owns Chrome and speaks JSON lines. Keeping the
+    browser process behind this Python transport means the rest of the
+    enrichment service has the same synchronous lookup interface as the API
+    and Playwright transports.
+    """
+
+    def __init__(
+        self,
+        *,
+        browser_profile: str = "",
+        timeout: float = 18.0,
+        service_id: str = "",
+        operation_id: str | None = None,
+        headless: bool = False,
+    ) -> None:
+        self.browser_profile = browser_profile
+        self.timeout = max(2.0, float(timeout))
+        self.service_id = service_id
+        self.operation_id = operation_id
+        self.headless = bool(headless)
+        self._state_lock = threading.RLock()
+        self._command_lock = threading.Lock()
+        self._pending: dict[str, Future[Any]] = {}
+        self._process: subprocess.Popen[str] | None = None
+        self._reader_thread: threading.Thread | None = None
+        self._profile_lock: threading.Lock | None = None
+        self._command_number = 0
+        self._closed = False
+        self._stop_requested = threading.Event()
+        self.role = ""
+
+    def _next_command_id(self, prefix: str = "puppeteer") -> str:
+        with self._state_lock:
+            self._command_number += 1
+            return f"{prefix}-{self._command_number}"
+
+    def _read_output(self) -> None:
+        process = self._process
+        if process is None or process.stdout is None:
+            return
+        try:
+            for line in process.stdout:
+                try:
+                    message = json.loads(line)
+                except (TypeError, ValueError):
+                    run_reporting.pc_toolkit_event(
+                        "puppeteer_bridge_invalid_output",
+                        service_id=self.service_id,
+                        operation_id=self.operation_id,
+                        output_bytes=len(line.encode("utf-8", errors="replace")),
+                    )
+                    continue
+                if not isinstance(message, dict):
+                    continue
+                if message.get("type") == "progress":
+                    details = {
+                        str(key): value
+                        for key, value in message.items()
+                        if key not in {"type", "stage"}
+                    }
+                    run_reporting.pc_toolkit_event(
+                        "puppeteer_progress",
+                        service_id=self.service_id,
+                        operation_id=self.operation_id,
+                        stage=str(message.get("stage", "")),
+                        details=details,
+                    )
+                    continue
+                command_id = str(message.get("id", ""))
+                if not command_id:
+                    continue
+                with self._state_lock:
+                    future = self._pending.pop(command_id, None)
+                if future is not None and not future.done():
+                    future.set_result(message)
+        except (OSError, ValueError) as exc:
+            run_reporting.pc_toolkit_event(
+                "puppeteer_bridge_output_failed",
+                service_id=self.service_id,
+                operation_id=self.operation_id,
+                exception=run_reporting.exception_details(exc),
+            )
+        finally:
+            error = PCToolkitError("The Puppeteer PC Toolkit process stopped unexpectedly.")
+            with self._state_lock:
+                pending = list(self._pending.values())
+                self._pending.clear()
+            for future in pending:
+                if not future.done():
+                    future.set_exception(error)
+            run_reporting.pc_toolkit_event(
+                "puppeteer_bridge_stopped",
+                service_id=self.service_id,
+                operation_id=self.operation_id,
+                return_code=(
+                    self._process.poll() if self._process is not None else None
+                ),
+            )
+
+    def _send_command(
+        self,
+        command: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        timeout: float,
+    ) -> dict[str, Any]:
+        with self._command_lock:
+            with self._state_lock:
+                process = self._process
+                if self._closed or process is None or process.poll() is not None:
+                    raise PCToolkitError("The Puppeteer PC Toolkit process is not running.")
+                if process.stdin is None:
+                    raise PCToolkitError("The Puppeteer PC Toolkit process has no input channel.")
+                command_id = self._next_command_id()
+                future: Future[Any] = Future()
+                self._pending[command_id] = future
+            message = {"id": command_id, "command": command}
+            if payload:
+                message.update(payload)
+            try:
+                process.stdin.write(json.dumps(message, ensure_ascii=False) + "\n")
+                process.stdin.flush()
+            except (BrokenPipeError, OSError) as exc:
+                with self._state_lock:
+                    self._pending.pop(command_id, None)
+                raise PCToolkitError("Could not communicate with the Puppeteer PC Toolkit process.") from exc
+            try:
+                response = future.result(timeout=max(2.0, float(timeout)))
+            except FutureTimeoutError as exc:
+                with self._state_lock:
+                    self._pending.pop(command_id, None)
+                raise PCToolkitError("The Puppeteer PC Toolkit operation timed out.") from exc
+            if not isinstance(response, dict):
+                raise PCToolkitError("Puppeteer returned an invalid response.")
+            if response.get("ok") is not True:
+                raise PCToolkitError(
+                    clean(response.get("error"))
+                    or "Puppeteer could not complete the PC Toolkit operation."
+                )
+            result = response.get("result", {})
+            return result if isinstance(result, dict) else {}
+
+    def _acquire_profile(self) -> None:
+        if not self.browser_profile:
+            raise PCToolkitError("Puppeteer needs the dedicated Chrome profile used for Helix.")
+        started = time.monotonic()
+        deadline = started + PUPPETEER_CONNECT_TIMEOUT_SECONDS
+        while _profile_lock_is_live(self.browser_profile):
+            if self._stop_requested.is_set():
+                raise PCToolkitError("Puppeteer PC Toolkit connection was cancelled.")
+            if time.monotonic() >= deadline:
+                raise PCToolkitError(
+                    "Puppeteer is waiting for the Helix Chrome profile to be released."
+                )
+            time.sleep(0.5)
+        self._profile_lock = acquire_browser_profile_lock(
+            self.browser_profile,
+            timeout=max(1.0, deadline - time.monotonic()),
+        )
+        run_reporting.pc_toolkit_event(
+            "puppeteer_profile_acquired",
+            service_id=self.service_id,
+            operation_id=self.operation_id,
+            wait_ms=round((time.monotonic() - started) * 1000),
+        )
+
+    def _ensure_node_dependency(self, node: str) -> None:
+        """Make the optional bridge usable on a fresh AutoEUDM checkout."""
+        check = subprocess.run(
+            [node, "-e", "require.resolve('puppeteer-core')"],
+            cwd=str(PUPPETEER_PROJECT_ROOT),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if check.returncode == 0:
+            return
+        if os.getenv("EUDM_SKIP_AUTO_INSTALL", "").casefold() in {
+            "1", "true", "yes", "on"
+        }:
+            raise PCToolkitError(
+                "Puppeteer is not installed. Run npm install in the AutoEUDM folder."
+            )
+        npm = shutil.which("npm")
+        if not npm:
+            raise PCToolkitError(
+                "Puppeteer is not installed and npm could not be found. Install Node.js, then try again."
+            )
+        run_reporting.pc_toolkit_event(
+            "puppeteer_dependency_install_started",
+            service_id=self.service_id,
+            operation_id=self.operation_id,
+            package="puppeteer-core",
+        )
+        try:
+            installed = subprocess.run(
+                [npm, "install", "--ignore-scripts", "--no-audit", "--no-fund"],
+                cwd=str(PUPPETEER_PROJECT_ROOT),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=PUPPETEER_INSTALL_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            run_reporting.pc_toolkit_event(
+                "puppeteer_dependency_install_failed",
+                service_id=self.service_id,
+                operation_id=self.operation_id,
+                package="puppeteer-core",
+                reason="timeout",
+            )
+            raise PCToolkitError(
+                "Installing the Puppeteer dependency timed out. Run npm install in the AutoEUDM folder, then try again."
+            ) from exc
+        except OSError as exc:
+            run_reporting.pc_toolkit_event(
+                "puppeteer_dependency_install_failed",
+                service_id=self.service_id,
+                operation_id=self.operation_id,
+                package="puppeteer-core",
+                exception=run_reporting.exception_details(exc),
+            )
+            raise PCToolkitError("Puppeteer dependencies could not be installed.") from exc
+        output = str(installed.stdout or "").strip()
+        run_reporting.pc_toolkit_event(
+            "puppeteer_dependency_install_completed",
+            service_id=self.service_id,
+            operation_id=self.operation_id,
+            package="puppeteer-core",
+            return_code=installed.returncode,
+            output_tail=output[-1200:],
+        )
+        if installed.returncode != 0:
+            raise PCToolkitError(
+                "Puppeteer dependencies could not be installed. Run npm install in the AutoEUDM folder, then try again."
+            )
+        check = subprocess.run(
+            [node, "-e", "require.resolve('puppeteer-core')"],
+            cwd=str(PUPPETEER_PROJECT_ROOT),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if check.returncode != 0:
+            raise PCToolkitError(
+                "Puppeteer dependencies were installed but could not be loaded. Run npm install in the AutoEUDM folder, then try again."
+            )
+
+    def start(self) -> None:
+        with self._state_lock:
+            if self._process is not None:
+                return
+            self._closed = False
+            self._stop_requested.clear()
+        self._acquire_profile()
+        if self._stop_requested.is_set():
+            if self._profile_lock is not None:
+                self._profile_lock.release()
+                self._profile_lock = None
+            raise PCToolkitError("Puppeteer PC Toolkit connection was cancelled.")
+        node = shutil.which("node") or shutil.which("nodejs")
+        if not node:
+            if self._profile_lock is not None:
+                self._profile_lock.release()
+                self._profile_lock = None
+            raise PCToolkitError("Node.js is required for the Puppeteer PC Toolkit transport.")
+        if not PUPPETEER_BRIDGE_PATH.exists():
+            if self._profile_lock is not None:
+                self._profile_lock.release()
+                self._profile_lock = None
+            raise PCToolkitError("The Puppeteer PC Toolkit bridge is missing from the project.")
+        try:
+            self._ensure_node_dependency(node)
+        except Exception:
+            if self._profile_lock is not None:
+                self._profile_lock.release()
+                self._profile_lock = None
+            raise
+        try:
+            process = subprocess.Popen(
+                [node, str(PUPPETEER_BRIDGE_PATH)],
+                cwd=str(PUPPETEER_PROJECT_ROOT),
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                encoding="utf-8",
+                bufsize=1,
+            )
+        except (OSError, ValueError) as exc:
+            if self._profile_lock is not None:
+                self._profile_lock.release()
+                self._profile_lock = None
+            raise PCToolkitError("Could not start the Puppeteer PC Toolkit process.") from exc
+        with self._state_lock:
+            self._process = process
+        self._reader_thread = threading.Thread(
+            target=self._read_output,
+            name="pc-toolkit-puppeteer-output",
+            daemon=True,
+        )
+        self._reader_thread.start()
+        run_reporting.pc_toolkit_event(
+            "puppeteer_bridge_started",
+            service_id=self.service_id,
+            operation_id=self.operation_id,
+            node=node,
+            bridge=str(PUPPETEER_BRIDGE_PATH),
+            headless=self.headless,
+        )
+        try:
+            result = self._send_command(
+                "start",
+                {
+                    "options": {
+                        "browserProfile": str(Path(self.browser_profile).expanduser()),
+                        "headless": self.headless,
+                        "authTimeoutMs": 20_000 if self.headless else 120_000,
+                        "lookupAuthTimeoutMs": 30_000,
+                        "navigationTimeoutMs": 30_000,
+                    },
+                },
+                timeout=PUPPETEER_CONNECT_TIMEOUT_SECONDS + 15,
+            )
+        except Exception:
+            self.close()
+            raise
+        self.role = clean(result.get("role"))
+        run_reporting.pc_toolkit_event(
+            "puppeteer_authenticated",
+            service_id=self.service_id,
+            operation_id=self.operation_id,
+            role=self.role,
+            page_url=clean(result.get("page_url")),
+        )
+
+    def lookup(
+        self,
+        query: str,
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        value = clean(query)
+        if len(value) < 2:
+            raise PCToolkitError("Enter at least two characters for PC Toolkit.")
+        return self._send_command(
+            "lookup",
+            {"query": value},
+            timeout=max(2.0, float(timeout or self.timeout) + 5.0),
+        )
+
+    def close(self) -> None:
+        with self._state_lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._stop_requested.set()
+            process = self._process
+            self._process = None
+        if process is not None and process.poll() is None:
+            try:
+                process.terminate()
+                process.wait(timeout=5)
+            except (OSError, subprocess.TimeoutExpired):
+                try:
+                    process.kill()
+                    process.wait(timeout=2)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+        with self._state_lock:
+            pending = list(self._pending.values())
+            self._pending.clear()
+        for future in pending:
+            if not future.done():
+                future.set_exception(PCToolkitError("The Puppeteer PC Toolkit process was closed."))
+        if self._profile_lock is not None:
+            try:
+                self._profile_lock.release()
+            except RuntimeError:
+                pass
+            self._profile_lock = None
 
 
 class PCToolkitBrowserClient:
@@ -963,6 +1364,8 @@ class PCToolkitBrowserClient:
         )
         try:
             response = self.transport.get(url, headers, timeout=self.timeout)
+        except PCToolkitError:
+            raise
         except Exception as exc:
             run_reporting.network(
                 "GET",
@@ -1054,6 +1457,151 @@ class PCToolkitBrowserClient:
         return result
 
 
+class PCToolkitPuppeteerClient:
+    """PC Toolkit client backed by the long-lived Puppeteer page bridge."""
+
+    def __init__(
+        self,
+        transport: PCToolkitPuppeteerTransport,
+        *,
+        role: str = "",
+        timeout: float = 18.0,
+    ) -> None:
+        self.transport = transport
+        self.role = role.strip()
+        self.timeout = timeout
+
+    def lookup(
+        self,
+        query: str,
+        *,
+        request_id: str | None = None,
+        operation_id: str | None = None,
+        purpose: str = "lookup",
+    ) -> dict[str, Any]:
+        value = clean(query)
+        request_id = request_id or run_reporting.diagnostic_id("pc-puppeteer-http")
+        started_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+        started = time.monotonic()
+        if len(value) < 2:
+            raise PCToolkitError("Enter at least two characters for PC Toolkit.")
+        url = f"{DEFAULT_DEVICE_URL}/{urllib.parse.quote(value, safe='-._')}?sources=cmdb,sccm"
+        # The bearer is deliberately kept in the Node process. These headers
+        # describe the browser request without moving the token into Python.
+        headers = {
+            "Accept": "application/json, text/plain, */*",
+            "Authorization": "[managed by Puppeteer]",
+            "X-Max-Elevated-Role": self.role or "[selected by portal]",
+        }
+        run_reporting.pc_toolkit_event(
+            "api_request_started",
+            request_id=request_id,
+            operation_id=operation_id,
+            purpose=purpose,
+            method="GET",
+            query=value,
+            request_url=url,
+            request_headers=headers,
+            timeout_seconds=self.timeout,
+            request_body_present=False,
+            channel="puppeteer-page-fetch",
+            started_at=started_at,
+        )
+        try:
+            response = self.transport.lookup(value, timeout=self.timeout)
+        except PCToolkitError:
+            raise
+        except Exception as exc:
+            run_reporting.network(
+                "GET",
+                urllib.parse.urlsplit(url).path,
+                duration_ms=round((time.monotonic() - started) * 1000),
+                transport="pc-toolkit",
+                error=type(exc).__name__,
+                request_url=url,
+                request_headers=headers,
+                request_id=request_id,
+                operation_id=operation_id,
+                error_detail=str(exc),
+                details={
+                    "channel": "puppeteer-page-fetch",
+                    "purpose": purpose,
+                    "query": value,
+                    "started_at": started_at,
+                    "response_body_present": False,
+                },
+            )
+            raise PCToolkitError("PC Toolkit Puppeteer request could not be completed.") from exc
+        try:
+            status = int(response.get("status", 0))
+        except (TypeError, ValueError):
+            status = 0
+        response_url = str(response.get("url") or url)
+        response_header_values = response.get("headers")
+        if not isinstance(response_header_values, dict):
+            response_header_values = {}
+        raw = response.get("body", "")
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", errors="replace")
+        if not isinstance(raw, str):
+            raw = str(raw)
+        run_reporting.network(
+            "GET",
+            urllib.parse.urlsplit(url).path,
+            status=status,
+            duration_ms=round((time.monotonic() - started) * 1000),
+            transport="pc-toolkit",
+            request_url=response_url,
+            request_headers=headers,
+            response_headers=response_header_values,
+            response_body=raw,
+            request_id=request_id,
+            operation_id=operation_id,
+            details={
+                "channel": "puppeteer-page-fetch",
+                "purpose": purpose,
+                "query": value,
+                "started_at": started_at,
+                "response_body_present": True,
+            },
+        )
+        if status in {401, 403}:
+            raise PCToolkitError("PC Toolkit authentication is required.")
+        if status >= 400 or status < 200:
+            raise PCToolkitError(f"PC Toolkit returned HTTP {status}.")
+        try:
+            payload = json.loads(raw)
+            result = normalise_lookup(payload, value)
+        except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            run_reporting.pc_toolkit_event(
+                "response_parse_failed",
+                request_id=request_id,
+                operation_id=operation_id,
+                purpose=purpose,
+                query=value,
+                status=status,
+                duration_ms=round((time.monotonic() - started) * 1000),
+                exception=run_reporting.exception_details(exc),
+            )
+            raise PCToolkitError("PC Toolkit returned an unreadable response.") from exc
+        result["duration_ms"] = round((time.monotonic() - started) * 1000)
+        run_reporting.pc_toolkit_event(
+            "response_normalised",
+            request_id=request_id,
+            operation_id=operation_id,
+            purpose=purpose,
+            query=value,
+            status=status,
+            duration_ms=result["duration_ms"],
+            channel="puppeteer-page-fetch",
+            payload_type=type(payload).__name__,
+            payload_keys=sorted(payload.keys()) if isinstance(payload, dict) else [],
+            normalised_device_count=int(result.get("record_count", 0) or 0),
+            active_count=int(result.get("active_count", 0) or 0),
+        )
+        return result
+
+
 class PCToolkitService:
     """Optional enrichment service with a stale-while-revalidate file cache."""
 
@@ -1085,6 +1633,7 @@ class PCToolkitService:
         # during browser authentication and is never written to the cache.
         self.access_token = ""
         self._browser_transport: PCToolkitBrowserTransport | None = None
+        self._puppeteer_transport: PCToolkitPuppeteerTransport | None = None
         self._connect_operation_id: str | None = None
         self._connect_cancel: threading.Event | None = None
         self.state = "simulation" if simulate else "idle"
@@ -1104,7 +1653,7 @@ class PCToolkitService:
             )
             or "browser"
         ).strip().casefold()
-        return configured if configured in {"api", "browser"} else "browser"
+        return configured if configured in {"api", "browser", "puppeteer"} else "browser"
 
     def _log_context(self, *, reason: str, operation_id: str | None = None) -> None:
         """Record the local conditions that affect PC Toolkit connectivity once."""
@@ -1372,6 +1921,20 @@ class PCToolkitService:
                 service_id=self.service_id,
             )
 
+    def _close_puppeteer_transport(self) -> None:
+        transport = self._puppeteer_transport
+        self._puppeteer_transport = None
+        if transport is not None:
+            transport.close()
+            run_reporting.pc_toolkit_event(
+                "puppeteer_transport_closed",
+                service_id=self.service_id,
+            )
+
+    def _close_transports(self) -> None:
+        self._close_browser_transport()
+        self._close_puppeteer_transport()
+
     def _connect_cancelled(self, operation_id: str | None) -> bool:
         if not operation_id:
             return False
@@ -1387,7 +1950,7 @@ class PCToolkitService:
         with self.lock:
             if self._connect_cancel is not None:
                 self._connect_cancel.set()
-        self._close_browser_transport()
+        self._close_transports()
         with self.lock:
             timer = self.cache_write_timer
             self.cache_write_timer = None
@@ -1403,7 +1966,11 @@ class PCToolkitService:
                     exception=run_reporting.exception_details(exc),
                 )
 
-    def _client(self) -> PCToolkitClient | PCToolkitBrowserClient:
+    def _client(self) -> PCToolkitClient | PCToolkitBrowserClient | PCToolkitPuppeteerClient:
+        if self.transport_mode() == "puppeteer":
+            if self._puppeteer_transport is None:
+                raise PCToolkitError("Puppeteer's PC Toolkit transport is not connected.")
+            return PCToolkitPuppeteerClient(self._puppeteer_transport, role=self.role)
         if self.transport_mode() == "browser":
             if self._browser_transport is None:
                 raise PCToolkitError("PC Toolkit's browser transport is not connected.")
@@ -1805,7 +2372,7 @@ class PCToolkitService:
             )
             self.last_error = self.message
         cancel.set()
-        self._close_browser_transport()
+        self._close_transports()
         run_reporting.pc_toolkit_event(
             "connect_timed_out",
             service_id=self.service_id,
@@ -1816,8 +2383,65 @@ class PCToolkitService:
     def _connect(self, operation_id: str) -> None:
         started = time.monotonic()
         authenticated_in_browser = False
-        self._close_browser_transport()
-        if self.transport_mode() == "browser":
+        transport_mode = self.transport_mode()
+        self._close_transports()
+        if transport_mode == "puppeteer":
+            try:
+                puppeteer_transport = PCToolkitPuppeteerTransport(
+                    browser_profile=self.browser_profile,
+                    timeout=18.0,
+                    service_id=self.service_id,
+                    operation_id=operation_id,
+                    headless=self.browser_headless,
+                )
+                self._puppeteer_transport = puppeteer_transport
+                puppeteer_transport.start()
+                self.role = puppeteer_transport.role or self.role
+                authenticated_in_browser = True
+            except Exception as exc:
+                self._close_puppeteer_transport()
+                self._set_state(
+                    "error",
+                    str(exc),
+                    operation_id=operation_id,
+                    error=str(exc),
+                )
+                run_reporting.pc_toolkit_event(
+                    "connect_failed",
+                    service_id=self.service_id,
+                    operation_id=operation_id,
+                    error=str(exc),
+                    phase="puppeteer",
+                    role=self.role,
+                    transport="puppeteer",
+                    duration_ms=round((time.monotonic() - started) * 1000),
+                    exception=run_reporting.exception_details(exc),
+                )
+                return
+            with self.lock:
+                if self.state != "connecting" or (
+                    self._connect_operation_id is not None
+                    and self._connect_operation_id != operation_id
+                ):
+                    self._close_puppeteer_transport()
+                    return
+                self.connected_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            self._set_state(
+                "connected",
+                "PC Toolkit enrichment is ready.",
+                operation_id=operation_id,
+            )
+            run_reporting.pc_toolkit_event(
+                "connect_succeeded",
+                service_id=self.service_id,
+                operation_id=operation_id,
+                role=self.role,
+                authenticated_in_browser=authenticated_in_browser,
+                transport="puppeteer",
+                duration_ms=round((time.monotonic() - started) * 1000),
+            )
+            return
+        if transport_mode == "browser":
             # Browser mode uses the same dedicated profile for SSO and for the
             # authenticated device fetches. The Helix API client has already
             # completed its own handoff, so the profile lock can be held here
@@ -1860,7 +2484,7 @@ class PCToolkitService:
                     self._connect_operation_id is not None
                     and self._connect_operation_id != operation_id
                 ):
-                    self._close_browser_transport()
+                    self._close_transports()
                     return
                 self.connected_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
             self._set_state(
@@ -1910,7 +2534,7 @@ class PCToolkitService:
                 self._connect_operation_id is not None
                 and self._connect_operation_id != operation_id
             ):
-                self._close_browser_transport()
+                self._close_transports()
                 return
             self.connected_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         self._set_state(

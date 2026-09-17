@@ -14,6 +14,7 @@ from auto_eudm.pc_toolkit import (
     PCToolkitClient,
     PCToolkitBrowserClient,
     PCToolkitError,
+    PCToolkitPuppeteerClient,
     PCToolkitService,
     normalise_lookup,
     xsrf_cookie_value,
@@ -326,6 +327,58 @@ class PCToolkitCacheTests(unittest.TestCase):
         )
         transport.start.assert_called_once_with()
         client.lookup.assert_not_called()
+
+    def test_puppeteer_client_keeps_bearer_token_inside_the_bridge(self) -> None:
+        calls: list[dict[str, object]] = []
+
+        class Transport:
+            def lookup(self, query, *, timeout):
+                calls.append({"query": query, "timeout": timeout})
+                return {
+                    "status": 200,
+                    "url": "https://autoscalecomponent.example/v1/Computers/ABC123",
+                    "headers": {"content-type": "application/json"},
+                    "body": json.dumps({"devices": [device(
+                        "ABC123", status="In Inventory", model="MacBook Air"
+                    )]}),
+                }
+
+        result = PCToolkitPuppeteerClient(
+            Transport(),
+            role="maxrole:personal",
+        ).lookup(" ABC123 ")
+
+        self.assertEqual(result["primary"]["model"], "MacBook Air")
+        self.assertEqual(calls, [{"query": "ABC123", "timeout": 18.0}])
+
+    def test_puppeteer_transport_can_be_used_for_connection(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            service = PCToolkitService(
+                Path(folder) / "cache.json",
+                browser_profile=str(Path(folder) / "chrome-profile"),
+                preferences=lambda: {
+                    "pc_toolkit_enabled": True,
+                    "pc_toolkit_transport": "puppeteer",
+                },
+            )
+            transport = mock.Mock()
+            transport.role = "maxrole:personal"
+            with mock.patch(
+                "auto_eudm.pc_toolkit.PCToolkitPuppeteerTransport",
+                return_value=transport,
+            ) as transport_type:
+                service.state = "connecting"
+                service._connect("pc-puppeteer-connect-test")
+
+        self.assertEqual(service.status()["state"], "connected")
+        transport_type.assert_called_once_with(
+            browser_profile=str(Path(folder) / "chrome-profile"),
+            timeout=18.0,
+            service_id=service.service_id,
+            operation_id="pc-puppeteer-connect-test",
+            headless=False,
+        )
+        transport.start.assert_called_once_with()
 
 
 if __name__ == "__main__":

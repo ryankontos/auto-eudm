@@ -602,9 +602,10 @@
         <label class="settings-field">Lookup method
           <select id="pcToolkitTransportInput">
             <option value="browser">Browser session (recommended)</option>
+            <option value="puppeteer">Puppeteer page</option>
             <option value="api">Direct API</option>
           </select>
-          <small class="settings-help">Browser session keeps the lookup inside Chrome so the portal session, cookies, and browser request rules are preserved.</small>
+          <small class="settings-help">Browser session and Puppeteer keep lookups inside Chrome. Puppeteer owns a real Chrome page and can refresh the portal session before retrying the device request.</small>
         </label>
         <div class="settings-inline-action pc-toolkit-connection">
           <div><strong id="pcToolkitStatusTitle">Not connected</strong><small id="pcToolkitStatusDetail">PC Toolkit is optional and never blocks Helix submissions.</small></div>

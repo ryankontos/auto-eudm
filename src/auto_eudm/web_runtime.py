@@ -1215,9 +1215,9 @@ class Application:
 
         if "pc_toolkit_transport" in raw:
             transport = str(raw["pc_toolkit_transport"] or "").strip().casefold()
-            if transport not in {"browser", "api"}:
+            if transport not in {"browser", "puppeteer", "api"}:
                 raise eudm.EUDMError(
-                    "PC Toolkit lookup method must be Browser session or Direct API."
+                    "PC Toolkit lookup method must be Browser session, Puppeteer, or Direct API."
                 )
             values["pc_toolkit_transport"] = transport
 
