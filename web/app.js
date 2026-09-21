@@ -4269,6 +4269,7 @@ function resetImportDialog(mode = state.importMode || "deploy") {
   $("#importGroupList").innerHTML = "";
   $("#importDateGroupsHelp").textContent = "";
   $("#importReturnedSerialsInput").value = "";
+  $("#importPreviewSearchInput").value = "";
   $("#backImportButton").hidden = true;
   $("#prepareImportButton").disabled = true;
   setButtonLabel("#prepareImportButton", "Review import");
@@ -5615,15 +5616,94 @@ function returnedSerialEditorMarkup(payload) {
   const summary = returnedSerialMatchSummary(payload);
   const input = escapeHtml(returnedSerialInputValue(payload));
   const enteredLabel = summary.entered.length
-    ? `${summary.entered.length} serial${summary.entered.length === 1 ? "" : "s"} entered · ${summary.matched.length} matched`
+    ? "Ready to match entered serials"
     : "Paste one or more serials to match";
   const unmatchedLabel = summary.unmatched.length
-    ? ` · ${summary.unmatched.length} not matched yet`
+    ? " · Some serials have no match yet"
     : "";
   return `<div class="alm-returned-serials import-preview-returned-serials">
-    <div class="alm-returned-serials-heading"><div><strong>Returned serials on hand</strong><small>Match a returned laptop to a user’s currently deployed PC Toolkit device.</small></div><span>${summary.entered.length}</span></div>
+    <div class="alm-returned-serials-heading"><div><strong>Returned serials on hand</strong><small>Match a returned laptop to a user’s currently deployed PC Toolkit device.</small></div></div>
     <textarea data-import-returned-serials rows="3" placeholder="One serial per line">${input}</textarea>
     <div class="alm-returned-serials-footer"><small>${escapeHtml(`${enteredLabel}${unmatchedLabel}`)}</small><button class="button secondary compact" type="button" data-match-returned-serials>Match returned serials</button></div>
+  </div>`;
+}
+
+function almDeploymentDateLabel(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const parts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
+  const parsed = parts
+    ? new Date(Number(parts[1]), Number(parts[2]) - 1, Number(parts[3]))
+    : new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return raw;
+  return new Intl.DateTimeFormat("en-AU", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  }).format(parsed);
+}
+
+function missingUsernameWarningId(warning) {
+  if (!warning.id) {
+    warning.id = `missing-user-${warning.date || "date"}-${warning.row_number || "row"}-${pcToolkitKey(warning.serial)}`;
+  }
+  return warning.id;
+}
+
+function missingUsernameDeploymentRequest(warning, username) {
+  return {
+    id: uid(),
+    kind: "user",
+    serials: [String(warning.serial || "").trim()],
+    status: warning.status_preselected ? String(warning.status || "").trim() : "",
+    user: username,
+    user_info: null,
+    user_validation: "pending",
+    user_validation_error: "",
+    location: null,
+    returning: false,
+    returning_user: "",
+    returning_user_info: null,
+    returning_user_validation: "empty",
+    group: "Deployments",
+    source: `${state.workbook?.filename || "ALM Workbook"} · ${$("#sheetInput")?.value || "Workbook"}`,
+    device_allocation: warning.device_allocation || "",
+    new_asset_status: warning.new_asset_status || "",
+    first_name: warning.first_name || "",
+    last_name: warning.last_name || "",
+    has_returned_device_serial: warning.has_returned_device_serial === true,
+    has_pending_return_serial: warning.has_pending_return_serial === true,
+    new_joiner: warning.new_joiner === true,
+    deployment_date: warning.date || "",
+    included: true,
+    import_validation: "pending",
+    import_error: "",
+    import_failed_fields: [],
+    import_validation_epoch: 0,
+    backlog_validation_epoch: 0,
+    serial_validation: "pending",
+    serial_validation_error: "",
+    cached_serial_verification: false,
+    cached_user_verification: false,
+    manual_username_source_id: missingUsernameWarningId(warning),
+  };
+}
+
+function missingUsernameEditorMarkup(warnings) {
+  if (!warnings.length) return "";
+  return `<div class="import-missing-users" role="status">
+    <div class="import-missing-users-heading"><div><strong>Username needed</strong><small>Add the receiving user to keep these deployment serials in the review.</small></div><span>${warnings.length}</span></div>
+    <div class="import-missing-users-list">${warnings.map((warning) => {
+      const id = missingUsernameWarningId(warning);
+      const dateLabel = almDeploymentDateLabel(warning.date);
+      const details = [warning.device_allocation, dateLabel].filter(Boolean);
+      return `<div class="import-missing-user-row" data-import-missing-user-row="${escapeHtml(id)}">
+        <div class="import-missing-user-device"><strong>${escapeHtml(warning.serial || "No serial")}</strong>${details.length ? `<small>${escapeHtml(details.join(" · "))}</small>` : ""}</div>
+        <div class="import-missing-user-form"><input type="text" data-import-missing-user="${escapeHtml(id)}" value="${escapeHtml(warning.username_input || "")}" placeholder="Enter username" aria-label="Username for ${escapeHtml(warning.serial || "deployment")}" autocomplete="off"><button class="button secondary compact" type="button" data-import-missing-user-add="${escapeHtml(id)}">Add user</button></div>
+        ${warning.error ? `<small class="import-missing-user-error">${escapeHtml(warning.error)}</small>` : ""}
+      </div>`;
+    }).join("")}</div>
   </div>`;
 }
 
@@ -5642,8 +5722,14 @@ function manualReturnEditorMarkup(source, payload) {
     .join(" ") || username || "User";
   const deploymentSerial = String(source.serials?.[0] || source.serial || "").trim();
   const deploymentModel = String(pcToolkitModelFor(source) || "").trim();
-  const deploymentMarkup = deploymentSerial || deploymentModel
-    ? `<div class="import-manual-return-deployment"><small>Deployed device</small>${deploymentSerial ? `<strong>${escapeHtml(deploymentSerial)}</strong>` : ""}${deploymentModel ? `<span>${escapeHtml(deploymentModel)}</span>` : `<span>Model not recorded</span>`}</div>`
+  const deploymentDateValue = source.deployment_date
+    || (Array.isArray(payload?.dates) && payload.dates.length === 1 ? payload.dates[0] : "");
+  const deploymentDate = almDeploymentDateLabel(deploymentDateValue);
+  const deploymentMarkup = deploymentSerial || deploymentModel || source.pc_toolkit_loading || deploymentDate
+    ? `<div class="import-manual-return-deployment">
+        <div class="import-manual-return-deployment-heading"><small>New device</small>${deploymentDate ? `<time datetime="${escapeHtml(deploymentDateValue)}">${escapeHtml(deploymentDate)}</time>` : ""}</div>
+        <div class="import-manual-return-deployment-device">${deploymentSerial ? `<strong>${escapeHtml(deploymentSerial)}</strong>` : ""}${deploymentModel ? `<span>${escapeHtml(deploymentModel)}</span>` : source.pc_toolkit_loading ? `<span class="import-manual-return-model-loading">Checking model…</span>` : ""}</div>
+      </div>`
     : "";
   const statusOptions = manualReturnStatusOptions();
   const suggestedDevices = pcToolkitReturnCandidates(source);
@@ -5651,14 +5737,14 @@ function manualReturnEditorMarkup(source, payload) {
   const toolkitEnabled = state.preferences?.pc_toolkit_enabled === true;
   const toolkitChecked = source.pc_toolkit_checked === true && !source.pc_toolkit_loading;
   const candidateMarkup = !added && visibleDevices.length
-    ? `<div class="pc-toolkit-return-candidates"><div class="pc-toolkit-return-heading"><span>Possible previous devices</span><small>PC Toolkit</small></div>${visibleDevices.map(({ device, pending }) => {
-        const model = device.model || device.name || "Device";
-        return `<div class="pc-toolkit-return-candidate"><span><strong>${escapeHtml(device.serial)}</strong><small>${escapeHtml(model)} · <span class="pc-toolkit-return-device-status">Deployed</span></small></span>${pending ? `<span class="pc-toolkit-return-current-state">Already ${escapeHtml(device.status || "Pending Return")}</span>` : `<span><button class="text-button" type="button" data-pc-toolkit-return-candidate="${escapeHtml(source.id)}" data-candidate-serial="${escapeHtml(device.serial)}" data-candidate-model="${escapeHtml(device.model || "")}" data-candidate-type="returned_devices">Returned</button><button class="text-button" type="button" data-pc-toolkit-return-candidate="${escapeHtml(source.id)}" data-candidate-serial="${escapeHtml(device.serial)}" data-candidate-model="${escapeHtml(device.model || "")}" data-candidate-type="pending_returns">Pending</button></span>`}</div>`;
+    ? `<div class="pc-toolkit-return-candidates"><div class="pc-toolkit-return-heading"><span>Devices currently deployed to this user</span></div>${visibleDevices.map(({ device, pending }) => {
+        const model = String(device.model || device.name || "").trim();
+        return `<div class="pc-toolkit-return-candidate"><div class="pc-toolkit-return-device"><strong>${escapeHtml(device.serial)}</strong>${model ? `<span>${escapeHtml(model)}</span>` : ""}<small>Deployed</small></div>${pending ? `<span class="pc-toolkit-return-current-state">Already ${escapeHtml(device.status || "Pending Return")}</span>` : `<div class="pc-toolkit-return-actions"><button class="button secondary compact" type="button" data-pc-toolkit-return-candidate="${escapeHtml(source.id)}" data-candidate-serial="${escapeHtml(device.serial)}" data-candidate-model="${escapeHtml(device.model || "")}" data-candidate-type="returned_devices">Returned</button><button class="button secondary compact" type="button" data-pc-toolkit-return-candidate="${escapeHtml(source.id)}" data-candidate-serial="${escapeHtml(device.serial)}" data-candidate-model="${escapeHtml(device.model || "")}" data-candidate-type="pending_returns">Pending return</button></div>`}</div>`;
       }).join("")}</div>`
     : !added && toolkitEnabled && source.pc_toolkit_loading
-      ? '<small class="pc-toolkit-return-checking"><span class="import-status-spinner" aria-hidden="true"></span>Checking PC Toolkit for a previous device…</small>'
+      ? '<div class="pc-toolkit-return-state"><strong>PC Toolkit</strong><small>Checking for devices currently deployed to this user…</small></div>'
       : !added && toolkitEnabled && toolkitChecked
-        ? '<small class="pc-toolkit-return-empty">No other deployed device was found in PC Toolkit.</small>'
+        ? '<div class="pc-toolkit-return-state"><strong>PC Toolkit</strong><small>No other device currently deployed to this user was found.</small></div>'
         : "";
   const statusControl = type === "returned_devices"
     ? `<label>Status<select data-import-manual-status="${escapeHtml(source.id)}">
@@ -5671,17 +5757,21 @@ function manualReturnEditorMarkup(source, payload) {
     : "";
   const addedMarkup = added
     ? `<div class="import-manual-return-added"><div><small>Added to review</small><strong>${escapeHtml(added.serials?.[0] || "")}</strong><span>${escapeHtml(manualReturnTypeLabel(type))}${added.status ? ` · ${escapeHtml(added.status)}` : ""}</span></div><button class="text-button" type="button" data-import-manual-remove="${escapeHtml(source.id)}">Remove</button></div>`
-    : `<div class="import-manual-return-fields">
-        <label>Serial number<input type="text" data-import-manual-serial="${escapeHtml(source.id)}" value="${escapeHtml(source.manual_return_serial || "")}" placeholder="Enter serial number" autocomplete="off"></label>
-        <label>Record as<select data-import-manual-type="${escapeHtml(source.id)}">
-          <option value="returned_devices" ${type === "returned_devices" ? "selected" : ""}>Returned device</option>
-          <option value="pending_returns" ${type === "pending_returns" ? "selected" : ""}>Pending return</option>
-        </select></label>
-        ${statusControl}
-        <button class="button secondary compact" type="button" data-import-manual-add="${escapeHtml(source.id)}">Add to review</button>
-      </div>${error}`;
+    : `<div class="import-manual-return-resolution">
+        <div class="import-manual-return-resolution-heading"><strong>${visibleDevices.length ? "Enter a different serial" : "Enter return details"}</strong><small>Add the device as returned or pending return.</small></div>
+        <div class="import-manual-return-fields">
+          <label>Serial number<input type="text" data-import-manual-serial="${escapeHtml(source.id)}" value="${escapeHtml(source.manual_return_serial || "")}" placeholder="Enter serial number" autocomplete="off"></label>
+          <label>Record as<select data-import-manual-type="${escapeHtml(source.id)}">
+            <option value="returned_devices" ${type === "returned_devices" ? "selected" : ""}>Returned device</option>
+            <option value="pending_returns" ${type === "pending_returns" ? "selected" : ""}>Pending return</option>
+          </select></label>
+          ${statusControl}
+          <button class="button secondary compact" type="button" data-import-manual-add="${escapeHtml(source.id)}">Add to review</button>
+        </div>${error}
+      </div>`;
   return `<div class="import-manual-return-entry" data-import-manual-source="${escapeHtml(source.id)}">
-    <div class="import-manual-return-entry-heading"><div><strong>${escapeHtml(name)}</strong><small>${escapeHtml(username || "No username")}</small>${deploymentMarkup}</div><div class="import-manual-return-entry-actions"><span>Neither return serial is listed</span><button class="text-button" type="button" data-import-manual-dismiss="${escapeHtml(source.id)}">No resolution needed</button></div></div>
+    <div class="import-manual-return-entry-heading"><div><strong>${escapeHtml(name)}</strong><small>${escapeHtml(username || "No username")}</small></div><button class="button quiet compact" type="button" data-import-manual-dismiss="${escapeHtml(source.id)}">No resolution needed</button></div>
+    ${deploymentMarkup}
     ${candidateMarkup}
     ${addedMarkup}
   </div>`;
@@ -5721,6 +5811,8 @@ const IMPORT_HISTORY_FIELDS = [
   "manual_return_error",
   "manual_return_dismissed",
   "manual_return_source_id",
+  "manual_username_source_id",
+  "deployment_date",
   "returned_serial_match",
   "pc_toolkit",
   "pc_toolkit_suggested_status",
@@ -5737,9 +5829,11 @@ function importReviewSnapshot(payload = state.importPreview) {
   return {
     requests: (payload.requests || []).map((request) => ({
       id: request.id,
-      // A manually added return is a new request, so retain its complete
-      // object for undo/redo rather than only retaining the editable fields.
-      request: request.manual_return_source_id ? cloneImportHistoryValue(request) : null,
+      // A manually added return or username is a new request, so retain its
+      // complete object for undo/redo rather than only editable fields.
+      request: request.manual_return_source_id || request.manual_username_source_id
+        ? cloneImportHistoryValue(request)
+        : null,
       values: Object.fromEntries(
         IMPORT_HISTORY_FIELDS
           .filter((field) => Object.prototype.hasOwnProperty.call(request, field))
@@ -5779,7 +5873,12 @@ function restoreImportReviewSnapshot(snapshot) {
     const request = currentById.get(item.id) || (item.request ? cloneImportHistoryValue(item.request) : null);
     if (!request) return;
     const values = item.values || {};
-    const isManualReturn = Boolean(request.manual_return_source_id || item.request?.manual_return_source_id);
+    const isManualReturn = Boolean(
+      request.manual_return_source_id
+      || item.request?.manual_return_source_id
+      || request.manual_username_source_id
+      || item.request?.manual_username_source_id,
+    );
     const wasBacklogIgnored = request.backlog_ignored === true;
     IMPORT_HISTORY_FIELDS.forEach((field) => {
       if (Object.prototype.hasOwnProperty.call(values, field)) request[field] = cloneImportHistoryValue(values[field]);
@@ -5870,7 +5969,6 @@ function pcToolkitImportMarkup(request, { loading = false, backlog = false } = {
       : "";
   return `<div class="pc-toolkit-import-facts" data-state="${isLoading ? "loading" : error ? "error" : device || associated.length ? "ready" : "empty"}">
     <div class="pc-toolkit-import-main">
-      <span class="pc-toolkit-import-source">PC Toolkit</span>
       <span class="pc-toolkit-import-copy"><strong>${escapeHtml(title)}</strong>${meta ? `<small>${escapeHtml(meta)}</small>` : ""}</span>
       ${isLoading ? '<span class="import-status-spinner" aria-hidden="true"></span>' : `<button class="pc-toolkit-row-retry" type="button" data-import-pc-retry="${escapeHtml(request.id)}" aria-label="Retry PC Toolkit lookup" title="Retry PC Toolkit lookup">${iconMarkup("refresh-cw")}</button>`}
     </div>
@@ -5919,15 +6017,55 @@ function persistBacklogIgnore(request, ignored) {
   void api(path, requestOptions).catch((error) => toast(error.message, "error"));
 }
 
+function importReviewSearchQuery() {
+  return String($("#importPreviewSearchInput")?.value || "").trim().toLocaleLowerCase();
+}
+
+function importReviewMatches(request, query = importReviewSearchQuery()) {
+  if (!query) return true;
+  const toolkitDevices = [
+    request?.pc_toolkit?.serial?.primary,
+    request?.pc_toolkit?.primary,
+    ...(request?.pc_toolkit?.user?.devices || []),
+  ].filter(Boolean);
+  const values = [
+    ...(request.serials || []),
+    request.serial,
+    request.user,
+    request.username,
+    request.returning_user,
+    request.first_name,
+    request.last_name,
+    [request.first_name, request.last_name].filter(Boolean).join(" "),
+    request.device_allocation,
+    request.new_asset_status,
+    request.status,
+    request.current_status,
+    request.deployment_date,
+    request.date,
+    ...toolkitDevices.flatMap((device) => [
+      device.serial,
+      device.name,
+      device.model,
+      device.status,
+      device.assigned_user?.login,
+      device.assigned_user?.name,
+    ]),
+  ];
+  return values.some((value) => String(value || "").toLocaleLowerCase().includes(query));
+}
+
 function renderBacklogPreview(payload) {
   const requests = Array.isArray(payload.requests) ? payload.requests : (payload.requests = []);
+  const query = importReviewSearchQuery();
+  const visibleRequests = requests.filter((request) => importReviewMatches(request, query));
   const included = requests.filter((request) => request.included !== false);
   $("#importVerificationWarnings").hidden = true;
   $("#importPreviewTitle").textContent = `${included.length} undeployed device${included.length === 1 ? "" : "s"}`;
   const backlogRange = `${payload.start_date} to ${payload.end_date}${payload.include_today ? " · including today" : ""}`;
   $("#importPreviewSubtitle").textContent = csvImport() ? backlogRange : `${payload.sheet} · ${backlogRange}`;
   $("#importPreviewCount").textContent = `${included.length} selected`;
-  const rows = requests.map((request, index) => {
+  const rows = visibleRequests.map((request, index) => {
     const options = ALM_IMPORT_STATUS_OPTIONS.Deployments;
     const notAttending = request.attending === false;
     const usernameOccurrence = Number(request.username_occurrence || 0);
@@ -5962,15 +6100,17 @@ function renderBacklogPreview(payload) {
     </div>`;
   }).join("");
   const counts = payload.counts || {};
-  const emptyMessage = Number(counts.already_deployed || 0) > 0
+  const emptyMessage = query
+    ? "No review rows match your search."
+    : Number(counts.already_deployed || 0) > 0
     ? "Every matching row is already marked Deployed."
     : Number(counts.today_excluded || 0) > 0 && !payload.include_today
       ? "No prior days matched. Include today to check today's rows."
       : "No undeployed devices were found in this range.";
   const allIncluded = requests.length > 0 && included.length === requests.length;
   $("#importPreviewList").innerHTML = rows
-    ? `<section class="import-preview-section"><div class="import-group-heading"><div><strong>Undeployed devices</strong><small>${included.length} of ${requests.length} selected</small></div><div class="import-group-actions"><button class="text-button" type="button" data-backlog-toggle>${iconMarkup(allIncluded ? "square-minus" : "list-checks")}<span>${allIncluded ? "Deselect all deployments" : "Select all deployments"}</span></button></div></div>${rows}</section>`
-    : `<div class="import-empty">${iconMarkup("search-x")}<strong>${escapeHtml(emptyMessage)}</strong><small>Try a wider date range or include today.</small></div>`;
+    ? `<section class="import-preview-section"><div class="import-group-heading"><div><strong>Undeployed devices</strong><small>${query ? `${visibleRequests.length} shown · ` : ""}${included.length} of ${requests.length} selected</small></div><div class="import-group-actions"><button class="text-button" type="button" data-backlog-toggle>${iconMarkup(allIncluded ? "square-minus" : "list-checks")}<span>${allIncluded ? "Deselect all deployments" : "Select all deployments"}</span></button></div></div>${rows}</section>`
+    : `<div class="import-empty">${iconMarkup("search-x")}<strong>${escapeHtml(emptyMessage)}</strong>${query ? "" : "<small>Try a wider date range or include today.</small>"}</div>`;
   $("#importPreviewList").querySelectorAll("[data-backlog-status]").forEach((select) => select.addEventListener("change", () => {
     const request = requests.find((item) => item.id === select.dataset.backlogStatus);
     if (request && request.status !== select.value) {
@@ -6113,19 +6253,28 @@ function renderImportPreview() {
       detail: "Pending return serials",
     },
   ];
+  const query = importReviewSearchQuery();
   const manualReturnEntries = payload.requests.filter((request) =>
-    importDeploymentNeedsManualReturn(request, payload),
+    importDeploymentNeedsManualReturn(request, payload) && importReviewMatches(request, query),
   );
+  const returnedSerialsMarkup = returnedSerialEditorMarkup(payload);
   const manualReturnSection = manualReturnEntries.length
     ? `<div class="import-manual-return-section">
-        <div class="import-manual-return-heading"><div><strong>Missing return details</strong><small>These users have no returned or pending-return serial in the workbook. Add one here, or use a PC Toolkit suggestion when available.</small></div><span>${manualReturnEntries.length}</span></div>
+        <div class="import-manual-return-heading"><div><strong>Missing return details</strong><small>Match serials already on hand, choose a device from PC Toolkit, or enter the return directly.</small></div><span>${manualReturnEntries.length} to resolve</span></div>
+        ${returnedSerialsMarkup}
         <div class="import-manual-return-list">${manualReturnEntries.map((request) => manualReturnEditorMarkup(request, payload)).join("")}</div>
       </div>`
     : "";
-  $("#importPreviewList").innerHTML = returnedSerialEditorMarkup(payload) + manualReturnSection + groups.map((group) => {
-    const requests = payload.requests.filter((request) => request.group === group.key);
+  $("#importPreviewList").innerHTML = manualReturnSection + (manualReturnEntries.length ? "" : returnedSerialsMarkup) + groups.map((group) => {
+    const requests = payload.requests.filter((request) => request.group === group.key && importReviewMatches(request, query));
     const missingUsernameWarnings = group.key === "Deployments"
       ? (Array.isArray(payload.warnings?.missing_username_deployments) ? payload.warnings.missing_username_deployments : [])
+        .filter((warning) => !warning.added_request_id
+          || !payload.requests.some((request) => request.id === warning.added_request_id))
+        .filter((warning) => importReviewMatches({
+          ...warning,
+          serials: [warning.serial],
+        }, query))
       : [];
     if (!requests.length && !missingUsernameWarnings.length) return "";
     const selectedCount = requests.filter((request) => request.included !== false).length;
@@ -6175,14 +6324,12 @@ function renderImportPreview() {
           <input type="checkbox" data-import-include="${escapeHtml(request.id)}" ${isIncluded ? "checked" : ""}>
           <span>${index + 1}</span>
         </label>
-        <div><small class="import-field-title">${isDeployment ? "Deployment serial" : isReturnedDevice ? "Returned device" : "Pending return"}</small><strong>${escapeHtml(request.serials[0])}</strong>${request.device_allocation ? `<small class="import-device-allocation">${escapeHtml(request.device_allocation)}</small>` : ""}${isDeployment && request.new_asset_status ? `<small class="import-device-status">New asset status: ${escapeHtml(request.new_asset_status)}</small>` : ""}${pcToolkitImportMarkup(request, { loading: payload.pc_toolkit_loading })}</div>
+        <div><small class="import-field-title">${isDeployment ? "Deployment serial" : isReturnedDevice ? "Returned device" : "Pending return"}</small><strong>${escapeHtml(request.serials[0])}</strong>${request.device_allocation ? `<small class="import-device-allocation">${escapeHtml(request.device_allocation)}</small>` : ""}${isDeployment && request.new_asset_status ? `<small class="import-device-status">${escapeHtml(request.new_asset_status)}</small>` : ""}${pcToolkitImportMarkup(request, { loading: payload.pc_toolkit_loading })}</div>
         ${personColumn}
         <div>${statusControl}${isIncluded ? validation : "<small>Do not deploy</small>"}${editable}</div>
       </div>`;
     }).join("");
-    const missingUsernameWarning = missingUsernameWarnings.length
-      ? `<div class="import-data-warning" role="status"><div class="import-data-warning-heading">${iconMarkup("user-round-x")}<strong>Deployment serial${missingUsernameWarnings.length === 1 ? "" : "s"} without a username</strong></div><small>These rows have no username in the Username column.</small><ul>${missingUsernameWarnings.map((warning) => `<li>${escapeHtml(warning.serial)} · row ${escapeHtml(warning.row_number)} · ${escapeHtml(warning.date)}</li>`).join("")}</ul></div>`
-      : "";
+    const missingUsernameWarning = missingUsernameEditorMarkup(missingUsernameWarnings);
     const bulkStatusOptions = ALM_IMPORT_STATUS_OPTIONS[group.key] || [];
     const bulkStatusControl = bulkStatusOptions.length
       ? `<select data-import-status-all="${escapeHtml(group.key)}" aria-label="Set status for all ${escapeHtml(group.key.toLowerCase())}">
@@ -6209,6 +6356,57 @@ function renderImportPreview() {
     state.importReturnedSerials = returnedSerialInput.value;
     scheduleImportDraftSave();
   });
+  const addMissingUsername = (warningId) => {
+    const warnings = Array.isArray(payload.warnings?.missing_username_deployments)
+      ? payload.warnings.missing_username_deployments
+      : [];
+    const warning = warnings.find((item) => missingUsernameWarningId(item) === warningId);
+    if (!warning) return;
+    const input = $("#importPreviewList").querySelector(`[data-import-missing-user="${CSS.escape(warningId)}"]`);
+    const username = String(input?.value || warning.username_input || "").trim();
+    warning.username_input = username;
+    if (username.length < 2) {
+      warning.error = "Enter the receiving user’s username.";
+      renderImportPreview();
+      return;
+    }
+    if (payload.requests.some((request) => (request.serials || []).some((serial) => pcToolkitKey(serial) === pcToolkitKey(warning.serial)))) {
+      warning.error = "That serial is already included in this review.";
+      renderImportPreview();
+      return;
+    }
+    recordImportEdit();
+    const request = missingUsernameDeploymentRequest(warning, username);
+    payload.requests.push(request);
+    warning.added_request_id = request.id;
+    warning.error = "";
+    renderImportPreview();
+    updateImportPrepareButton(payload);
+    saveCurrentImportDraft();
+    void validateImportPreview([request]);
+    void enrichImportPreview(payload, { requests: [request] });
+  };
+  $("#importPreviewList").querySelectorAll("[data-import-missing-user]").forEach((input) => {
+    input.addEventListener("input", () => {
+      const warnings = Array.isArray(payload.warnings?.missing_username_deployments)
+        ? payload.warnings.missing_username_deployments
+        : [];
+      const warning = warnings.find((item) => missingUsernameWarningId(item) === input.dataset.importMissingUser);
+      if (!warning) return;
+      warning.username_input = input.value;
+      warning.error = "";
+      input.closest("[data-import-missing-user-row]")?.querySelector(".import-missing-user-error")?.remove();
+      scheduleImportDraftSave();
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      addMissingUsername(input.dataset.importMissingUser);
+    });
+  });
+  $("#importPreviewList").querySelectorAll("[data-import-missing-user-add]").forEach((button) => button.addEventListener("click", () => {
+    addMissingUsername(button.dataset.importMissingUserAdd);
+  }));
   $("#importPreviewList").querySelectorAll("[data-match-returned-serials]").forEach((button) => button.addEventListener("click", () => {
     const possibleMatches = returnedSerialMatchCandidates(payload);
     if (!possibleMatches.length) {
@@ -8089,6 +8287,9 @@ function bindEvents() {
   $("#undoImportButton").addEventListener("click", undoImportEdit);
   $("#redoImportButton").addEventListener("click", redoImportEdit);
   $("#clearImportStatusesButton").addEventListener("click", clearImportStatuses);
+  $("#importPreviewSearchInput").addEventListener("input", () => {
+    if (state.importPreview) renderImportPreview();
+  });
   elements.reviewButton.addEventListener("click", openReview);
   $("#reviewDialog form").addEventListener("submit", (event) => {
     if (event.submitter?.value === "cancel") return;

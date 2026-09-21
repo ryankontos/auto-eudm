@@ -1556,11 +1556,28 @@ class WorkbookImport:
                         continue
                     if not inventory.looks_like_serial(row.deployment_serial):
                         continue
+                    deployment_serial, suffix_status = inventory.serial_and_status_hint(
+                        row.deployment_serial
+                    )
+                    status_hint = row.deployment_status_hint or suffix_status
                     missing_username_deployments.append(
                         {
                             "row_number": row.row_number,
                             "date": chosen_date.isoformat(),
-                            "serial": str(row.deployment_serial).strip(),
+                            "serial": deployment_serial,
+                            "status": status_hint or "",
+                            "status_preselected": bool(status_hint),
+                            "device_allocation": row.device_allocation or "",
+                            "new_asset_status": row.new_asset_status or "",
+                            "has_returned_device_serial": inventory.looks_like_serial(
+                                row.returned_device_serial
+                            ),
+                            "has_pending_return_serial": inventory.looks_like_serial(
+                                row.pending_return_serial
+                            ),
+                            "new_joiner": row.new_joiner,
+                            "first_name": row.first_name or "",
+                            "last_name": row.last_name or "",
                         }
                     )
         if not actions and not missing_username_deployments:
@@ -1641,6 +1658,9 @@ class WorkbookImport:
             request["has_returned_device_serial"] = action.has_returned_device_serial
             request["has_pending_return_serial"] = action.has_pending_return_serial
             request["new_joiner"] = action.new_joiner
+            request["deployment_date"] = (
+                action.deployment_date.isoformat() if action.deployment_date else ""
+            )
             requests.append(request)
         requests.sort(
             key=lambda request: 0

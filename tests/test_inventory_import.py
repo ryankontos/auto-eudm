@@ -165,6 +165,7 @@ class ImportActionTests(unittest.TestCase):
                 ("Pending returns", "PENDING123"),
             ],
         )
+        self.assertTrue(all(action.deployment_date == self.selected_date for action in actions))
         self.assertFalse(ignored)
 
     def test_status_hint_preselects_only_when_a_suffix_is_present(self) -> None:

@@ -171,6 +171,7 @@ class Action:
     first_name: str | None = None
     last_name: str | None = None
     status_preselected: bool = False
+    deployment_date: date | None = None
 
 
 def normalized_header(value: Any) -> str:
@@ -884,6 +885,7 @@ def build_actions(
                     first_name=row.first_name,
                     last_name=row.last_name,
                     status_preselected=bool(row.deployment_status_hint or deployment_status_hint),
+                    deployment_date=row.deployment_date,
                 ))
             else:
                 ignored["Deployment serial is blank or invalid"] += 1
@@ -899,6 +901,7 @@ def build_actions(
                     first_name=row.first_name,
                     last_name=row.last_name,
                     status_preselected=bool(row.returned_device_status_hint or returned_device_status_hint),
+                    deployment_date=row.deployment_date,
                 ))
             else:
                 ignored["Returned-device serial is blank or invalid"] += 1
@@ -913,6 +916,7 @@ def build_actions(
                     first_name=row.first_name,
                     last_name=row.last_name,
                     status_preselected=True,
+                    deployment_date=row.deployment_date,
                 ))
             else:
                 ignored["Pending-return serial is blank or invalid"] += 1

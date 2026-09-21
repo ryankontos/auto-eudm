@@ -186,6 +186,10 @@ class WorkbookUploadTests(unittest.TestCase):
             [request["serials"][0] for request in payload["requests"]],
             ["SERIAL123", "SERIAL456"],
         )
+        self.assertEqual(
+            [request["deployment_date"] for request in payload["requests"]],
+            ["2025-02-03", "2025-02-04"],
+        )
         self.assertEqual(payload["dates"], ["2025-02-03", "2025-02-04"])
 
     def test_workbook_prepare_rejects_duplicates_across_dates(self) -> None:
@@ -392,10 +396,13 @@ class WorkbookUploadTests(unittest.TestCase):
         payload = workbook.prepare("Sheet", "2025-02-03", "deployments")
 
         self.assertEqual(payload["requests"], [])
-        self.assertEqual(
-            payload["warnings"]["missing_username_deployments"],
-            [{"row_number": 2, "date": "2025-02-03", "serial": "SERIAL123"}],
-        )
+        warning = payload["warnings"]["missing_username_deployments"][0]
+        self.assertEqual(warning["row_number"], 2)
+        self.assertEqual(warning["date"], "2025-02-03")
+        self.assertEqual(warning["serial"], "SERIAL123")
+        self.assertFalse(warning["status_preselected"])
+        self.assertFalse(warning["has_returned_device_serial"])
+        self.assertFalse(warning["has_pending_return_serial"])
 
     def test_backlog_filters_rows_and_labels_duplicate_username_occurrences(self) -> None:
         rows = [
