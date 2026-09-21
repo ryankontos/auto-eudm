@@ -2320,8 +2320,8 @@ input:hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var
 .pc-toolkit-import-warning { color: var(--amber); }
 .pc-toolkit-import-danger { color: var(--red); }
 .pc-toolkit-import-complete { color: var(--green); }
-.pc-toolkit-return-candidates { display: grid; margin: 8px 0 2px; border-top: 1px solid color-mix(in srgb, var(--amber-border) 40%, var(--line)); border-bottom: 1px solid color-mix(in srgb, var(--amber-border) 40%, var(--line)); }
-.pc-toolkit-return-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 0 5px; }
+.pc-toolkit-return-candidates { display: grid; max-height: 280px; margin: 8px 0 2px; overflow-y: auto; border-top: 1px solid color-mix(in srgb, var(--amber-border) 40%, var(--line)); border-bottom: 1px solid color-mix(in srgb, var(--amber-border) 40%, var(--line)); }
+.pc-toolkit-return-heading { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 0 5px; background: var(--surface-raised); }
 .pc-toolkit-return-heading span { color: var(--ink); font-size: 12px; font-weight: 700; }
 .pc-toolkit-return-state { display: grid; gap: 2px; margin: 8px 0 2px; padding: 8px 9px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); background: var(--surface-alt); }
 .pc-toolkit-return-state strong { color: var(--ink); font-size: 12px; }

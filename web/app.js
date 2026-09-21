@@ -5453,17 +5453,65 @@ function importDeploymentNeedsManualReturn(request, payload) {
   return !request.has_returned_device_serial && !request.has_pending_return_serial;
 }
 
-function pcToolkitReturnCandidates(request, { limit = 3 } = {}) {
+function pcToolkitUserDevices(request) {
+  const result = request?.pc_toolkit?.user;
+  if (!result) return [];
+  const devices = [result.primary, ...(Array.isArray(result.devices) ? result.devices : [])]
+    .filter(Boolean);
+  const seen = new Set();
+  return devices.filter((device) => {
+    const key = pcToolkitKey(device?.serial)
+      || [device?.name, device?.model, device?.status].map(pcToolkitKey).filter(Boolean).join("|");
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function pcToolkitDevicePeople(device) {
+  return [
+    device?.assigned_user,
+    device?.used_by,
+    ...(Array.isArray(device?.primary_users) ? device.primary_users : []),
+    ...(Array.isArray(device?.profile_users) ? device.profile_users : []),
+    ...(Array.isArray(device?.people)
+      ? device.people.filter((person) => /used by|primary|profile/i.test(String(person?.role || "")))
+      : []),
+  ].filter((person) => person && typeof person === "object");
+}
+
+function pcToolkitDeviceMatchesUser(device, username) {
+  const wanted = pcToolkitKey(username);
+  if (!wanted) return true;
+  const people = pcToolkitDevicePeople(device);
+  const identifiers = people
+    .flatMap((person) => [person.login, person.userId, person.user_id, person.loginID, person.username])
+    .map(pcToolkitKey)
+    .filter(Boolean);
+  if (identifiers.length) return identifiers.includes(wanted);
+  const names = people.map((person) => pcToolkitKey(person.name || person.fullName)).filter(Boolean);
+  return !names.length || names.includes(wanted);
+}
+
+function pcToolkitDeviceIsDeployed(device) {
+  const status = pcToolkitKey(device?.status);
+  if (device?.active === false) return false;
+  if (["delete", "deleted", "disposed", "retired"].includes(status) || status.includes("pending return")) return false;
+  // PC Toolkit uses several deployed labels (for example, "Deployed - New
+  // Stock" and "Deployed to User"). They all describe a device currently
+  // deployed; a literal equality check silently dropped those records.
+  return status.startsWith("deployed");
+}
+
+function pcToolkitReturnCandidates(request, { limit = 0 } = {}) {
   const deploymentSerial = pcToolkitKey(request.serials?.[0] || request.serial);
   const username = pcToolkitKey(request.user || request.username);
-  const candidates = (request.pc_toolkit?.user?.devices || []).filter((device) => {
+  const candidates = pcToolkitUserDevices(request).filter((device) => {
     const serial = pcToolkitKey(device?.serial);
-    const assigned = pcToolkitKey(device?.assigned_user?.login);
-    return device?.active !== false
-      && pcToolkitKey(device?.status) === "deployed"
+    return pcToolkitDeviceIsDeployed(device)
       && serial
       && serial !== deploymentSerial
-      && (!assigned || !username || assigned === username);
+      && pcToolkitDeviceMatchesUser(device, username);
   });
   return limit > 0 ? candidates.slice(0, limit) : candidates;
 }
@@ -5471,14 +5519,13 @@ function pcToolkitReturnCandidates(request, { limit = 3 } = {}) {
 function pcToolkitPendingReturnDevices(request) {
   const deploymentSerial = pcToolkitKey(request.serials?.[0] || request.serial);
   const username = pcToolkitKey(request.user || request.username);
-  return (request.pc_toolkit?.user?.devices || []).filter((device) => {
+  return pcToolkitUserDevices(request).filter((device) => {
     const serial = pcToolkitKey(device?.serial);
-    const assigned = pcToolkitKey(device?.assigned_user?.login);
     return device?.active !== false
       && pcToolkitKey(device?.status).includes("pending return")
       && serial
       && serial !== deploymentSerial
-      && (!assigned || !username || assigned === username);
+      && pcToolkitDeviceMatchesUser(device, username);
   }).slice(0, 2);
 }
 
@@ -5768,8 +5815,8 @@ function manualReturnEditorMarkup(source, payload) {
       </div>`
     : "";
   const statusOptions = manualReturnStatusOptions();
-  const suggestedDevices = pcToolkitReturnCandidates(source);
-  const visibleDevices = suggestedDevices.slice(0, 3).map((device) => ({ device, pending: false }));
+  const suggestedDevices = pcToolkitReturnCandidates(source, { limit: 0 });
+  const visibleDevices = suggestedDevices.map((device) => ({ device, pending: false }));
   const toolkitEnabled = state.preferences?.pc_toolkit_enabled === true;
   const toolkitChecked = source.pc_toolkit_checked === true && !source.pc_toolkit_loading;
   const candidateMarkup = !added && visibleDevices.length
