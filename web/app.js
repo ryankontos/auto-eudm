@@ -4273,6 +4273,12 @@ function resetImportDialog(mode = state.importMode || "deploy") {
   $("#backImportButton").hidden = true;
   $("#prepareImportButton").disabled = true;
   setButtonLabel("#prepareImportButton", "Review import");
+  const importPrepareHint = $("#importPrepareHint");
+  if (importPrepareHint) {
+    importPrepareHint.textContent = "";
+    importPrepareHint.hidden = true;
+    importPrepareHint.dataset.state = "";
+  }
   $("#importError").hidden = true;
   updateImportHistoryControls();
   renderImportModeOptions();
@@ -5340,14 +5346,36 @@ function renderImportVerificationWarnings(payload = state.importPreview) {
 
 function updateImportPrepareButton(payload = state.importPreview) {
   if (!payload) return;
+  const button = $("#prepareImportButton");
+  const hint = $("#importPrepareHint");
+  const serialLabel = (request) => String(request?.serials?.[0] || request?.serial || "row").trim() || "row";
+  const requestLabels = (requests, noun = "row") => {
+    const labels = [...new Set(requests.map(serialLabel))];
+    if (!labels.length) return noun;
+    const shown = labels.slice(0, 3).join(", ");
+    return labels.length > 3 ? `${shown} and ${labels.length - 3} more` : shown;
+  };
+  const setHint = (message, stateName = "blocked") => {
+    if (!hint) return;
+    hint.textContent = message;
+    hint.hidden = !message;
+    hint.dataset.state = stateName;
+  };
   if (payload.mode === "backlog") {
     const selected = payload.requests.filter((request) => request.included !== false);
     const checking = selected.some((request) => !["valid", "failed"].includes(request.import_validation));
     const verifiedCount = selected.filter((request) => ["valid", "failed"].includes(request.import_validation)).length;
-    const missingStatus = selected.some((request) => !request.status);
-    const invalid = selected.some((request) => request.import_validation !== "valid");
-    const button = $("#prepareImportButton");
+    const missingStatusRequests = selected.filter((request) => !request.status);
+    const invalidRequests = selected.filter((request) => request.import_validation !== "valid");
+    const missingStatus = missingStatusRequests.length > 0;
+    const invalid = invalidRequests.length > 0;
     button.disabled = !selected.length || checking || missingStatus || invalid;
+    const reasons = [];
+    if (!selected.length) reasons.push("Select at least one undeployed device to add.");
+    if (checking) reasons.push(`Waiting for verification on ${selected.length - verifiedCount} device${selected.length - verifiedCount === 1 ? "" : "s"}.`);
+    if (missingStatus) reasons.push(`Choose a deployment status for: ${requestLabels(missingStatusRequests, "device")}.`);
+    if (invalid) reasons.push(`Fix or exclude invalid device${invalidRequests.length === 1 ? "" : "s"}: ${requestLabels(invalidRequests, "device")}.`);
+    setHint(reasons.join(" ") || `Ready to add ${selected.length} device${selected.length === 1 ? "" : "s"}.`, reasons.length ? "blocked" : "ready");
     setButtonLabel(button, checking
       ? `Verifying ${verifiedCount}/${selected.length}…`
       : missingStatus
@@ -5362,13 +5390,21 @@ function updateImportPrepareButton(payload = state.importPreview) {
   const selected = payload.requests.filter((request) => request.included !== false);
   const checking = selected.some((request) => request.import_validation === "checking" || !request.import_validation);
   const verifiedCount = selected.filter((request) => ["valid", "failed"].includes(request.import_validation)).length;
-  const missingStatus = selected.some((request) => ALM_IMPORT_STATUS_OPTIONS[request.group] && !request.status);
+  const missingStatusRequests = selected.filter((request) => ALM_IMPORT_STATUS_OPTIONS[request.group] && !request.status);
+  const missingStatus = missingStatusRequests.length > 0;
   const missingLocation = selected.some((request) => request.group === "Returned devices")
     && !hasCompleteLocation(state.importLocation);
-  const invalid = selected.some((request) => request.import_validation !== "valid");
+  const invalidRequests = selected.filter((request) => request.import_validation !== "valid");
+  const invalid = invalidRequests.length > 0;
   const valid = selected.filter((request) => request.import_validation === "valid").length;
-  const button = $("#prepareImportButton");
   button.disabled = !selected.length || checking || missingStatus || missingLocation || invalid;
+  const reasons = [];
+  if (!selected.length) reasons.push("Select at least one row to add.");
+  if (checking) reasons.push(`Waiting for verification on ${selected.length - verifiedCount} row${selected.length - verifiedCount === 1 ? "" : "s"}.`);
+  if (missingStatus) reasons.push(`Choose a status for: ${requestLabels(missingStatusRequests)}.`);
+  if (missingLocation) reasons.push("Complete the destination in Options for returned devices.");
+  if (invalid) reasons.push(`Fix or exclude invalid row${invalidRequests.length === 1 ? "" : "s"}: ${requestLabels(invalidRequests)}.`);
+  setHint(reasons.join(" ") || `Ready to add ${valid} request${valid === 1 ? "" : "s"}.`, reasons.length ? "blocked" : "ready");
   setButtonLabel(button, checking
     ? `Verifying ${verifiedCount}/${selected.length}…`
     : missingStatus

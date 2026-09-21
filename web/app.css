@@ -1967,6 +1967,17 @@ input:hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var
   border-top: 1px solid var(--line);
   background: transparent;
 }
+.import-prepare-hint {
+  flex: 1 1 320px;
+  min-width: 220px;
+  margin-right: auto;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+  text-align: left;
+}
+.import-prepare-hint[data-state="blocked"] { color: var(--amber-text); }
+.import-prepare-hint[data-state="ready"] { color: var(--green); }
 
 .review-card,
 .progress-card { display: flex; flex-direction: column; }
