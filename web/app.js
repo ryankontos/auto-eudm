@@ -5448,7 +5448,7 @@ function manualReturnRequest(source, serial, type, status) {
     user_validation_error: "",
     location: pendingReturn ? null : structuredClone(state.importLocation || preferredImportLocation()),
     group: pendingReturn ? "Pending returns" : "Returned devices",
-    source: `${state.workbook?.filename || "ALM Workbook"} · ${$("#sheetInput")?.value || "Workbook"} · missing return for row ${source.row_number}`,
+    source: `${state.workbook?.filename || "ALM Workbook"} · ${$("#sheetInput")?.value || "Workbook"} · missing return`,
     device_allocation: source.device_allocation || "",
     first_name: source.first_name || "",
     last_name: source.last_name || "",
@@ -5511,6 +5511,11 @@ function manualReturnEditorMarkup(source, payload) {
     .map((value) => String(value || "").trim())
     .filter(Boolean)
     .join(" ") || username || "User";
+  const deploymentSerial = String(source.serials?.[0] || source.serial || "").trim();
+  const deploymentModel = String(pcToolkitModelFor(source) || "").trim();
+  const deploymentMarkup = deploymentSerial || deploymentModel
+    ? `<div class="import-manual-return-deployment"><small>Deployed device</small>${deploymentSerial ? `<strong>${escapeHtml(deploymentSerial)}</strong>` : ""}${deploymentModel ? `<span>${escapeHtml(deploymentModel)}</span>` : `<span>Model not recorded</span>`}</div>`
+    : "";
   const statusOptions = manualReturnStatusOptions();
   const suggestedDevices = pcToolkitReturnCandidates(source);
   const visibleDevices = suggestedDevices.slice(0, 3).map((device) => ({ device, pending: false }));
@@ -5519,7 +5524,7 @@ function manualReturnEditorMarkup(source, payload) {
   const candidateMarkup = !added && visibleDevices.length
     ? `<div class="pc-toolkit-return-candidates"><div class="pc-toolkit-return-heading"><span>Possible previous devices</span><small>PC Toolkit</small></div>${visibleDevices.map(({ device, pending }) => {
         const model = device.model || device.name || "Device";
-        return `<div class="pc-toolkit-return-candidate"><span><strong>${escapeHtml(device.serial)}</strong><small>${escapeHtml(model)}</small></span>${pending ? `<span class="pc-toolkit-return-current-state">Already ${escapeHtml(device.status || "Pending Return")}</span>` : `<span><button class="text-button" type="button" data-pc-toolkit-return-candidate="${escapeHtml(source.id)}" data-candidate-serial="${escapeHtml(device.serial)}" data-candidate-model="${escapeHtml(device.model || "")}" data-candidate-type="returned_devices">Returned</button><button class="text-button" type="button" data-pc-toolkit-return-candidate="${escapeHtml(source.id)}" data-candidate-serial="${escapeHtml(device.serial)}" data-candidate-model="${escapeHtml(device.model || "")}" data-candidate-type="pending_returns">Pending</button></span>`}</div>`;
+        return `<div class="pc-toolkit-return-candidate"><span><strong>${escapeHtml(device.serial)}</strong><small>${escapeHtml(model)} · <span class="pc-toolkit-return-device-status">Deployed</span></small></span>${pending ? `<span class="pc-toolkit-return-current-state">Already ${escapeHtml(device.status || "Pending Return")}</span>` : `<span><button class="text-button" type="button" data-pc-toolkit-return-candidate="${escapeHtml(source.id)}" data-candidate-serial="${escapeHtml(device.serial)}" data-candidate-model="${escapeHtml(device.model || "")}" data-candidate-type="returned_devices">Returned</button><button class="text-button" type="button" data-pc-toolkit-return-candidate="${escapeHtml(source.id)}" data-candidate-serial="${escapeHtml(device.serial)}" data-candidate-model="${escapeHtml(device.model || "")}" data-candidate-type="pending_returns">Pending</button></span>`}</div>`;
       }).join("")}</div>`
     : !added && toolkitEnabled && source.pc_toolkit_loading
       ? '<small class="pc-toolkit-return-checking"><span class="import-status-spinner" aria-hidden="true"></span>Checking PC Toolkit for a previous device…</small>'
@@ -5547,7 +5552,7 @@ function manualReturnEditorMarkup(source, payload) {
         <button class="button secondary compact" type="button" data-import-manual-add="${escapeHtml(source.id)}">Add to review</button>
       </div>${error}`;
   return `<div class="import-manual-return-entry" data-import-manual-source="${escapeHtml(source.id)}">
-    <div class="import-manual-return-entry-heading"><div><strong>${escapeHtml(name)}</strong><small>${escapeHtml(username || "No username")} · row ${escapeHtml(source.row_number)}</small></div><span>Neither return serial is listed</span></div>
+    <div class="import-manual-return-entry-heading"><div><strong>${escapeHtml(name)}</strong><small>${escapeHtml(username || "No username")}</small>${deploymentMarkup}</div><span>Neither return serial is listed</span></div>
     ${candidateMarkup}
     ${addedMarkup}
   </div>`;
