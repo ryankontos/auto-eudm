@@ -3084,6 +3084,15 @@ function renderServiceStatus(status, { populateSettings = false, notify = true }
     checkButton.disabled = busy;
     checkButton.textContent = status.checking ? "Checking…" : "Check";
   }
+  const headerCheckButton = $("#checkUpdatesHeaderButton");
+  if (headerCheckButton) {
+    headerCheckButton.disabled = busy;
+    headerCheckButton.setAttribute("aria-busy", String(Boolean(status.checking)));
+    headerCheckButton.querySelector("span").textContent = status.checking ? "Checking…" : "Check updates";
+    headerCheckButton.title = status.checking
+      ? "Checking GitHub for newer commits…"
+      : status.update_error || status.update_message || "Check GitHub for newer commits";
+  }
   const applyButton = $("#applyUpdateButton");
   if (applyButton) {
     applyButton.hidden = !changed;
@@ -3136,6 +3145,26 @@ async function refreshServiceStatus({ check = false, populateSettings = false } 
   } catch (_) {
     return null;
   }
+}
+
+async function checkForUpdates() {
+  const lastChecked = Number(state.serviceStatus?.last_checked || 0);
+  const started = await refreshServiceStatus({ check: true, populateSettings: true });
+  if (!started) {
+    toast("Could not check for AutoEUDM updates.", "error");
+    return;
+  }
+  const deadline = Date.now() + 75_000;
+  while (Date.now() < deadline) {
+    const status = await refreshServiceStatus();
+    if (status && !status.checking && Number(status.last_checked || 0) > lastChecked) {
+      if (status.update_error) toast(status.update_error, "error");
+      else if (!status.update_available) toast("AutoEUDM is up to date.", "success");
+      return;
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 1000));
+  }
+  toast("The update check is taking longer than expected. Its result will appear in Settings.", "info");
 }
 
 function waitForUpdatedServer(previousCommit) {
@@ -8341,7 +8370,8 @@ function bindEvents() {
   });
   $("#pairsInput").addEventListener("input", () => { $("#pairsError").hidden = true; });
   $("#settingsButton").addEventListener("click", openSettings);
-  $("#checkUpdatesButton").addEventListener("click", () => { void refreshServiceStatus({ check: true, populateSettings: true }); });
+  $("#checkUpdatesButton").addEventListener("click", () => { void checkForUpdates(); });
+  $("#checkUpdatesHeaderButton").addEventListener("click", () => { void checkForUpdates(); });
   $("#applyUpdateButton").addEventListener("click", applyServiceUpdate);
   $("#updateAvailableButton").addEventListener("click", applyServiceUpdate);
   $("#quitApplicationButton").addEventListener("click", quitApplication);
@@ -9002,7 +9032,7 @@ async function init() {
     state.connectionHeartbeatTimer = window.setInterval(checkConnection, 30_000);
     state.diagnosticsStatusTimer = window.setInterval(refreshDiagnosticsStatus, 5_000);
     await refreshServiceStatus();
-    state.serviceStatusTimer = window.setInterval(refreshServiceStatus, 60_000);
+    state.serviceStatusTimer = window.setInterval(refreshServiceStatus, 15_000);
     renderAll();
   } catch (error) {
     document.body.innerHTML = `<main class="empty-state"><h1>AutoEUDM could not start</h1><p>${escapeHtml(error.message)}</p></main>`;

@@ -16,7 +16,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 CONTROL_FILE = ROOT / "results" / "auto-eudm-service-control.json"
 SERVICE_LABEL = "com.ryankontos.auto-eudm"
-UPDATE_INTERVAL_SECONDS = 300
+UPDATE_INTERVAL_SECONDS = 60
 GIT_TIMEOUT_SECONDS = 30
 
 

@@ -21,6 +21,7 @@
     <div class="product-name">AutoEUDM</div>
     <div class="header-actions">
       <button id="updateAvailableButton" class="button update-available-button" type="button" hidden><i data-lucide="download"></i><span>Update app</span></button>
+      <button id="checkUpdatesHeaderButton" class="button secondary compact" type="button" aria-label="Check for updates" title="Check GitHub for newer commits"><i data-lucide="refresh-cw"></i><span>Check updates</span></button>
       <button id="connectionStatus" class="connection-status" type="button" aria-live="polite" aria-label="Authenticate with Helix" hidden>
         <span class="connection-status-dot" aria-hidden="true"></span>
         <span class="connection-status-service">Helix</span>
@@ -584,7 +585,7 @@
         <p id="diagnosticsStatus" class="diagnostics-status">The capture is kept only while AutoEUDM is running.</p>
         <div class="service-settings-card">
           <div class="service-settings-heading">
-            <div><strong>Background app</strong><small>AutoEUDM runs without keeping a terminal window open.</small></div>
+            <div><strong>Background app</strong><small>Runs in the background and checks GitHub for newer commits automatically.</small></div>
             <label class="service-branch-field">Update branch<select id="updateBranchInput" aria-label="Git branch to check for updates"></select></label>
           </div>
           <div class="service-update-row">

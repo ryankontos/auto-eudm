@@ -238,6 +238,8 @@ textarea:focus-visible {
 .update-available-button:focus-visible { border-color: rgba(255, 206, 124, .9); color: #fff1d3; background: rgba(246, 178, 68, .2); }
 .update-available-button .lucide { width: 14px; height: 14px; }
 .update-available-button:disabled { opacity: .65; cursor: wait; }
+#checkUpdatesHeaderButton[aria-busy="true"] svg { animation: activity-spin .8s linear infinite; }
+@media (prefers-reduced-motion: reduce) { #checkUpdatesHeaderButton[aria-busy="true"] svg { animation: none; } }
 .connection-status { display: inline-flex; align-items: center; gap: 7px; min-height: var(--control-height-compact); padding: 5px 10px; border: 1px solid rgba(217, 223, 228, .28); border-radius: var(--control-radius); color: var(--header-muted); background: rgba(255, 255, 255, .055); font: inherit; font-size: 11px; line-height: 1; white-space: nowrap; cursor: pointer; transition: border-color .14s ease, background-color .14s ease, color .14s ease; }
 .connection-status:hover:not(:disabled) { border-color: rgba(255, 255, 255, .48); color: #fff; background: rgba(255, 255, 255, .11); }
 .connection-status:focus-visible { outline: 2px solid color-mix(in srgb, var(--header-accent) 75%, white); outline-offset: 2px; }
