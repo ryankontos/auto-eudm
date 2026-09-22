@@ -12,6 +12,7 @@ import signal
 import subprocess
 import sys
 import time
+from typing import Callable, TextIO
 import urllib.error
 import urllib.request
 import webbrowser
@@ -21,6 +22,14 @@ ROOT = Path(__file__).resolve().parent
 SRC = ROOT / "src"
 VENV = Path(os.environ.get("EUDM_VENV_DIR", str(ROOT / ".venv"))).expanduser()
 REQUIREMENTS = ROOT / "requirements"
+SERVICE_LOG = ROOT / "results" / "auto-eudm-service.log"
+
+
+def service_control_module(port: int) -> tuple[Path, Callable[[Path | None], str]]:
+    sys.path.insert(0, str(SRC))
+    from auto_eudm.local_service import consume_control_action, control_file_for_port
+
+    return control_file_for_port(port), consume_control_action
 
 
 def venv_python() -> Path:
@@ -225,12 +234,17 @@ def open_existing_web_ui(arguments: list[str]) -> bool:
             webbrowser.open(url)
         say(f"The web workspace is already running; opening {url}" if open_ui else "The web workspace is already running.")
         return True
-    if current and running == current:
+    expected_background = "--foreground" not in arguments
+    if current and running == current and runtime and runtime.get("background") is expected_background:
         if open_ui:
             webbrowser.open(url)
         say(f"The web workspace is already running; opening {url}" if open_ui else "The web workspace is already running.")
         return True
-    say("The running web workspace is from an older commit; restarting it…")
+    if current and running == current:
+        target_mode = "background service" if expected_background else "foreground server"
+        say(f"Switching the web workspace to its {target_mode}…")
+    else:
+        say("The running web workspace is from an older commit; restarting it…")
     shutdown = request_json(f"{url.rstrip('/')}/api/shutdown", method="POST")
     if shutdown is None and not stop_server_process(port, runtime.get("pid") if runtime else None):
         raise ValueError("Could not stop the older AutoEUDM server. Close its launcher window, then try again.")
@@ -262,19 +276,154 @@ def ensure_environment() -> Path:
     return python
 
 
+def service_arguments(arguments: list[str]) -> tuple[bool, bool, list[str]]:
+    service = "--service" in arguments
+    foreground = "--foreground" in arguments
+    forwarded = [value for value in arguments if value not in {"--service", "--foreground"}]
+    return service, foreground, forwarded
+
+
+def prepare_service_environment() -> tuple[Path, dict[str, str]]:
+    python = ensure_environment()
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(SRC) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    return python, env
+
+
+def _service_log() -> TextIO:
+    SERVICE_LOG.parent.mkdir(parents=True, exist_ok=True)
+    if SERVICE_LOG.exists() and SERVICE_LOG.stat().st_size > 2_000_000:
+        previous = SERVICE_LOG.with_suffix(".log.1")
+        try:
+            previous.unlink(missing_ok=True)
+            SERVICE_LOG.replace(previous)
+        except OSError:
+            pass
+    return SERVICE_LOG.open("a", encoding="utf-8")
+
+
+def supervise_service(arguments: list[str]) -> int:
+    host, port = web_target(arguments) or ("127.0.0.1", 8765)
+    control_file, consume_control_action = service_control_module(port)
+    control_file.parent.mkdir(parents=True, exist_ok=True)
+    control_file.unlink(missing_ok=True)
+    url = f"http://{host}:{port}/"
+    if web_ui_is_running(url):
+        say("The local web workspace is already running.")
+        return 0
+
+    while True:
+        python, env = prepare_service_environment()
+        env["AUTO_EUDM_SERVICE_CONTROL"] = str(control_file)
+        command = [
+            str(python), "-m", "auto_eudm.eudm_web",
+            *[value for value in arguments if value != "--no-open"],
+            "--no-open",
+        ]
+        say("Starting the background web service…")
+        with _service_log() as log:
+            process = subprocess.Popen(
+                command,
+                cwd=ROOT,
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+            )
+        restart = False
+        should_quit = False
+        while True:
+            action = consume_control_action(control_file)
+            if action:
+                if action == "quit":
+                    should_quit = True
+                elif action == "restart":
+                    restart = True
+                try:
+                    process.wait(timeout=15)
+                except subprocess.TimeoutExpired:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=5)
+                break
+            return_code = process.poll()
+            if return_code is not None:
+                if return_code == 0:
+                    return 0
+                if web_ui_is_running(url):
+                    say("Another AutoEUDM service already owns this local port.")
+                    return 0
+                say(f"The web process stopped with exit code {return_code}; restarting it…")
+                restart = True
+                break
+            time.sleep(0.25)
+        if should_quit:
+            say("AutoEUDM has stopped.")
+            return 0
+        if restart:
+            time.sleep(0.2)
+
+
+def start_background_service(arguments: list[str], python: Path, env: dict[str, str]) -> int:
+    target = web_target(arguments)
+    if target is None:
+        return fail("The local web server settings were invalid.")
+    host, port = target
+    url = f"http://{host}:{port}/"
+    command = [str(python), str(ROOT / "start_auto_eudm.py"), "--service", *arguments]
+    command = [value for value in command if value != "--foreground"]
+    log = _service_log()
+    try:
+        creation_flags = 0
+        popen_options: dict[str, object] = {}
+        if os.name == "nt":
+            creation_flags = getattr(subprocess, "DETACHED_PROCESS", 0x00000008) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+        else:
+            popen_options["start_new_session"] = True
+        subprocess.Popen(
+            command,
+            cwd=ROOT,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            creationflags=creation_flags,
+            **popen_options,
+        )
+    finally:
+        log.close()
+    if "--no-open" in arguments:
+        say("AutoEUDM is starting in the background.")
+        return 0
+    deadline = time.monotonic() + 40
+    while time.monotonic() < deadline:
+        if web_ui_is_running(url):
+            webbrowser.open(url)
+            say("AutoEUDM is running in the background.")
+            return 0
+        time.sleep(0.25)
+    return fail("The background web service did not become ready. Check results/auto-eudm-service.log.")
+
+
 def main() -> int:
     try:
+        is_service, foreground, arguments = service_arguments(sys.argv[1:])
         copy_environment_file()
-        if open_existing_web_ui(sys.argv[1:]):
+        if is_service:
+            return supervise_service(arguments)
+        if open_existing_web_ui(arguments):
             return 0
         if importlib.util.find_spec("venv") is None:
             return fail("Python was installed without the venv module. Reinstall Python 3 from python.org.")
-        python = ensure_environment()
-        env = os.environ.copy()
-        env["PYTHONPATH"] = str(SRC) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+        python, env = prepare_service_environment()
+        if not foreground and "--help" not in arguments and "-h" not in arguments:
+            return start_background_service(arguments, python, env)
         say("Opening the local request workspace…")
         completed = subprocess.run(
-            [str(python), "-m", "auto_eudm.eudm_web", *sys.argv[1:]],
+            [str(python), "-m", "auto_eudm.eudm_web", *arguments],
             cwd=ROOT,
             env=env,
             check=False,

@@ -11,12 +11,12 @@ from pathlib import Path
 import re
 import socket
 import subprocess
-import threading
 from typing import Any
 import urllib.parse
 
 from . import eudm_request as eudm
 from . import run_reporting
+from .local_service import LocalServiceManager
 from .web_models import Location, RequestSpec, validate_queue
 
 
@@ -236,8 +236,12 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
                 {
                     "commit_id": self.server.commit_id,  # type: ignore[attr-defined]
                     "pid": os.getpid(),
+                    "background": self.server.service_manager.supervised,  # type: ignore[attr-defined]
                 }
             )
+            return
+        if path == "/api/service":
+            self._json(self.server.service_manager.status())  # type: ignore[attr-defined]
             return
         if path == "/api/config":
             self._json(self.app.config_json())
@@ -425,12 +429,21 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
         path = parsed.path
         payload = self._read_json()
         if path == "/api/shutdown":
-            self._json({"stopping": True}, 202)
-            threading.Thread(
-                target=self.server.shutdown,
-                name="auto-eudm-shutdown",
-                daemon=True,
-            ).start()
+            self._json(self.server.service_manager.request_quit(), 202)  # type: ignore[attr-defined]
+            return
+        if path == "/api/service/check":
+            self._json(self.server.service_manager.request_check(), 202)  # type: ignore[attr-defined]
+            return
+        if path == "/api/service/update":
+            if self.app.jobs.active_job_count():
+                raise HTTPInputError(
+                    "Wait for active request submissions to finish before updating AutoEUDM.",
+                    409,
+                )
+            self._json(self.server.service_manager.request_update(), 202)  # type: ignore[attr-defined]
+            return
+        if path == "/api/service/quit":
+            self._json(self.server.service_manager.request_quit(), 202)  # type: ignore[attr-defined]
             return
         if path == "/api/connect":
             # PC Toolkit's real-browser transports intentionally keep Chrome
@@ -465,7 +478,20 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
             ))
             return
         if path == "/api/preferences":
-            self._json(self.app.save_preferences(payload))
+            previous = self.app.preferences_json()
+            saved = self.app.save_preferences(payload)
+            if (
+                "start_at_login" in payload
+                and bool(saved.get("start_at_login")) != bool(previous.get("start_at_login"))
+            ):
+                try:
+                    self.server.service_manager.set_start_at_login(  # type: ignore[attr-defined]
+                        bool(saved.get("start_at_login"))
+                    )
+                except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
+                    self.app.save_preferences({"start_at_login": bool(previous.get("start_at_login"))})
+                    raise eudm.EUDMError(f"Could not update the start at login setting: {exc}") from exc
+            self._json(saved)
             return
         if path == "/api/import-drafts":
             self._json({"drafts": self.app.save_import_draft(payload)})
@@ -617,3 +643,5 @@ class AutoEUDMServer(ThreadingHTTPServer):
         super().__init__(address, AutoEUDMHandler)
         self.app = app
         self.commit_id = repository_commit_id()
+        self.restart_requested = False
+        self.service_manager = LocalServiceManager(app, self)

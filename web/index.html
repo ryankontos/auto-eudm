@@ -20,6 +20,7 @@
   <header class="app-header">
     <div class="product-name">AutoEUDM</div>
     <div class="header-actions">
+      <button id="updateAvailableButton" class="button update-available-button" type="button" hidden><i data-lucide="download"></i><span>Update app</span></button>
       <button id="connectionStatus" class="connection-status" type="button" aria-live="polite" aria-label="Authenticate with Helix" hidden>
         <span class="connection-status-dot" aria-hidden="true"></span>
         <span class="connection-status-service">Helix</span>
@@ -581,6 +582,21 @@
           </div>
         </div>
         <p id="diagnosticsStatus" class="diagnostics-status">The capture is kept only while AutoEUDM is running.</p>
+        <div class="service-settings-card">
+          <div class="service-settings-heading">
+            <div><strong>Background app</strong><small>AutoEUDM runs without keeping a terminal window open.</small></div>
+            <label class="service-branch-field">Update branch<select id="updateBranchInput" aria-label="Git branch to check for updates"></select></label>
+          </div>
+          <div class="service-update-row">
+            <p id="serviceUpdateStatus" role="status">Checking for updates…</p>
+            <div class="service-update-actions">
+              <button id="checkUpdatesButton" class="button secondary compact" type="button">Check</button>
+              <button id="applyUpdateButton" class="button primary compact" type="button" hidden><i data-lucide="download"></i><span>Update AutoEUDM</span></button>
+            </div>
+          </div>
+          <label id="startAtLoginLabel" class="settings-checkbox service-login-checkbox"><input id="startAtLoginInput" type="checkbox"><span>Start AutoEUDM automatically when I log in</span></label>
+          <div class="service-quit-row"><small id="serviceRunMode">The local service is running in the background.</small><button id="quitApplicationButton" class="button secondary compact" type="button">Quit AutoEUDM</button></div>
+        </div>
       </section>
       <section data-settings-panel="validation" hidden>
         <label class="settings-checkbox"><input id="validateQuickImportInput" type="checkbox"><span>Verify serials and users in Quick import</span></label>

@@ -21,6 +21,7 @@ from . import eudm_inventory_import as inventory
 from . import eudm_request as eudm
 from . import run_reporting
 from .pc_toolkit import PCToolkitService, normalise_key as normalise_pc_toolkit_key
+from .local_service import current_branch, valid_branch_name
 from .workbook_debug import WorkbookLoadLog
 from .eudm_config import AppConfig
 from .web_models import (
@@ -847,6 +848,11 @@ class JobStore:
             raise eudm.EUDMError("That submission run was not found.")
         return job
 
+    def active_job_count(self) -> int:
+        with self.lock:
+            jobs = list(self.jobs.values())
+        return sum(not job.is_finished() for job in jobs)
+
     def history(self, limit: int = 50) -> list[dict[str, Any]]:
         with self.lock:
             live = [job.to_json() for job in self.jobs.values()]
@@ -1161,6 +1167,8 @@ class Application:
             "validate_workbook_import": True,
             "save_alm_import_drafts": True,
             "show_returned_serials_on_hand": True,
+            "update_branch": current_branch(),
+            "start_at_login": False,
             "pc_toolkit_enabled": False,
             "pc_toolkit_transport": "browser",
             "pc_toolkit_model_mappings": [],
@@ -1208,12 +1216,19 @@ class Application:
             "validate_workbook_import",
             "save_alm_import_drafts",
             "show_returned_serials_on_hand",
+            "start_at_login",
             "pc_toolkit_enabled",
         ):
             if key in raw and not isinstance(raw[key], bool):
                 raise eudm.EUDMError("A settings toggle had an invalid value.")
             if key in raw:
                 values[key] = raw[key]
+
+        if "update_branch" in raw:
+            branch = str(raw.get("update_branch") or "").strip()
+            if not valid_branch_name(branch):
+                raise eudm.EUDMError("Choose a valid Git branch to check for updates.")
+            values["update_branch"] = branch
 
         if "pc_toolkit_transport" in raw:
             transport = str(raw["pc_toolkit_transport"] or "").strip().casefold()

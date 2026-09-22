@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import os
 import socket
+import sys
 import threading
 import webbrowser
+from pathlib import Path
 
 from .bootstrap import ensure_runtime
 from .eudm_config import AppConfig
@@ -15,6 +18,8 @@ from . import run_reporting
 from .web_runtime import Application, open_existing_server
 from .web_server import AutoEUDMServer
 
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def main() -> int:
@@ -79,10 +84,10 @@ Examples:
             ) from exc
         raise
     print(f"AutoEUDM is ready at {url}", flush=True)
-    print(
-        "Keep this window open while using the web interface. Press Control-C to stop.",
-        flush=True,
-    )
+    if os.environ.get("AUTO_EUDM_SERVICE_CONTROL"):
+        print("AutoEUDM is running under its background service manager.", flush=True)
+    else:
+        print("Keep this window open while using the web interface. Press Control-C to stop.", flush=True)
     if not args.no_open:
         threading.Timer(0.5, lambda: webbrowser.open(url)).start()
     try:
@@ -92,6 +97,11 @@ Examples:
     finally:
         app.flush_pending_state()
         server.server_close()
+    if server.restart_requested:
+        os.execv(
+            sys.executable,
+            [sys.executable, str(ROOT / "eudm_web.py"), *sys.argv[1:]],
+        )
     return 0
 
 

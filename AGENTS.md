@@ -9,9 +9,10 @@ AutoEUDM is a local web UI I developed to speed up device-management work in EUD
 ## Project map
 
 - `eudm_web.py`: small web entry point.
-- `start_auto_eudm.py`: cross-platform startup, environment setup, and stale-server detection.
+- `start_auto_eudm.py`: launcher startup, background supervision, environment setup, and stale-server detection.
 - `src/auto_eudm/eudm_web.py`: local server startup.
 - `src/auto_eudm/web_server.py`: localhost HTTP API and static-file serving.
+- `src/auto_eudm/local_service.py`: background-service controls, macOS login launch agent, Git branch monitoring, and update/restart handling.
 - `src/auto_eudm/web_runtime.py`: queue, history, drafts, settings, verification cache, imports, searches, and submission jobs.
 - `src/auto_eudm/web_models.py`: request and workbook data models plus validation.
 - `src/auto_eudm/eudm_request.py`: authenticated EUDM operations and browser-session handoff.
@@ -34,6 +35,7 @@ AutoEUDM is a local web UI I developed to speed up device-management work in EUD
 - PC Toolkit requests, browser navigation, SSO/API responses, cache events, and exception chains are saved as credential-safe, schema-versioned JSON-lines in `results/pc-toolkit-logs/`; Settings can download the current session log. Response/request bodies and correlation IDs are retained for troubleshooting, while credential-bearing fields are redacted and oversized bodies carry a hash plus an explicit truncation marker.
 - PC Toolkit device lookups default to a real Chrome page using the same dedicated profile as sign-in. Puppeteer is an optional real-Chrome transport for machines where it is more reliable; Direct API remains an explicit fallback in Settings. Portal role/heartbeat authentication does not use a fabricated serial probe; the first real lookup validates the device API. Helix always authenticates first and explicitly pauses PC Toolkit before reauthentication so the optional service never holds the shared profile while Helix needs it. Browser-backed PC Toolkit bulk lookups run inside Chrome in concurrent batches of up to 60, retry only the failed subset, refresh the bearer token in-page, and may fall back to cached enrichment. The Puppeteer transport uses the tracked `puppeteer-core` dependency and `src/auto_eudm/pc_toolkit_puppeteer.cjs` JSON-lines bridge.
 - Submission jobs are asynchronous. Preserve queue state, progress, request IDs, and failed rows if the UI is closed while a job runs.
+- The command launchers start AutoEUDM as a detached background service. Its supervisor restarts the web process after updates; Settings can stop the service or enable launch at login. Update requests must use fast-forward Git pulls and refuse to overwrite a dirty checkout. Keep the service control file and all persistent user data under `results/`.
 - Workbook columns are selected by heading. ALM drafts must be saved while editing and removed when their requests enter the queue; late verification must not recreate a completed draft.
 - Validation remains active even when cached verification fills a result immediately.
 - PC Toolkit enriches Helix data but never replaces Helix validation or blocks submission. Its compact cache and automatically discovered model catalogue live in `results/pc-toolkit-cache.json`; model-to-status mappings live in settings.

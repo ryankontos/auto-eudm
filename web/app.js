@@ -32,6 +32,9 @@ const state = {
   notifiedJobs: new Set(),
   celebratedJobs: new Set(),
   connectionHeartbeatTimer: null,
+  serviceStatus: null,
+  serviceStatusTimer: null,
+  serviceUpdatePromptKey: "",
   liveOptionsLoaded: false,
   pasteLocation: null,
   pasteLocationResults: [],
@@ -3049,6 +3052,153 @@ async function refreshDiagnosticsStatus() {
   }
 }
 
+function renderServiceStatus(status, { populateSettings = false, notify = true } = {}) {
+  if (!status || typeof status !== "object") return;
+  state.serviceStatus = status;
+  const branch = String(status.branch || state.preferences?.update_branch || status.current_branch || "main");
+  const changed = Boolean(status.update_available);
+  const busy = Boolean(status.checking || status.updating);
+  const activeSubmissions = Number(status.active_submissions || 0);
+  const updateButton = $("#updateAvailableButton");
+  if (updateButton) {
+    updateButton.hidden = !changed;
+    updateButton.disabled = busy || activeSubmissions > 0;
+    updateButton.setAttribute("aria-busy", String(busy));
+    const label = status.updating ? "Updating…" : status.checking ? "Checking…" : "Update app";
+    updateButton.querySelector("span").textContent = label;
+    updateButton.title = activeSubmissions ? "Wait for active request submissions to finish before updating." : "Update AutoEUDM";
+  }
+  const statusText = $("#serviceUpdateStatus");
+  if (statusText) {
+    statusText.textContent = status.update_error
+      ? status.update_error
+      : changed && activeSubmissions > 0
+        ? `An update is ready on ${branch}. Finish active request submissions before applying it.`
+      : changed && status.working_tree_clean === false
+        ? `An update is ready on ${branch}. Commit or move local changes before applying it.`
+      : status.update_message || (busy ? "Checking for updates…" : `AutoEUDM is up to date on ${branch}.`);
+    statusText.dataset.state = status.update_error ? "error" : changed ? "available" : busy ? "busy" : "ready";
+  }
+  const checkButton = $("#checkUpdatesButton");
+  if (checkButton) {
+    checkButton.disabled = busy;
+    checkButton.textContent = status.checking ? "Checking…" : "Check";
+  }
+  const applyButton = $("#applyUpdateButton");
+  if (applyButton) {
+    applyButton.hidden = !changed;
+    applyButton.disabled = busy || status.working_tree_clean === false || activeSubmissions > 0;
+    applyButton.querySelector("span").textContent = status.updating ? "Updating…" : `Update from ${branch}`;
+    applyButton.title = activeSubmissions > 0
+      ? "Wait for active request submissions to finish before updating."
+      : status.working_tree_clean === false
+      ? "Commit or move local project changes before updating."
+      : `Update AutoEUDM from ${branch}`;
+  }
+  const runMode = $("#serviceRunMode");
+  if (runMode) {
+    runMode.textContent = status.background
+      ? "AutoEUDM is running in the background."
+      : "AutoEUDM is running in this server process.";
+  }
+  const loginLabel = $("#startAtLoginLabel");
+  if (loginLabel) loginLabel.hidden = !status.start_at_login_supported;
+  const loginInput = $("#startAtLoginInput");
+  if (loginInput && !loginInput.matches(":focus")) loginInput.checked = Boolean(state.preferences?.start_at_login);
+  const branchInput = $("#updateBranchInput");
+  if (branchInput) {
+    const options = [...new Set([...(status.branches || []), branch])];
+    const oldOptions = [...branchInput.options].map((option) => option.value);
+    const optionsChanged = options.length !== oldOptions.length || options.some((value, index) => value !== oldOptions[index]);
+    if (populateSettings || (optionsChanged && !branchInput.matches(":focus"))) {
+      const selected = branchInput.value || state.preferences?.update_branch || branch;
+      branchInput.innerHTML = options.map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`).join("");
+      branchInput.value = options.includes(selected) ? selected : branch;
+    }
+  }
+  if (notify && changed) {
+    const promptKey = `${branch}:${status.remote_commit || ""}`;
+    if (promptKey !== state.serviceUpdatePromptKey) {
+      toast(`An AutoEUDM update is available on ${branch}.`, "info");
+      state.serviceUpdatePromptKey = promptKey;
+    }
+  }
+  refreshIcons($(".header-actions"));
+}
+
+async function refreshServiceStatus({ check = false, populateSettings = false } = {}) {
+  try {
+    const status = check
+      ? await api("/api/service/check", { method: "POST", body: "{}" })
+      : await api("/api/service");
+    renderServiceStatus(status, { populateSettings });
+    return status;
+  } catch (_) {
+    return null;
+  }
+}
+
+function waitForUpdatedServer(previousCommit) {
+  const deadline = Date.now() + 120_000;
+  const poll = async () => {
+    if (Date.now() >= deadline) {
+      toast("The update is taking longer than expected. Reload this tab in a moment.", "error");
+      return;
+    }
+    try {
+      const runtime = await api("/api/runtime");
+      if (runtime.commit_id && runtime.commit_id !== previousCommit) {
+        window.location.reload();
+        return;
+      }
+    } catch (_) {
+      // The web process briefly goes away while its updated version starts.
+    }
+    window.setTimeout(poll, 1200);
+  };
+  window.setTimeout(poll, 800);
+}
+
+async function applyServiceUpdate() {
+  const status = state.serviceStatus;
+  if (!status?.update_available || status.updating) return;
+  if (Number(status.active_submissions || 0) > 0) {
+    toast("Wait for active request submissions to finish before updating AutoEUDM.", "error");
+    return;
+  }
+  if (status.working_tree_clean === false) {
+    toast("Commit or move local project changes before updating AutoEUDM.", "error");
+    return;
+  }
+  const branch = status.branch || state.preferences?.update_branch || "main";
+  if (!window.confirm(`Update AutoEUDM from ${branch} now? The app will restart and this tab will refresh.`)) return;
+  try {
+    const response = await api("/api/service/update", { method: "POST", body: "{}" });
+    renderServiceStatus(response);
+    waitForUpdatedServer(status.current_commit || "");
+  } catch (error) {
+    toast(error.message, "error");
+    void refreshServiceStatus();
+  }
+}
+
+async function quitApplication() {
+  const activeSubmissions = Number(state.serviceStatus?.active_submissions || 0);
+  const message = activeSubmissions
+    ? `Quit AutoEUDM? ${activeSubmissions} active request submission${activeSubmissions === 1 ? "" : "s"} will be interrupted. Your queue and saved imports are kept on this computer.`
+    : "Quit AutoEUDM? Your queue and saved imports are kept on this computer.";
+  if (!window.confirm(message)) return;
+  const button = $("#quitApplicationButton");
+  if (button) button.disabled = true;
+  try {
+    await api("/api/service/quit", { method: "POST", body: "{}" });
+    document.body.innerHTML = '<main class="service-stopped"><h1>AutoEUDM has stopped</h1><p>You can close this browser tab.</p></main>';
+  } catch (error) {
+    if (button) button.disabled = false;
+    toast(error.message, "error");
+  }
+}
+
 async function exportDiagnostics() {
   try {
     const response = await fetch("/api/diagnostics/download");
@@ -3611,6 +3761,7 @@ function openSettings({ tab = "", model = "" } = {}) {
   renderPcToolkitMappings(model ? { model, user_status: "", location_status: "" } : null);
   renderPcToolkitStatus();
   renderRequestStatusSettings();
+  void refreshServiceStatus({ populateSettings: true });
   $("#settingsDialog").showModal();
   if (tab) document.querySelector(`[data-settings-tab="${tab}"]`)?.click();
   void refreshDiagnosticsStatus();
@@ -7933,6 +8084,7 @@ function finalizeCurrentSubmission() {
   state.pollStatusMessage = "";
   stopJobPolling();
   renderAll();
+  void refreshServiceStatus();
 }
 
 async function restoreSubmissionFromHistory() {
@@ -8189,6 +8341,10 @@ function bindEvents() {
   });
   $("#pairsInput").addEventListener("input", () => { $("#pairsError").hidden = true; });
   $("#settingsButton").addEventListener("click", openSettings);
+  $("#checkUpdatesButton").addEventListener("click", () => { void refreshServiceStatus({ check: true, populateSettings: true }); });
+  $("#applyUpdateButton").addEventListener("click", applyServiceUpdate);
+  $("#updateAvailableButton").addEventListener("click", applyServiceUpdate);
+  $("#quitApplicationButton").addEventListener("click", quitApplication);
   $("#addPcToolkitMappingButton").addEventListener("click", () => {
     const empty = $("#pcToolkitMappings .pc-toolkit-mapping-empty");
     if (empty) empty.remove();
@@ -8272,6 +8428,10 @@ function bindEvents() {
       pc_toolkit_model_mappings: readPcToolkitMappings(),
       request_statuses: requestStatuses,
       import_columns: columns,
+      update_branch: $("#updateBranchInput").value || state.preferences.update_branch || "main",
+      start_at_login: state.serviceStatus?.start_at_login_supported
+        ? $("#startAtLoginInput").checked
+        : Boolean(state.preferences?.start_at_login),
     };
     button.disabled = true;
     try {
@@ -8279,6 +8439,7 @@ function bindEvents() {
         method: "POST",
         body: JSON.stringify(preferences),
       });
+      void refreshServiceStatus({ check: true });
       renderConnectionSheet();
       if (state.preferences.pc_toolkit_enabled
         && (!pcToolkitWasEnabled || state.preferences.pc_toolkit_transport !== pcToolkitTransportWas)) {
@@ -8840,6 +9001,8 @@ async function init() {
     renderConnectionSheet();
     state.connectionHeartbeatTimer = window.setInterval(checkConnection, 30_000);
     state.diagnosticsStatusTimer = window.setInterval(refreshDiagnosticsStatus, 5_000);
+    await refreshServiceStatus();
+    state.serviceStatusTimer = window.setInterval(refreshServiceStatus, 60_000);
     renderAll();
   } catch (error) {
     document.body.innerHTML = `<main class="empty-state"><h1>AutoEUDM could not start</h1><p>${escapeHtml(error.message)}</p></main>`;
