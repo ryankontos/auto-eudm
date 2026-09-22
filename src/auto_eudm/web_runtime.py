@@ -1170,6 +1170,7 @@ class Application:
             "update_branch": current_branch(),
             "start_at_login": False,
             "pc_toolkit_enabled": False,
+            "pc_toolkit_auto_connect": False,
             "pc_toolkit_transport": "browser",
             "pc_toolkit_model_mappings": [],
             "request_statuses": [
@@ -1218,6 +1219,7 @@ class Application:
             "show_returned_serials_on_hand",
             "start_at_login",
             "pc_toolkit_enabled",
+            "pc_toolkit_auto_connect",
         ):
             if key in raw and not isinstance(raw[key], bool):
                 raise eudm.EUDMError("A settings toggle had an invalid value.")

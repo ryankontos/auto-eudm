@@ -2968,7 +2968,9 @@ async function connect() {
     // "connected". Do not immediately race it with a second health request;
     // the regular heartbeat will verify the settled session shortly after.
     setTimeout(() => refreshConnection(), 700);
-    if (state.preferences?.pc_toolkit_enabled) void connectPcToolkitAfterHelix();
+    if (state.preferences?.pc_toolkit_enabled && state.preferences?.pc_toolkit_auto_connect) {
+      void connectPcToolkitAfterHelix();
+    }
   } catch (error) {
     toast(error.message, "error");
   }
@@ -2999,7 +3001,9 @@ async function startAuthenticationChecks() {
     await connect();
     return;
   }
-  if (state.preferences?.pc_toolkit_enabled) await connectPcToolkitAfterHelix();
+  if (state.preferences?.pc_toolkit_enabled && state.preferences?.pc_toolkit_auto_connect) {
+    await connectPcToolkitAfterHelix();
+  }
 }
 
 function bindConnectionSheetEvents() {
@@ -3786,6 +3790,7 @@ function openSettings({ tab = "", model = "" } = {}) {
   $("#saveAlmImportDraftsInput").checked = state.preferences.save_alm_import_drafts !== false;
   $("#showReturnedSerialsOnHandInput").checked = state.preferences.show_returned_serials_on_hand !== false;
   $("#pcToolkitEnabledInput").checked = state.preferences.pc_toolkit_enabled === true;
+  $("#pcToolkitAutoConnectInput").checked = state.preferences.pc_toolkit_auto_connect === true;
   $("#pcToolkitTransportInput").value = state.preferences.pc_toolkit_transport || "browser";
   renderPcToolkitMappings(model ? { model, user_status: "", location_status: "" } : null);
   renderPcToolkitStatus();
@@ -8426,6 +8431,7 @@ function bindEvents() {
     const button = $("#saveSettingsButton");
     const pcToolkitWasEnabled = state.preferences?.pc_toolkit_enabled === true;
     const pcToolkitTransportWas = state.preferences?.pc_toolkit_transport || "browser";
+    const pcToolkitWasConnected = ["connected", "simulation"].includes(state.pcToolkitStatus?.state);
     const columns = {
       username: $("#spreadsheetUsernameColumnInput").value.trim(),
       deployment_serial: $("#spreadsheetDeploymentColumnInput").value.trim(),
@@ -8454,6 +8460,7 @@ function bindEvents() {
       save_alm_import_drafts: $("#saveAlmImportDraftsInput").checked,
       show_returned_serials_on_hand: $("#showReturnedSerialsOnHandInput").checked,
       pc_toolkit_enabled: $("#pcToolkitEnabledInput").checked,
+      pc_toolkit_auto_connect: $("#pcToolkitAutoConnectInput").checked,
       pc_toolkit_transport: $("#pcToolkitTransportInput").value,
       pc_toolkit_model_mappings: readPcToolkitMappings(),
       request_statuses: requestStatuses,
@@ -8471,9 +8478,13 @@ function bindEvents() {
       });
       void refreshServiceStatus({ check: true });
       renderConnectionSheet();
+      const pcToolkitTransportChanged = state.preferences.pc_toolkit_transport !== pcToolkitTransportWas;
+      const justEnabledWithAutoConnect = state.preferences.pc_toolkit_enabled
+        && state.preferences.pc_toolkit_auto_connect
+        && !pcToolkitWasEnabled;
       if (state.preferences.pc_toolkit_enabled
-        && (!pcToolkitWasEnabled || state.preferences.pc_toolkit_transport !== pcToolkitTransportWas)) {
-        void connectPcToolkit();
+        && (justEnabledWithAutoConnect || (pcToolkitWasConnected && pcToolkitTransportChanged))) {
+        void connectPcToolkitAfterHelix();
       }
       if (state.preferences.save_alm_import_drafts === false) {
         state.importDrafts = [];

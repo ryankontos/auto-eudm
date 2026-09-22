@@ -408,6 +408,16 @@ class RequestStatusPreferenceTests(unittest.TestCase):
         with self.assertRaises(eudm.EUDMError):
             self.app._normalise_preferences({"pc_toolkit_transport": "python"})
 
+    def test_pc_toolkit_auto_connect_is_opt_in_and_toggleable(self) -> None:
+        self.assertFalse(self.app._normalise_preferences({})["pc_toolkit_auto_connect"])
+        self.assertTrue(
+            self.app._normalise_preferences({"pc_toolkit_auto_connect": True})[
+                "pc_toolkit_auto_connect"
+            ]
+        )
+        with self.assertRaises(eudm.EUDMError):
+            self.app._normalise_preferences({"pc_toolkit_auto_connect": "yes"})
+
     def test_pc_toolkit_model_names_are_case_insensitively_unique(self) -> None:
         with self.assertRaises(eudm.EUDMError):
             self.app._normalise_preferences({
