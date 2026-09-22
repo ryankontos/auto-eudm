@@ -1418,6 +1418,10 @@ function kindLabel(kind) {
   return ({ user: "Deploy to user", location: "Add to location stock", bulk_location: "Bulk add to location stock" })[kind] || "Unknown";
 }
 
+function queueKindLabel(kind) {
+  return ({ user: "User", location: "Location", bulk_location: "Bulk location" })[kind] || "Unknown";
+}
+
 function destinationLabel(request) {
   if (request.kind === "user") return request.user || "No user selected";
   const location = request.location || {};
@@ -1567,9 +1571,9 @@ function renderQueue() {
       <tr data-id="${escapeHtml(request.id)}" class="${selected ? "selected" : ""} ${errors.length ? "invalid" : ""} ${submitting ? "submitting" : ""} ${request.result_state === "failed" ? "failed" : ""}" tabindex="0">
         <td class="index-column"><span class="queue-drag-handle" title="Drag to reorder" aria-label="Drag to reorder">${iconMarkup("grip-vertical")}</span><span class="queue-index">${index + 1}</span></td>
         <td><span class="cell-primary ${request.kind === "bulk_location" ? "bulk-serial-summary" : ""}">${escapeHtml(serialDisplay)}</span>${pcToolkitModelFor(request) ? `<span class="cell-secondary">${escapeHtml(pcToolkitModelFor(request))}</span>` : ""}${requestId}</td>
-        <td><span class="cell-primary queue-context">${requestKindMarkup(request.kind)}<span>${escapeHtml(kindLabel(request.kind))}</span></span>${secondary ? `<span class="cell-secondary">${escapeHtml(secondary)}</span>` : ""}</td>
+        <td title="${escapeHtml(kindLabel(request.kind))}"><span class="cell-primary queue-context">${requestKindMarkup(request.kind)}<span>${escapeHtml(queueKindLabel(request.kind))}</span></span>${secondary ? `<span class="cell-secondary">${escapeHtml(secondary)}</span>` : ""}</td>
         <td title="${escapeHtml(statusLabel(request))}">${statusMarkup(request)}</td>
-        <td title="${escapeHtml(destinationLabel(request))}"><span class="cell-primary queue-context">${destinationMarkup(request)}<span>${escapeHtml(destinationLabel(request))}</span></span>${request.returning ? `<span class="cell-secondary">Return from ${escapeHtml(request.returning_user || "user")}</span>` : ""}</td>
+        <td title="${escapeHtml(destinationLabel(request))}"><span class="cell-primary">${escapeHtml(destinationLabel(request))}</span>${request.returning ? `<span class="cell-secondary">Return from ${escapeHtml(request.returning_user || "user")}</span>` : ""}</td>
         <td class="state-column" title="${escapeHtml(stateTitle)}">${readinessMarkup}</td>
         <td><button class="row-menu" data-remove="${escapeHtml(request.id)}" aria-label="Remove request" title="${submitting ? "This request is being submitted" : "Remove request"}" ${submitting ? "disabled" : ""}>${iconMarkup("trash-2")}</button></td>
       </tr>`;
