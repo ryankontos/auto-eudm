@@ -1160,6 +1160,7 @@ class Application:
             "validate_quick_import": True,
             "validate_workbook_import": True,
             "save_alm_import_drafts": True,
+            "show_returned_serials_on_hand": True,
             "pc_toolkit_enabled": False,
             "pc_toolkit_transport": "browser",
             "pc_toolkit_model_mappings": [],
@@ -1206,6 +1207,7 @@ class Application:
             "validate_quick_import",
             "validate_workbook_import",
             "save_alm_import_drafts",
+            "show_returned_serials_on_hand",
             "pc_toolkit_enabled",
         ):
             if key in raw and not isinstance(raw[key], bool):

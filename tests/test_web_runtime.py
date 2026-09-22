@@ -388,6 +388,14 @@ class RequestStatusPreferenceTests(unittest.TestCase):
             "location_status": "",
         }])
 
+    def test_returned_serials_on_hand_visibility_is_enabled_by_default_and_toggleable(self) -> None:
+        self.assertTrue(self.app._normalise_preferences({})["show_returned_serials_on_hand"])
+        self.assertFalse(
+            self.app._normalise_preferences({"show_returned_serials_on_hand": False})[
+                "show_returned_serials_on_hand"
+            ]
+        )
+
     def test_pc_toolkit_browser_transport_is_the_default_and_api_is_supported(self) -> None:
         defaults = self.app._normalise_preferences({})
         self.assertEqual(defaults["pc_toolkit_transport"], "browser")

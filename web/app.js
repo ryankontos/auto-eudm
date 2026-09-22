@@ -3668,6 +3668,7 @@ function openSettings({ tab = "", model = "" } = {}) {
   $("#validateQuickImportInput").checked = validationEnabled("validate_quick_import");
   $("#validateWorkbookImportInput").checked = validationEnabled("validate_workbook_import");
   $("#saveAlmImportDraftsInput").checked = state.preferences.save_alm_import_drafts !== false;
+  $("#showReturnedSerialsOnHandInput").checked = state.preferences.show_returned_serials_on_hand !== false;
   $("#pcToolkitEnabledInput").checked = state.preferences.pc_toolkit_enabled === true;
   $("#pcToolkitTransportInput").value = state.preferences.pc_toolkit_transport || "browser";
   renderPcToolkitMappings(model ? { model, user_status: "", location_status: "" } : null);
@@ -4298,7 +4299,7 @@ function renderImportModeOptions() {
   $("#importDatePicker").hidden = backlog;
   $("#importDateSummary").hidden = !backlog;
   const returnedSerials = $("#almReturnedSerials");
-  if (returnedSerials) returnedSerials.hidden = backlog;
+  if (returnedSerials) returnedSerials.hidden = backlog || !showReturnedSerialsOnHand();
   const returnedSerialsInput = $("#importReturnedSerialsInput");
   if (returnedSerialsInput && returnedSerialsInput.value !== state.importReturnedSerials) {
     returnedSerialsInput.value = state.importReturnedSerials || "";
@@ -4394,17 +4395,15 @@ function updateImportDates() {
   const yesterdayHasDeployments = validDeploymentDates.some((entry) => entry.value === yesterdayValue);
   const selected = retained.length
     ? retained
-    : todayHasDeployments && yesterdayHasDeployments
-      ? [todayValue, yesterdayValue]
-      : todayHasDeployments
-        ? [todayValue]
-        : yesterdayHasDeployments
-          ? [yesterdayValue]
-          : validDeploymentDates[0]?.value
-            ? [validDeploymentDates[0].value]
-            : dates.some((entry) => entry.value === todayValue)
-              ? [todayValue]
-              : dates[0]?.value ? [dates[0].value] : [];
+    : todayHasDeployments
+      ? [todayValue]
+      : yesterdayHasDeployments
+        ? [yesterdayValue]
+        : validDeploymentDates[0]?.value
+          ? [validDeploymentDates[0].value]
+          : dates.some((entry) => entry.value === todayValue)
+            ? [todayValue]
+            : dates[0]?.value ? [dates[0].value] : [];
   state.importSelectedDates = selected;
   renderImportDateDialog();
   updateImportDateSummary();
@@ -5628,7 +5627,12 @@ function returnedSerialInputValue(payload = state.importPreview) {
   return String(state.importReturnedSerials || $("#importReturnedSerialsInput")?.value || "");
 }
 
+function showReturnedSerialsOnHand() {
+  return state.preferences?.show_returned_serials_on_hand !== false;
+}
+
 function returnedSerialsOnHand(payload = state.importPreview) {
+  if (!showReturnedSerialsOnHand()) return [];
   return [...new Map(
     returnedSerialInputValue(payload)
       .split(/[\s,;]+/)
@@ -6340,7 +6344,9 @@ function renderImportPreview() {
   const manualReturnEntries = payload.requests.filter((request) =>
     importDeploymentNeedsManualReturn(request, payload) && importReviewMatches(request, query),
   );
-  const returnedSerialsMarkup = returnedSerialEditorMarkup(payload);
+  const returnedSerialsMarkup = showReturnedSerialsOnHand()
+    ? returnedSerialEditorMarkup(payload)
+    : "";
   const manualReturnSection = manualReturnEntries.length
     ? `<div class="import-manual-return-section">
         <div class="import-manual-return-heading"><div><strong>Missing return details</strong><small>Match serials already on hand, choose a device from PC Toolkit, or enter the return directly.</small></div><span>${manualReturnEntries.length} to resolve</span></div>
@@ -8161,6 +8167,7 @@ function bindEvents() {
       validate_quick_import: $("#validateQuickImportInput").checked,
       validate_workbook_import: $("#validateWorkbookImportInput").checked,
       save_alm_import_drafts: $("#saveAlmImportDraftsInput").checked,
+      show_returned_serials_on_hand: $("#showReturnedSerialsOnHandInput").checked,
       pc_toolkit_enabled: $("#pcToolkitEnabledInput").checked,
       pc_toolkit_transport: $("#pcToolkitTransportInput").value,
       pc_toolkit_model_mappings: readPcToolkitMappings(),
@@ -8183,6 +8190,8 @@ function bindEvents() {
       } else {
         await loadImportDrafts();
       }
+      renderImportModeOptions();
+      if (state.importPreview) renderImportPreview();
       renderAll();
       localStorage.setItem(IMPORT_COLUMNS_STORAGE_KEY, JSON.stringify(columns));
       localStorage.setItem(CONCURRENCY_STORAGE_KEY, elements.concurrency.value);
