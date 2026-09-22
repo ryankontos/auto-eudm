@@ -3475,17 +3475,6 @@ function pcToolkitImportQueries(request) {
   ].filter((value) => value.length >= 2).map((value) => [pcToolkitKey(value), value])).values()];
 }
 
-function pcToolkitRequestHasDetails(request) {
-  const serialResult = request?.pc_toolkit?.serial;
-  const userResult = request?.pc_toolkit?.user;
-  return Boolean(
-    serialResult?.primary
-    || serialResult?.devices?.length
-    || userResult?.primary
-    || userResult?.devices?.length,
-  );
-}
-
 function pcToolkitRelevantFailedQueries(request, failedKeys, payload = state.importPreview) {
   const serialKey = pcToolkitKey(request?.serials?.[0] || request?.serial);
   const userKey = pcToolkitKey(request?.username || request?.user || request?.returning_user);
@@ -3514,56 +3503,6 @@ function updatePcToolkitImportLookupState(requests, completedKeys, results, erro
       ? `${relevantFailed.length === keys.length ? "Lookup failed" : "Some details unavailable"}`
       : "";
   });
-}
-
-function renderPcToolkitImportStatus(payload) {
-  const wrapper = $("#pcToolkitImportStatus");
-  if (!wrapper) return;
-  if (!payload || !state.preferences.pc_toolkit_enabled) {
-    wrapper.hidden = true;
-    wrapper.replaceChildren();
-    return;
-  }
-  const requests = payload.requests || [];
-  const total = Number(payload.pc_toolkit_total || 0);
-  const completed = Math.min(total, Number(payload.pc_toolkit_completed || 0));
-  const withDetails = requests.filter(pcToolkitRequestHasDetails).length;
-  const failedRequests = requests.filter((request) => request.pc_toolkit_error);
-  const serialFailedRequests = failedRequests.filter((request) => {
-    const serialKey = pcToolkitKey(request.serials?.[0] || request.serial);
-    return Array.isArray(request.pc_toolkit_failed_queries)
-      && request.pc_toolkit_failed_queries.includes(serialKey);
-  });
-  const returnCheckFailed = failedRequests.filter((request) => !serialFailedRequests.includes(request));
-  const retryRequests = [...new Set([...serialFailedRequests, ...returnCheckFailed])];
-  const unavailableParts = [
-    serialFailedRequests.length
-      ? `${serialFailedRequests.length} lookup${serialFailedRequests.length === 1 ? "" : "s"} unavailable`
-      : "",
-    returnCheckFailed.length ? "Return suggestions unavailable" : "",
-  ].filter(Boolean);
-  if (!total && !payload.pc_toolkit_loading && !withDetails && !unavailableParts.length) {
-    wrapper.hidden = true;
-    wrapper.replaceChildren();
-    return;
-  }
-  const message = payload.pc_toolkit_loading
-    ? `Checking device details · ${completed} of ${total} lookups`
-    : unavailableParts.length
-      ? `${withDetails} row${withDetails === 1 ? "" : "s"} enriched · ${unavailableParts.join(" · ")}`
-      : withDetails
-        ? `${withDetails} row${withDetails === 1 ? "" : "s"} enriched with current PC Toolkit details`
-        : "No matching device details found";
-  wrapper.hidden = false;
-  wrapper.dataset.state = payload.pc_toolkit_loading ? "loading" : unavailableParts.length ? "error" : "ready";
-  const retryLabel = returnCheckFailed.length && !serialFailedRequests.length
-    ? "Retry return suggestions"
-    : `Retry ${retryRequests.length} unavailable`;
-  wrapper.innerHTML = `<div><strong>PC Toolkit</strong><small>${escapeHtml(message)}</small></div><div class="pc-toolkit-import-summary-actions">${retryRequests.length && !payload.pc_toolkit_loading ? `<button class="button secondary compact" type="button" data-import-pc-retry-failed>${iconMarkup("refresh-cw")}<span>${retryLabel}</span></button>` : ""}${payload.pc_toolkit_loading ? '<span class="import-status-spinner" aria-hidden="true"></span>' : ""}</div>`;
-  wrapper.querySelector("[data-import-pc-retry-failed]")?.addEventListener("click", () => {
-    void enrichImportPreview(payload, { requests: retryRequests, fresh: true });
-  });
-  refreshIcons(wrapper);
 }
 
 function schedulePcToolkitImportRender(payload) {
@@ -3603,7 +3542,6 @@ async function enrichImportPreview(payload = state.importPreview, { requests: re
       renderImportPreview();
       updateImportPrepareButton(payload);
     }
-    renderPcToolkitImportStatus(payload);
     return;
   }
   payload.pc_toolkit_loading = true;
@@ -3613,7 +3551,6 @@ async function enrichImportPreview(payload = state.importPreview, { requests: re
     request.pc_toolkit_loading = true;
     request.pc_toolkit_error = "";
   });
-  renderPcToolkitImportStatus(payload);
   schedulePcToolkitImportRender(payload);
   const completedKeys = new Set();
   const accumulatedResults = {};
@@ -5175,6 +5112,9 @@ function restoreImportPreviewState(rawPreview) {
     }
     request.cached_serial_verification = false;
     request.cached_user_verification = false;
+    if (request.manual_return_lookup_state === "loading") {
+      request.manual_return_lookup_state = "idle";
+    }
   });
   return preview;
 }
@@ -5540,6 +5480,88 @@ function manualReturnSerialIsValid(serial) {
   return /^[A-Za-z0-9._-]{6,}$/.test(String(serial || "").trim());
 }
 
+function manualReturnModelFor(source) {
+  return String(
+    source?.manual_return_model
+    || source?.manual_return_pc_toolkit?.primary?.model
+    || "",
+  ).trim();
+}
+
+function applyManualReturnModelSuggestion(source) {
+  if (source.manual_return_type === "pending_returns") return "";
+  const model = manualReturnModelFor(source);
+  const suggestion = pcToolkitSuggestedStatus({ kind: "location" }, model);
+  if (!manualReturnStatusOptions().some((option) => option.value === suggestion)) return "";
+  if (!source.manual_return_status || source.manual_return_status === source.manual_return_auto_status) {
+    source.manual_return_status = suggestion;
+    source.manual_return_auto_status = suggestion;
+  }
+  return suggestion;
+}
+
+function resetManualReturnLookup(source, serial = source?.manual_return_serial) {
+  if (!source) return;
+  if (source.manual_return_auto_status
+    && source.manual_return_status === source.manual_return_auto_status) {
+    source.manual_return_status = "";
+  }
+  source.manual_return_auto_status = "";
+  source.manual_return_lookup_serial = String(serial || "").trim();
+  source.manual_return_lookup_state = "idle";
+  source.manual_return_lookup_error = "";
+  source.manual_return_pc_toolkit = null;
+  source.manual_return_model = "";
+  source.manual_return_lookup_epoch = Number(source.manual_return_lookup_epoch || 0) + 1;
+}
+
+async function enrichManualReturnSerial(payload, source, { fresh = false, render = true } = {}) {
+  if (!payload || !source || state.preferences?.pc_toolkit_enabled !== true) return null;
+  const serial = String(source.manual_return_serial || "").trim();
+  if (!manualReturnSerialIsValid(serial)) return null;
+  const serialKey = pcToolkitKey(serial);
+  const previousKey = pcToolkitKey(source.manual_return_lookup_serial);
+  if (!fresh && serialKey === previousKey
+    && ["ready", "empty"].includes(source.manual_return_lookup_state)) {
+    applyManualReturnModelSuggestion(source);
+    return source.manual_return_pc_toolkit || null;
+  }
+  const epoch = Number(source.manual_return_lookup_epoch || 0) + 1;
+  source.manual_return_lookup_epoch = epoch;
+  source.manual_return_lookup_serial = serial;
+  source.manual_return_lookup_state = "loading";
+  source.manual_return_lookup_error = "";
+  if (render) renderImportPreview();
+  try {
+    const response = await pcToolkitEnrichQueries([serial], { fresh });
+    if (state.importPreview !== payload
+      || source.manual_return_lookup_epoch !== epoch
+      || pcToolkitKey(source.manual_return_serial) !== serialKey) return null;
+    const result = pcToolkitResultFor(response.results || {}, serial);
+    source.manual_return_pc_toolkit = result || null;
+    source.manual_return_model = String(result?.primary?.model || "").trim();
+    source.manual_return_lookup_error = result
+      ? ""
+      : String(response.errors?.[serialKey] || "").trim();
+    source.manual_return_lookup_state = result?.primary ? "ready" : "empty";
+    applyManualReturnModelSuggestion(source);
+    return result || null;
+  } catch (error) {
+    if (source.manual_return_lookup_epoch !== epoch) return null;
+    source.manual_return_lookup_state = "empty";
+    source.manual_return_lookup_error = error.message || "Model lookup unavailable";
+    return null;
+  } finally {
+    if (state.importPreview === payload && source.manual_return_lookup_epoch === epoch) {
+      if (render) {
+        renderImportPreview();
+        updateImportPrepareButton(payload);
+      }
+      saveCurrentImportDraft();
+    }
+  }
+}
+
 function manualReturnSerialAlreadyInReview(payload, serial) {
   const wanted = String(serial || "").trim().toLowerCase();
   return Boolean(wanted) && (payload.requests || []).some((request) =>
@@ -5550,6 +5572,8 @@ function manualReturnSerialAlreadyInReview(payload, serial) {
 function manualReturnRequest(source, serial, type, status) {
   const pendingReturn = type === "pending_returns";
   const username = String(source.user || source.username || "").trim();
+  const model = manualReturnModelFor(source);
+  const toolkitResult = source.manual_return_pc_toolkit || null;
   const sourceUserInfo = source.user_info || (username
     ? { login: username, columns: [username] }
     : null);
@@ -5571,7 +5595,7 @@ function manualReturnRequest(source, serial, type, status) {
     location: pendingReturn ? null : structuredClone(state.importLocation || preferredImportLocation()),
     group: pendingReturn ? "Pending returns" : "Returned devices",
     source: `${state.workbook?.filename || "ALM Workbook"} · ${$("#sheetInput")?.value || "Workbook"} · missing return`,
-    device_allocation: source.device_allocation || "",
+    device_allocation: model,
     first_name: source.first_name || "",
     last_name: source.last_name || "",
     included: true,
@@ -5586,6 +5610,12 @@ function manualReturnRequest(source, serial, type, status) {
     cached_serial_verification: false,
     cached_user_verification: false,
     manual_return_source_id: source.id,
+    pc_toolkit: toolkitResult ? {
+      serial: toolkitResult,
+      user: null,
+      enriched_at: new Date().toISOString(),
+    } : null,
+    pc_toolkit_suggested_status: pendingReturn ? "" : pcToolkitSuggestedStatus({ kind: "location" }, model),
   };
 }
 
@@ -5672,10 +5702,14 @@ function applyReturnedSerialMatches(payload = state.importPreview) {
   matches.forEach(({ source, device }) => {
     source.manual_return_serial = device.serial;
     source.manual_return_type = "returned_devices";
+    source.manual_return_lookup_serial = device.serial;
+    source.manual_return_lookup_state = "ready";
+    source.manual_return_model = device.model || "";
     source.manual_return_status = pcToolkitSuggestedStatus(
       { kind: "location" },
       device.model || device.name || "",
     );
+    source.manual_return_auto_status = source.manual_return_status;
     const request = addManualReturnToReview(payload, source, { requireStatus: false });
     if (request) {
       request.device_allocation = device.model || device.name || "";
@@ -5795,6 +5829,7 @@ function missingUsernameEditorMarkup(warnings) {
 }
 
 function manualReturnEditorMarkup(source, payload) {
+  const toolkitEnabled = state.preferences?.pc_toolkit_enabled === true;
   const type = source.manual_return_type === "pending_returns"
     ? "pending_returns"
     : "returned_devices";
@@ -5809,6 +5844,8 @@ function manualReturnEditorMarkup(source, payload) {
     .join(" ") || username || "User";
   const deploymentSerial = String(source.serials?.[0] || source.serial || "").trim();
   const deploymentModel = String(pcToolkitModelFor(source) || "").trim();
+  const returnModel = manualReturnModelFor(source);
+  const lookupState = source.manual_return_lookup_state || "idle";
   const deploymentDateValue = source.deployment_date
     || (Array.isArray(payload?.dates) && payload.dates.length === 1 ? payload.dates[0] : "");
   const deploymentDate = almDeploymentDateLabel(deploymentDateValue);
@@ -5821,7 +5858,6 @@ function manualReturnEditorMarkup(source, payload) {
   const statusOptions = manualReturnStatusOptions();
   const suggestedDevices = pcToolkitReturnCandidates(source, { limit: 0 });
   const visibleDevices = suggestedDevices.map((device) => ({ device, pending: false }));
-  const toolkitEnabled = state.preferences?.pc_toolkit_enabled === true;
   const toolkitChecked = source.pc_toolkit_checked === true && !source.pc_toolkit_loading;
   const candidateMarkup = !added && visibleDevices.length
     ? `<div class="pc-toolkit-return-candidates"><div class="pc-toolkit-return-heading"><span>Devices currently deployed to this user</span></div>${visibleDevices.map(({ device, pending }) => {
@@ -5830,30 +5866,47 @@ function manualReturnEditorMarkup(source, payload) {
       }).join("")}</div>`
     : !added && toolkitEnabled && source.pc_toolkit_loading
       ? '<div class="pc-toolkit-return-state"><strong>PC Toolkit</strong><small>Checking for devices currently deployed to this user…</small></div>'
+      : !added && toolkitEnabled && toolkitChecked && source.pc_toolkit_error
+        ? `<div class="pc-toolkit-return-state with-action"><div><strong>Couldn’t check this user</strong><small>Retry without interrupting the rest of the review.</small></div><button class="button secondary compact" type="button" data-import-pc-retry="${escapeHtml(source.id)}">Retry</button></div>`
       : !added && toolkitEnabled && toolkitChecked
         ? '<div class="pc-toolkit-return-state"><strong>PC Toolkit</strong><small>No other device currently deployed to this user was found.</small></div>'
         : "";
+  const modelLookupMarkup = !toolkitEnabled
+    ? ""
+    : lookupState === "loading"
+      ? '<small class="import-manual-return-model-state"><span class="import-status-spinner" aria-hidden="true"></span>Checking model…</small>'
+      : returnModel
+        ? `<small class="import-manual-return-model-state found">${escapeHtml(returnModel)}</small>`
+        : lookupState === "empty" && source.manual_return_lookup_serial
+          ? `<small class="import-manual-return-model-state">${source.manual_return_lookup_error ? "Model lookup unavailable" : "No model found"}</small>`
+          : "";
+  const autoStatusMarkup = type === "returned_devices"
+    && source.manual_return_auto_status
+    && status === source.manual_return_auto_status
+    && returnModel
+    ? `<small class="import-manual-return-model-state found">Suggested for ${escapeHtml(returnModel)}</small>`
+    : "";
   const statusControl = type === "returned_devices"
     ? `<label>Status<select data-import-manual-status="${escapeHtml(source.id)}">
         <option value="">Choose a location status</option>
         ${statusOptions.map((option) => `<option value="${escapeHtml(option.value)}" ${status === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
-      </select></label>`
+      </select>${autoStatusMarkup}</label>`
     : `<div class="import-manual-return-fixed-status"><small>Status</small><strong>Pending Return</strong></div>`;
   const error = source.manual_return_error
     ? `<small class="import-manual-return-error">${escapeHtml(source.manual_return_error)}</small>`
     : "";
   const addedMarkup = added
-    ? `<div class="import-manual-return-added"><div><small>Added to review</small><strong>${escapeHtml(added.serials?.[0] || "")}</strong><span>${escapeHtml(manualReturnTypeLabel(type))}${added.status ? ` · ${escapeHtml(added.status)}` : ""}</span></div><button class="text-button" type="button" data-import-manual-remove="${escapeHtml(source.id)}">Remove</button></div>`
+    ? `<div class="import-manual-return-added"><div><small>Return manually added</small><strong>${escapeHtml(added.serials?.[0] || "")}</strong>${returnModel ? `<span class="import-manual-return-added-model">${escapeHtml(returnModel)}</span>` : ""}<span>${escapeHtml(manualReturnTypeLabel(type))}${added.status ? ` · ${escapeHtml(added.status)}` : ""}</span></div><button class="text-button" type="button" data-import-manual-remove="${escapeHtml(source.id)}">Remove</button></div>`
     : `<div class="import-manual-return-resolution">
         <div class="import-manual-return-resolution-heading"><strong>${visibleDevices.length ? "Enter a different serial" : "Enter return details"}</strong><small>Add the device as returned or pending return.</small></div>
         <div class="import-manual-return-fields">
-          <label>Serial number<input type="text" data-import-manual-serial="${escapeHtml(source.id)}" value="${escapeHtml(source.manual_return_serial || "")}" placeholder="Enter serial number" autocomplete="off"></label>
+          <label>Serial number<input type="text" data-import-manual-serial="${escapeHtml(source.id)}" value="${escapeHtml(source.manual_return_serial || "")}" placeholder="Enter serial number" autocomplete="off">${modelLookupMarkup}</label>
           <label>Record as<select data-import-manual-type="${escapeHtml(source.id)}">
             <option value="returned_devices" ${type === "returned_devices" ? "selected" : ""}>Returned device</option>
             <option value="pending_returns" ${type === "pending_returns" ? "selected" : ""}>Pending return</option>
           </select></label>
           ${statusControl}
-          <button class="button secondary compact" type="button" data-import-manual-add="${escapeHtml(source.id)}">Add to review</button>
+          <button class="button secondary compact" type="button" data-import-manual-add="${escapeHtml(source.id)}" ${lookupState === "loading" ? "disabled" : ""}>${lookupState === "loading" ? "Checking…" : "Add to review"}</button>
         </div>${error}
       </div>`;
   return `<div class="import-manual-return-entry" data-import-manual-source="${escapeHtml(source.id)}">
@@ -5895,8 +5948,14 @@ const IMPORT_HISTORY_FIELDS = [
   "manual_return_serial",
   "manual_return_type",
   "manual_return_status",
+  "manual_return_auto_status",
   "manual_return_error",
   "manual_return_dismissed",
+  "manual_return_lookup_serial",
+  "manual_return_lookup_state",
+  "manual_return_lookup_error",
+  "manual_return_pc_toolkit",
+  "manual_return_model",
   "manual_return_source_id",
   "manual_username_source_id",
   "deployment_date",
@@ -5977,6 +6036,7 @@ function restoreImportReviewSnapshot(snapshot) {
     request.import_validation_epoch = Number(request.import_validation_epoch || 0) + 1;
     request.backlog_validation_epoch = Number(request.backlog_validation_epoch || 0) + 1;
     if (request.import_validation === "checking") request.import_validation = "pending";
+    if (request.manual_return_lookup_state === "loading") request.manual_return_lookup_state = "idle";
     if (request.included === false) request.import_validation = "idle";
     restoredRequests.push(request);
   });
@@ -6121,6 +6181,8 @@ function importReviewMatches(request, query = importReviewSearchQuery()) {
     request.user,
     request.username,
     request.returning_user,
+    request.manual_return_serial,
+    request.manual_return_model,
     request.first_name,
     request.last_name,
     [request.first_name, request.last_name].filter(Boolean).join(" "),
@@ -6307,7 +6369,6 @@ function renderImportPreview() {
   const payload = state.importPreview;
   if (!payload) return;
   updateImportHistoryControls();
-  renderPcToolkitImportStatus(payload);
   if (payload.mode === "backlog") {
     renderBacklogPreview(payload);
     return;
@@ -6348,8 +6409,8 @@ function renderImportPreview() {
     ? returnedSerialEditorMarkup(payload)
     : "";
   const manualReturnSection = manualReturnEntries.length
-    ? `<div class="import-manual-return-section">
-        <div class="import-manual-return-heading"><div><strong>Missing return details</strong><small>Match serials already on hand, choose a device from PC Toolkit, or enter the return directly.</small></div><span>${manualReturnEntries.length} to resolve</span></div>
+    ? `<div class="import-manual-return-section" role="region" aria-label="Missing return details">
+        <div class="import-manual-return-heading"><div><strong>Missing return details</strong><small>Review these users before adding requests to the queue. Choose a deployed device, enter a serial, or mark that no resolution is needed.</small></div><span><strong>${manualReturnEntries.length}</strong><small>need a decision</small></span></div>
         ${returnedSerialsMarkup}
         <div class="import-manual-return-list">${manualReturnEntries.map((request) => manualReturnEditorMarkup(request, payload)).join("")}</div>
       </div>`
@@ -6393,11 +6454,17 @@ function renderImportPreview() {
       const destination = locationDisplay(state.importLocation) || "Location stock";
       const returnCandidates = isDeployment ? pcToolkitReturnCandidates(request) : [];
       const pendingReturnDevices = isDeployment ? pcToolkitPendingReturnDevices(request) : [];
+      const manualReturnAdded = Boolean(
+        request.manual_return_id
+        && payload.requests.some((item) => item.id === request.manual_return_id),
+      );
       const missingReturnWarning = isDeployment
         && !request.has_returned_device_serial
         && !request.has_pending_return_serial
         && request.manual_return_dismissed !== true
-        ? request.new_joiner
+        ? manualReturnAdded
+          ? '<small class="import-return-resolved">Return manually added</small>'
+          : request.new_joiner
           ? '<small class="import-new-joiner">New joiner</small>'
           : returnCandidates.length
             ? `<small class="import-return-suggestion">PC Toolkit found ${returnCandidates.length === 1 ? "a possible return" : "possible returns"}</small>`
@@ -6560,9 +6627,15 @@ function renderImportPreview() {
     source.manual_return_serial = button.dataset.candidateSerial || "";
     source.manual_return_type = button.dataset.candidateType || "returned_devices";
     const candidateModel = button.dataset.candidateModel || "";
+    source.manual_return_lookup_serial = source.manual_return_serial;
+    source.manual_return_lookup_state = candidateModel ? "ready" : "idle";
+    source.manual_return_lookup_error = "";
+    source.manual_return_model = candidateModel;
+    source.manual_return_pc_toolkit = null;
     source.manual_return_status = source.manual_return_type === "returned_devices"
       ? pcToolkitSuggestedStatus({ kind: "location" }, candidateModel)
       : "";
+    source.manual_return_auto_status = source.manual_return_status;
     const added = addManualReturnToReview(payload, source, { requireStatus: false });
     renderImportPreview();
     updateImportPrepareButton(payload);
@@ -6584,20 +6657,31 @@ function renderImportPreview() {
     updateImportPrepareButton(payload);
     saveCurrentImportDraft();
   }));
-  $("#importPreviewList").querySelectorAll("[data-import-manual-serial]").forEach((input) => input.addEventListener("input", () => {
-    const source = payload.requests.find((request) => request.id === input.dataset.importManualSerial);
-    if (!source) return;
-    source.manual_return_serial = input.value;
-    source.manual_return_error = "";
-    input.closest("[data-import-manual-source]")?.querySelector(".import-manual-return-error")?.remove();
-    scheduleImportDraftSave();
-  }));
+  $("#importPreviewList").querySelectorAll("[data-import-manual-serial]").forEach((input) => {
+    input.addEventListener("input", () => {
+      const source = payload.requests.find((request) => request.id === input.dataset.importManualSerial);
+      if (!source) return;
+      const lookupChanged = pcToolkitKey(input.value) !== pcToolkitKey(source.manual_return_lookup_serial);
+      source.manual_return_serial = input.value;
+      if (lookupChanged) resetManualReturnLookup(source, input.value);
+      source.manual_return_error = "";
+      input.closest("[data-import-manual-source]")?.querySelector(".import-manual-return-error")?.remove();
+      scheduleImportDraftSave();
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      input.closest("[data-import-manual-source]")?.querySelector("[data-import-manual-add]")?.click();
+    });
+  });
   $("#importPreviewList").querySelectorAll("[data-import-manual-type]").forEach((select) => select.addEventListener("change", () => {
     const source = payload.requests.find((request) => request.id === select.dataset.importManualType);
     if (!source) return;
     recordImportEdit();
     source.manual_return_type = select.value;
     source.manual_return_status = "";
+    source.manual_return_auto_status = "";
+    if (source.manual_return_type === "returned_devices") applyManualReturnModelSuggestion(source);
     source.manual_return_error = "";
     renderImportPreview();
     updateImportPrepareButton(payload);
@@ -6608,19 +6692,24 @@ function renderImportPreview() {
     if (!source) return;
     recordImportEdit();
     source.manual_return_status = select.value;
+    source.manual_return_auto_status = "";
     source.manual_return_error = "";
     saveCurrentImportDraft();
   }));
-  $("#importPreviewList").querySelectorAll("[data-import-manual-add]").forEach((button) => button.addEventListener("click", () => {
+  $("#importPreviewList").querySelectorAll("[data-import-manual-add]").forEach((button) => button.addEventListener("click", async () => {
     const source = payload.requests.find((request) => request.id === button.dataset.importManualAdd);
     if (!source) return;
-    source.manual_return_serial = String($(`[data-import-manual-serial="${button.dataset.importManualAdd}"]`)?.value || source.manual_return_serial || "").trim();
-    source.manual_return_type = $(`[data-import-manual-type="${button.dataset.importManualAdd}"]`)?.value || source.manual_return_type || "returned_devices";
+    const entry = button.closest("[data-import-manual-source]");
+    source.manual_return_serial = String(entry?.querySelector("[data-import-manual-serial]")?.value || source.manual_return_serial || "").trim();
+    source.manual_return_type = entry?.querySelector("[data-import-manual-type]")?.value || source.manual_return_type || "returned_devices";
     source.manual_return_status = source.manual_return_type === "returned_devices"
-      ? $(`[data-import-manual-status="${button.dataset.importManualAdd}"]`)?.value || source.manual_return_status || ""
+      ? entry?.querySelector("[data-import-manual-status]")?.value || source.manual_return_status || ""
       : "";
     const alreadyAdded = Boolean(source.manual_return_id);
     if (!alreadyAdded) recordImportEdit();
+    if (!alreadyAdded && manualReturnSerialIsValid(source.manual_return_serial)) {
+      await enrichManualReturnSerial(payload, source);
+    }
     const added = alreadyAdded ? null : addManualReturnToReview(payload, source);
     renderImportPreview();
     updateImportPrepareButton(payload);
