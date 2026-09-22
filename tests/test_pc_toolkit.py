@@ -89,6 +89,20 @@ class PCToolkitNormalisationTests(unittest.TestCase):
         self.assertEqual(result["primary"]["model"], "MacBook Pro (14-inch, 2023)")
         self.assertFalse(result["ambiguous"])
 
+    def test_deployed_duplicate_wins_over_deleted_record_for_same_serial(self) -> None:
+        result = normalise_lookup(
+            {"devices": [
+                device("ABC123", status="Deleted - stale record", sccm=False),
+                device("ABC123", status="Deployed - Existing Stock", model="MacBook Air", login="example.user"),
+            ]},
+            "example.user",
+        )
+
+        self.assertEqual(result["primary"]["status"], "Deployed - Existing Stock")
+        self.assertEqual(result["primary"]["model"], "MacBook Air")
+        self.assertEqual(result["active_count"], 1)
+        self.assertFalse(result["ambiguous"])
+
     def test_conflicting_active_records_are_not_silently_collapsed(self) -> None:
         result = normalise_lookup(
             {"devices": [

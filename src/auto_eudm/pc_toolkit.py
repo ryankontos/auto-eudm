@@ -231,8 +231,10 @@ def _people(raw: Any) -> list[dict[str, str]]:
 
 
 def _status_rank(status: str) -> int:
+    key = normalise_key(status)
+    if key.startswith("deployed") and "pending return" not in key:
+        return 90
     return {
-        "deployed": 90,
         "in inventory": 80,
         "received": 70,
         "in repair": 60,
@@ -244,7 +246,12 @@ def _status_rank(status: str) -> int:
 
 
 def _is_active(status: str) -> bool:
-    return normalise_key(status) not in {"delete", "disposed"}
+    key = normalise_key(status)
+    return not (
+        key.startswith("delete")
+        or key.startswith("disposed")
+        or key.startswith("retired")
+    )
 
 
 def normalise_device(raw: Any) -> dict[str, Any] | None:
