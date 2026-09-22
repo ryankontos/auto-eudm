@@ -5849,9 +5849,10 @@ function manualReturnEditorMarkup(source, payload) {
   const deploymentDateValue = source.deployment_date
     || (Array.isArray(payload?.dates) && payload.dates.length === 1 ? payload.dates[0] : "");
   const deploymentDate = almDeploymentDateLabel(deploymentDateValue);
-  const deploymentMarkup = deploymentSerial || deploymentModel || source.pc_toolkit_loading || deploymentDate
+  const userMeta = [username || "No username", deploymentDate].filter(Boolean).join(" · ");
+  const deploymentMarkup = deploymentSerial || deploymentModel || source.pc_toolkit_loading
     ? `<div class="import-manual-return-deployment">
-        <div class="import-manual-return-deployment-heading"><small>New device</small>${deploymentDate ? `<time datetime="${escapeHtml(deploymentDateValue)}">${escapeHtml(deploymentDate)}</time>` : ""}</div>
+        <div class="import-manual-return-deployment-heading"><small>New device</small></div>
         <div class="import-manual-return-deployment-device">${deploymentSerial ? `<strong>${escapeHtml(deploymentSerial)}</strong>` : ""}${deploymentModel ? `<span>${escapeHtml(deploymentModel)}</span>` : source.pc_toolkit_loading ? `<span class="import-manual-return-model-loading">Checking model…</span>` : ""}</div>
       </div>`
     : "";
@@ -5910,7 +5911,7 @@ function manualReturnEditorMarkup(source, payload) {
         </div>${error}
       </div>`;
   return `<div class="import-manual-return-entry" data-import-manual-source="${escapeHtml(source.id)}">
-    <div class="import-manual-return-entry-heading"><div><strong>${escapeHtml(name)}</strong><small>${escapeHtml(username || "No username")}</small></div><button class="button quiet compact" type="button" data-import-manual-dismiss="${escapeHtml(source.id)}">No resolution needed</button></div>
+    <div class="import-manual-return-entry-heading"><div><strong>${escapeHtml(name)}</strong><small>${escapeHtml(userMeta)}</small></div><button class="button secondary compact" type="button" data-import-manual-dismiss="${escapeHtml(source.id)}">No resolution needed</button></div>
     ${deploymentMarkup}
     ${candidateMarkup}
     ${addedMarkup}
@@ -6378,10 +6379,19 @@ function renderImportPreview() {
   const deploymentCount = included.filter((request) => request.group === "Deployments").length;
   const returnedDeviceCount = included.filter((request) => request.group === "Returned devices").length;
   const pendingReturnCount = included.filter((request) => request.group === "Pending returns").length;
-  $("#importPreviewTitle").textContent = `${deploymentCount} deployments · ${returnedDeviceCount} returned devices · ${pendingReturnCount} pending returns`;
+  $("#importPreviewTitle").textContent = `${included.length} request${included.length === 1 ? "" : "s"} ready to add`;
   const selectedDateLabels = selectedImportDateEntries().map((entry) => entry.label);
   const dateSummary = selectedDateLabels.join(", ");
-  $("#importPreviewSubtitle").textContent = csvImport() ? dateSummary : `${$("#sheetInput").value} · ${dateSummary}`;
+  const requestSummary = [
+    deploymentCount ? `${deploymentCount} deployment${deploymentCount === 1 ? "" : "s"}` : "",
+    returnedDeviceCount ? `${returnedDeviceCount} returned device${returnedDeviceCount === 1 ? "" : "s"}` : "",
+    pendingReturnCount ? `${pendingReturnCount} pending return${pendingReturnCount === 1 ? "" : "s"}` : "",
+  ].filter(Boolean).join(" · ");
+  $("#importPreviewSubtitle").textContent = [
+    requestSummary,
+    csvImport() ? "" : $("#sheetInput").value,
+    dateSummary,
+  ].filter(Boolean).join(" · ");
   $("#importPreviewCount").textContent = `${included.length} selected`;
 
   const groups = [
@@ -6410,7 +6420,7 @@ function renderImportPreview() {
     : "";
   const manualReturnSection = manualReturnEntries.length
     ? `<div class="import-manual-return-section" role="region" aria-label="Missing return details">
-        <div class="import-manual-return-heading"><div><strong>Missing return details</strong><small>Review these users before adding requests to the queue. Choose a deployed device, enter a serial, or mark that no resolution is needed.</small></div><span><strong>${manualReturnEntries.length}</strong><small>need a decision</small></span></div>
+        <div class="import-manual-return-heading"><div><strong>Missing return details</strong><small>Review these users before adding requests to the queue. Choose a deployed device, enter a serial, or mark that no resolution is needed.</small></div><span>${manualReturnEntries.length} unresolved</span></div>
         ${returnedSerialsMarkup}
         <div class="import-manual-return-list">${manualReturnEntries.map((request) => manualReturnEditorMarkup(request, payload)).join("")}</div>
       </div>`
