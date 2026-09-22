@@ -3,10 +3,9 @@
 /*
  * Small JSON-lines bridge for the optional PC Toolkit Puppeteer transport.
  *
- * It deliberately keeps authentication and the device request in one real
- * Chrome page. That matches the portal's own fetch context more closely than
- * copying cookies into a separate HTTP client, while keeping the Python web
- * server responsive and easy to shut down.
+ * It authenticates in the user's visible Chrome profile, then keeps device
+ * requests in a headless Chrome page using that same profile. This preserves
+ * the portal's fetch context without leaving a browser window open.
  */
 
 const fs = require("node:fs");
@@ -430,15 +429,33 @@ async function start(message) {
   });
   await navigateToPortal();
   await authenticate(Number(options.authTimeoutMs || (options.headless ? 20000 : 120000)));
+  if (!options.headless) {
+    progress("visible_auth_window_close_started", { reason: "authentication_completed" });
+    await closeBrowserSession();
+    options.headless = true;
+    browser = await puppeteer.launch({
+      executablePath,
+      userDataDir: profile,
+      headless: true,
+      defaultViewport: null,
+      args: ["--no-first-run", "--no-default-browser-check"],
+    });
+    await navigateToPortal();
+    await authenticate(Number(options.lookupAuthTimeoutMs || 30000));
+    progress("headless_lookup_session_ready", {
+      role,
+      page_url: page ? page.url() : "",
+    });
+  }
   return {
     role,
     page_url: page ? page.url() : "",
     authenticated: true,
+    visible_window_closed: true,
   };
 }
 
-async function closeBrowser() {
-  closing = true;
+async function closeBrowserSession() {
   const current = browser;
   browser = null;
   page = null;
@@ -451,6 +468,11 @@ async function closeBrowser() {
       // The process is exiting; there is nothing useful left to report.
     }
   }
+}
+
+async function closeBrowser() {
+  closing = true;
+  await closeBrowserSession();
 }
 
 async function handle(message) {

@@ -1397,6 +1397,7 @@ class PCToolkitPuppeteerTransport:
             operation_id=self.operation_id,
             role=self.role,
             page_url=clean(result.get("page_url")),
+            visible_window_closed=bool(result.get("visible_window_closed")),
         )
 
     def lookup(
@@ -2847,7 +2848,11 @@ class PCToolkitService:
                     timeout=18.0,
                     service_id=self.service_id,
                     operation_id=operation_id,
-                    headless=self.browser_headless,
+                    # _discover_role() above owns any user-visible SSO step
+                    # and closes that window after auth. Keep the persistent
+                    # lookup page headless so connecting does not leave a
+                    # stray Chrome window open.
+                    headless=True,
                 )
                 self._browser_transport = browser_transport
                 browser_transport.start()

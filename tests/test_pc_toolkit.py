@@ -439,7 +439,7 @@ class PCToolkitCacheTests(unittest.TestCase):
             timeout=18.0,
             service_id=service.service_id,
             operation_id="pc-browser-connect-test",
-            headless=False,
+            headless=True,
         )
         transport.start.assert_called_once_with()
         client.lookup.assert_not_called()
