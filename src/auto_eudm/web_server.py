@@ -338,7 +338,7 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
     def _static(self, request_path: str) -> None:
         if request_path == "/":
             relative = "index.html"
-        elif request_path == "/favicon-20260923.ico":
+        elif request_path in {"/favicon-20260923.ico", "/favicon-20260923-v2.ico"}:
             relative = "icons/favicon.ico"
         elif request_path in {
             "/icons/favicon-20260923-16.png",
@@ -346,14 +346,13 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
             "/icons/favicon-20260923.svg",
             "/icons/safari-pinned-tab-20260923.svg",
             "/icons/apple-touch-icon-20260923.png",
+            "/icons/favicon-20260923-v2-16.png",
+            "/icons/favicon-20260923-v2-32.png",
+            "/icons/favicon-20260923-v2.svg",
+            "/icons/safari-pinned-tab-20260923-v2.svg",
+            "/icons/apple-touch-icon-20260923-v2.png",
         }:
-            relative = {
-                "/icons/favicon-20260923-16.png": "icons/favicon-16.png",
-                "/icons/favicon-20260923-32.png": "icons/favicon-32.png",
-                "/icons/favicon-20260923.svg": "icons/favicon.svg",
-                "/icons/safari-pinned-tab-20260923.svg": "icons/safari-pinned-tab.svg",
-                "/icons/apple-touch-icon-20260923.png": "icons/apple-touch-icon.png",
-            }[request_path]
+            relative = request_path.lstrip("/").replace("-20260923-v2", "").replace("-20260923", "")
         elif request_path == "/favicon.ico":
             # A few browsers and local app shells probe the conventional root
             # favicon path even when the page also declares explicit icon URLs.
