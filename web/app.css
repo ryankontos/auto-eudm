@@ -1692,6 +1692,13 @@ input:hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var
 .alm-returned-serials-footer small { color: var(--muted); font-size: 12px; line-height: 1.35; }
 .alm-returned-serials-footer .button { flex: 0 0 auto; }
 .import-preview-returned-serials { margin: 0 11px 0; }
+.import-pc-toolkit-notice { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; margin: 0 11px 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-alt); }
+.import-pc-toolkit-notice-copy { display: grid; min-width: 0; gap: 3px; }
+.import-pc-toolkit-notice-copy strong { color: var(--ink); font-size: 13px; font-weight: 700; }
+.import-pc-toolkit-notice-copy small { color: var(--muted); font-size: 12px; line-height: 1.4; overflow-wrap: anywhere; }
+.import-pc-toolkit-notice[data-state="error"] .import-pc-toolkit-notice-copy strong { color: var(--amber-text); }
+.import-pc-toolkit-notice[data-state="connecting"] .import-pc-toolkit-notice-copy strong { color: var(--blue); }
+.import-pc-toolkit-notice .button { white-space: nowrap; }
 .import-preview-heading {
   display: grid;
   grid-template-columns: minmax(180px, .85fr) minmax(240px, 1.15fr) auto auto;
@@ -2405,6 +2412,8 @@ input:hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var
 }
 @media (max-width: 760px) {
   .import-preview-heading { grid-template-columns: minmax(0, 1fr) auto; }
+  .import-pc-toolkit-notice { grid-template-columns: minmax(0, 1fr); margin-inline: 0; }
+  .import-pc-toolkit-notice .button { justify-self: start; }
   .import-preview-search { grid-column: 1 / -1; grid-row: 2; }
   .import-preview-tools { grid-column: 1 / -1; justify-content: flex-start; }
   .import-missing-user-row { grid-template-columns: 1fr; }

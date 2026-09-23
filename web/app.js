@@ -73,6 +73,7 @@ const state = {
   importPreviewNeedsFullRender: false,
   historyRuns: [],
   pcToolkitStatus: null,
+  pcToolkitReviewStatusTimer: null,
   pcToolkitEnrichmentEpoch: 0,
   pcToolkitImportRenderFrame: null,
 };
@@ -280,6 +281,8 @@ function setupOptionalListAnimation() {
 
 const elements = {
   workspace: $(".workspace"),
+  importDialog: $("#importDialog"),
+  importPreview: $("#importPreview"),
   concurrency: $("#concurrencyInput"),
   queueEmpty: $("#queueEmpty"),
   queueTableWrap: $("#queueTableWrap"),
@@ -3119,6 +3122,7 @@ function renderConnectionSheet(status = state.connection) {
   refreshIcons(elements.connectionVisual);
   renderPcToolkitHeaderStatus();
   renderConnectionOptionalStatus();
+  renderAlmPcToolkitNotice();
   if (connecting || (ready && !state.connectionSheetManual)) {
     if (elements.connectionDialog.open) elements.connectionDialog.close();
     return;
@@ -3692,6 +3696,55 @@ function renderPcToolkitStatus() {
   }
   renderPcToolkitHeaderStatus();
   renderConnectionOptionalStatus();
+  renderAlmPcToolkitNotice();
+}
+
+function renderAlmPcToolkitNotice() {
+  const notice = $("#importPcToolkitNotice");
+  const title = $("#importPcToolkitNoticeTitle");
+  const detail = $("#importPcToolkitNoticeDetail");
+  const button = $("#importPcToolkitConnectButton");
+  if (!notice || !title || !detail || !button) return;
+
+  const reviewVisible = Boolean(
+    state.importPreview
+    && $("#importDialog")?.open
+    && !$("#importPreview")?.hidden,
+  );
+  const status = state.pcToolkitStatus || {};
+  const connected = ["connected", "simulation"].includes(status.state);
+  if (!reviewVisible || connected) {
+    notice.hidden = true;
+    return;
+  }
+
+  const enabled = state.preferences?.pc_toolkit_enabled === true;
+  const connecting = status.state === "connecting";
+  const helixConnecting = state.connection?.state === "connecting";
+  const unavailable = status.state === "error";
+  notice.hidden = false;
+  notice.dataset.state = connecting ? "connecting" : unavailable ? "error" : "offline";
+
+  if (connecting) {
+    title.textContent = "Connecting to PC Toolkit";
+    detail.textContent = "You can keep reviewing while it connects.";
+  } else if (!enabled) {
+    title.textContent = "PC Toolkit is off";
+    detail.textContent = "Connect to enable model and return-device suggestions. You can continue without it.";
+  } else if (unavailable) {
+    title.textContent = "PC Toolkit is unavailable";
+    detail.textContent = status.message || "Device details and return suggestions could not be loaded. You can continue without them.";
+  } else {
+    title.textContent = "PC Toolkit is not connected";
+    detail.textContent = "Connect to load device details and return suggestions. You can continue without it.";
+  }
+
+  button.disabled = connecting || helixConnecting;
+  button.textContent = connecting
+    ? "Connecting…"
+    : helixConnecting
+      ? "Waiting for Helix…"
+      : !enabled ? "Enable & connect" : unavailable ? "Retry" : "Connect";
 }
 
 async function refreshPcToolkitStatus() {
@@ -3726,6 +3779,26 @@ async function connectPcToolkit() {
   } finally {
     if (button) button.disabled = false;
     renderPcToolkitStatus();
+  }
+}
+
+async function connectPcToolkitFromImportReview() {
+  if (state.connection?.state === "connecting") return;
+  const button = $("#importPcToolkitConnectButton");
+  if (button) button.disabled = true;
+  try {
+    if (state.preferences?.pc_toolkit_enabled !== true) {
+      state.preferences = await api("/api/preferences", {
+        method: "POST",
+        body: JSON.stringify({ pc_toolkit_enabled: true }),
+      });
+      renderConnectionSheet();
+    }
+    await connectPcToolkit();
+  } catch (error) {
+    toast(error.message, "error");
+  } finally {
+    renderAlmPcToolkitNotice();
   }
 }
 
@@ -4746,6 +4819,10 @@ function setImportStep(step) {
     item.classList.toggle("active", number === step);
     item.classList.toggle("complete", number < step);
   });
+  if (step === 3 && state.importPreview) {
+    renderAlmPcToolkitNotice();
+    void refreshPcToolkitStatus();
+  }
 }
 
 function setImportStage(stage) {
@@ -6872,6 +6949,7 @@ function renderImportPreview() {
   const payload = state.importPreview;
   if (!payload) return;
   updateImportHistoryControls();
+  renderAlmPcToolkitNotice();
   if (payload.mode === "backlog") {
     renderBacklogPreview(payload);
     return;
@@ -8729,6 +8807,7 @@ function bindEvents() {
     row.querySelector("input")?.focus();
   });
   $("#connectPcToolkitButton").addEventListener("click", connectPcToolkit);
+  $("#importPcToolkitConnectButton").addEventListener("click", connectPcToolkitFromImportReview);
   $("#downloadPcToolkitLogButton").addEventListener("click", downloadPcToolkitLog);
   $("#clearPcToolkitCacheButton").addEventListener("click", async () => {
     try {
@@ -9383,6 +9462,10 @@ async function init() {
     state.queueSyncTimer = window.setInterval(syncSharedQueue, 1800);
     state.sharedSubmissionTimer = window.setInterval(discoverSharedSubmission, 2400);
     state.preferencesSyncTimer = window.setInterval(syncSharedPreferences, 5000);
+    state.pcToolkitReviewStatusTimer = window.setInterval(() => {
+      if (document.hidden || !state.importPreview || !elements.importDialog.open || elements.importPreview.hidden) return;
+      void refreshPcToolkitStatus();
+    }, 5000);
     if (state.preferences.save_alm_import_drafts !== false) await loadImportDrafts();
     const spreadsheetEnabled = Boolean(state.config.spreadsheet_import_enabled);
     $("#importSheetButton").hidden = !spreadsheetEnabled;
