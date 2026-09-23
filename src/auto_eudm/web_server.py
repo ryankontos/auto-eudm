@@ -332,7 +332,14 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
         self._static(path)
 
     def _static(self, request_path: str) -> None:
-        relative = "index.html" if request_path == "/" else request_path.lstrip("/")
+        if request_path == "/":
+            relative = "index.html"
+        elif request_path == "/favicon.ico":
+            # A few browsers and local app shells probe the conventional root
+            # favicon path even when the page also declares explicit icon URLs.
+            relative = "icons/favicon.ico"
+        else:
+            relative = request_path.lstrip("/")
         selected = (WEB_ROOT / relative).resolve()
         if WEB_ROOT not in selected.parents or not selected.is_file():
             self._bytes(

@@ -188,6 +188,7 @@ class LocalWebServerTests(unittest.TestCase):
         for path, expected_type in (
             ("/icons/favicon-32.png", "image/png"),
             ("/icons/favicon.ico", "image/"),
+            ("/favicon.ico", "image/"),
             ("/site.webmanifest", "application/manifest+json"),
         ):
             with self.subTest(path=path):
