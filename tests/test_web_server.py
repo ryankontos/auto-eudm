@@ -213,6 +213,11 @@ class LocalWebServerTests(unittest.TestCase):
             ("/icons/safari-pinned-tab-20260923-v2.svg", "image/svg+xml"),
             ("/icons/apple-touch-icon-20260923-v2.png", "image/png"),
             ("/favicon-20260923-v2.ico", "image/"),
+            ("/icons/favicon-20260923-v3-16.png", "image/png"),
+            ("/icons/favicon-20260923-v3-32.png", "image/png"),
+            ("/icons/safari-pinned-tab-20260923-v3.svg", "image/svg+xml"),
+            ("/icons/apple-touch-icon-20260923-v3.png", "image/png"),
+            ("/favicon-20260923-v3.ico", "image/"),
             ("/icons/favicon-32.png", "image/png"),
             ("/icons/favicon.ico", "image/"),
             ("/favicon.ico", "image/"),
@@ -229,9 +234,10 @@ class LocalWebServerTests(unittest.TestCase):
 
         self.assertEqual(response.status, 200)
         html = body.decode("utf-8")
-        self.assertIn('href="/icons/favicon-20260923-v2-32.png"', html)
-        self.assertIn('href="/favicon-20260923-v2.ico"', html)
-        self.assertIn('href="/icons/safari-pinned-tab-20260923-v2.svg"', html)
+        self.assertIn('href="/icons/favicon-20260923-v3-32.png"', html)
+        self.assertIn('href="/favicon-20260923-v3.ico"', html)
+        self.assertIn('href="/icons/safari-pinned-tab-20260923-v3.svg"', html)
+        self.assertNotIn('rel="icon" type="image/svg+xml"', html)
 
     def test_diagnostics_endpoint_returns_the_current_capture_as_gzip(self) -> None:
         run_reporting.configure_logging(enabled=False, command="test")
