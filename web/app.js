@@ -6394,6 +6394,26 @@ function importReviewMatches(request, query = importReviewSearchQuery()) {
   return values.some((value) => String(value || "").toLocaleLowerCase().includes(query));
 }
 
+function updateImportStatusCue(select, needsStatus) {
+  const row = select.closest(".import-preview-row");
+  const cell = select.closest(".import-status-cell");
+  const active = Boolean(needsStatus && !row?.classList.contains("excluded"));
+  row?.classList.toggle("needs-status", active);
+  cell?.classList.toggle("needs-status", active);
+  select.classList.toggle("status-unselected", active);
+  select.setAttribute("aria-required", String(active));
+
+  let label = cell?.querySelector(".import-status-required-label");
+  if (active && cell && !label) {
+    label = document.createElement("small");
+    label.className = "import-status-required-label";
+    label.textContent = "Status required";
+    cell.prepend(label);
+  } else if (!active) {
+    label?.remove();
+  }
+}
+
 function renderBacklogPreview(payload) {
   const requests = Array.isArray(payload.requests) ? payload.requests : (payload.requests = []);
   const query = importReviewSearchQuery();
@@ -6420,15 +6440,17 @@ function renderBacklogPreview(payload) {
       : request.pc_toolkit_default_excluded
         ? "Already deployed to this user in PC Toolkit"
         : "Ignored in future backlog checks";
-    const statusControl = `<div class="import-status-control">
-      <select data-backlog-status="${escapeHtml(request.id)}" aria-label="Deployment status for ${escapeHtml(request.serial)}">
+    const includedRow = request.included !== false;
+    const needsStatus = includedRow && !request.status;
+    const statusControl = `<div class="import-status-cell${needsStatus ? " needs-status" : ""}">
+      ${needsStatus ? '<small class="import-status-required-label">Status required</small>' : ""}
+      <div class="import-status-control"><select data-backlog-status="${escapeHtml(request.id)}" aria-required="${needsStatus}" aria-label="Deployment status for ${escapeHtml(request.serial)}">
         <option value="">Choose a deployment status</option>
         ${options.map((option) => `<option value="${escapeHtml(option.value)}" ${request.status === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
-      </select>
+      </select></div>
     </div>`;
     const validation = importValidationStatus(request);
-    const includedRow = request.included !== false;
-    return `<div class="import-preview-row ${includedRow ? "" : "excluded"}${notAttending ? " not-attending" : ""}" data-import-row-id="${escapeHtml(request.id)}">
+    return `<div class="import-preview-row ${includedRow ? "" : "excluded"}${needsStatus ? " needs-status" : ""}${notAttending ? " not-attending" : ""}" data-import-row-id="${escapeHtml(request.id)}">
       <label class="include-control" title="${includedRow ? "Included" : exclusionLabel}">
         <input type="checkbox" data-backlog-include="${escapeHtml(request.id)}" ${includedRow ? "checked" : ""}>
         <span>${index + 1}</span>
@@ -6456,6 +6478,7 @@ function renderBacklogPreview(payload) {
       recordImportEdit();
       request.status = select.value;
     }
+    updateImportStatusCue(select, !request?.status);
     updateImportPrepareButton(payload);
     saveCurrentImportDraft();
   }));
@@ -6634,12 +6657,14 @@ function renderImportPreview() {
       const isReturnedDevice = request.group === "Returned devices";
       const isIncluded = request.included !== false;
       const statusOptions = ALM_IMPORT_STATUS_OPTIONS[request.group] || [];
+      const needsStatus = isIncluded && statusOptions.length > 0 && !request.status;
       const statusControl = statusOptions.length
-        ? `<div class="import-status-control">
-            <select data-import-status="${escapeHtml(request.id)}" aria-label="Status for ${escapeHtml(request.serials[0])}">
+        ? `<div class="import-status-cell${needsStatus ? " needs-status" : ""}">
+            ${needsStatus ? '<small class="import-status-required-label">Status required</small>' : ""}
+            <div class="import-status-control"><select data-import-status="${escapeHtml(request.id)}" aria-required="${needsStatus}" aria-label="Status for ${escapeHtml(request.serials[0])}">
               <option value="" ${!request.status ? "selected" : ""}>Choose a ${isDeployment ? "deployment" : "returned-device"} status</option>
               ${statusOptions.map((option) => `<option value="${escapeHtml(option.value)}" ${request.status === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
-            </select>
+            </select></div>
             </div>`
         : `<span class="fixed-status">Deployed - Pending Return</span>`;
       const validation = importValidationStatus(request);
@@ -6674,14 +6699,14 @@ function renderImportPreview() {
       const personColumn = isReturnedDevice
         ? `<div><small class="import-field-title">Destination</small><strong>${escapeHtml(destination)}</strong>${request.returning_user ? importReturningPersonMarkup(request) : ""}</div>`
         : `${importPersonMarkup(request).replace("</div>", `${missingReturnWarning}</div>`)}`;
-      return `<div class="import-preview-row ${isIncluded ? "" : "excluded"}" data-import-row-id="${escapeHtml(request.id)}">
+      return `<div class="import-preview-row ${isIncluded ? "" : "excluded"}${needsStatus ? " needs-status" : ""}" data-import-row-id="${escapeHtml(request.id)}">
         <label class="include-control" title="${isIncluded ? "Included" : "Do not deploy"}">
           <input type="checkbox" data-import-include="${escapeHtml(request.id)}" ${isIncluded ? "checked" : ""}>
           <span>${index + 1}</span>
         </label>
         <div><small class="import-field-title">${isDeployment ? "Deployment serial" : isReturnedDevice ? "Returned device" : "Pending return"}</small><strong>${escapeHtml(request.serials[0])}</strong>${request.device_allocation ? `<small class="import-device-allocation">${escapeHtml(request.device_allocation)}</small>` : ""}${isDeployment && request.new_asset_status ? `<small class="import-device-status">${escapeHtml(request.new_asset_status)}</small>` : ""}${pcToolkitImportMarkup(request, { loading: payload.pc_toolkit_loading })}</div>
         ${personColumn}
-        <div>${statusControl}${isIncluded ? validation : "<small>Do not deploy</small>"}${editable}</div>
+        <div class="import-review-status-column">${statusControl}${isIncluded ? validation : "<small>Do not deploy</small>"}${editable}</div>
       </div>`;
     }).join("");
     const missingUsernameWarning = missingUsernameEditorMarkup(missingUsernameWarnings);
@@ -6798,6 +6823,7 @@ function renderImportPreview() {
         recordImportEdit();
         request.status = select.value;
       }
+      updateImportStatusCue(select, !request?.status);
       updateImportPrepareButton(payload);
       saveCurrentImportDraft();
     });

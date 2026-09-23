@@ -1848,6 +1848,9 @@ input:hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var
 .include-control input { min-height: auto; }
 .import-preview-row.excluded { opacity: .58; background: var(--surface-alt); }
 .import-preview-row.not-attending { background: var(--red-soft); }
+.import-preview-row.needs-status { box-shadow: inset 3px 0 0 var(--amber); }
+.import-preview-row.needs-status:not(.excluded):not(.not-attending) { background: color-mix(in srgb, var(--amber-soft) 38%, var(--surface-raised)); }
+.import-preview-row.needs-status:not(.excluded):not(.not-attending):hover { background: color-mix(in srgb, var(--amber-soft) 54%, var(--surface-raised)); }
 .import-attendance-warning { color: var(--red) !important; font-weight: 700; }
 .import-duplicate-warning { color: var(--muted) !important; font-style: italic; }
 .import-preview-row strong,
@@ -1863,6 +1866,10 @@ input:hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var
 .import-return-resolved { margin-top: 4px; color: var(--green) !important; font-weight: 700; }
 .import-new-joiner { margin-top: 4px; color: var(--green) !important; font-weight: 700; }
 .import-preview-row select { width: 100%; min-height: var(--control-height); height: var(--control-height); font-size: 12px; }
+.import-review-status-column,
+.import-status-cell { min-width: 0; }
+.import-status-required-label { display: block; margin: 0 0 5px; color: var(--amber-text); font-size: 12px; font-weight: 700; line-height: 1.2; }
+.import-status-cell.needs-status select { border-color: var(--amber-border); background-color: var(--amber-surface); }
 .import-status-control { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px; align-items: stretch; }
 .import-status-control .button { min-width: 62px; height: var(--control-height); min-height: var(--control-height); padding-right: 8px; padding-left: 8px; font-size: 12px; }
 .fixed-status { color: var(--ink); font-size: 12px; font-weight: 650; }
