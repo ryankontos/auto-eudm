@@ -28,6 +28,10 @@ class FakeClients:
 
 class FakeJobs:
     @staticmethod
+    def active_jobs() -> list[dict[str, object]]:
+        return []
+
+    @staticmethod
     def history() -> list[dict[str, object]]:
         return []
 
@@ -104,7 +108,9 @@ class FakeApp:
     def request_queue_json(self) -> list[dict[str, object]]:
         return self.request_queue
 
-    def save_request_queue(self, requests: object) -> list[dict[str, object]]:
+    def save_request_queue(
+        self, requests: object, base_requests: object | None = None
+    ) -> list[dict[str, object]]:
         self.request_queue = list(requests) if isinstance(requests, list) else []
         return self.request_queue
 
@@ -184,8 +190,23 @@ class LocalWebServerTests(unittest.TestCase):
         self.assertEqual(response.getheader("Content-Type"), "application/json; charset=utf-8")
         self.assertIn("Unknown local API endpoint", json.loads(raw)["error"])
 
+    def test_active_jobs_endpoint_is_available_to_other_windows(self) -> None:
+        response, raw = self.request("GET", "/api/jobs/active")
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(json.loads(raw), {"runs": []})
+
     def test_app_icon_and_manifest_assets_are_served(self) -> None:
         for path, expected_type in (
+            ("/icons/favicon.svg", "image/svg+xml"),
+            ("/icons/safari-pinned-tab.svg", "image/svg+xml"),
+            ("/icons/app-icon.svg", "image/svg+xml"),
+            ("/icons/favicon-20260923.svg", "image/svg+xml"),
+            ("/icons/favicon-20260923-16.png", "image/png"),
+            ("/icons/favicon-20260923-32.png", "image/png"),
+            ("/icons/safari-pinned-tab-20260923.svg", "image/svg+xml"),
+            ("/icons/apple-touch-icon-20260923.png", "image/png"),
+            ("/favicon-20260923.ico", "image/"),
             ("/icons/favicon-32.png", "image/png"),
             ("/icons/favicon.ico", "image/"),
             ("/favicon.ico", "image/"),
@@ -196,6 +217,15 @@ class LocalWebServerTests(unittest.TestCase):
                 self.assertEqual(response.status, 200)
                 self.assertTrue(response.getheader("Content-Type").startswith(expected_type))
                 self.assertTrue(body)
+
+    def test_index_advertises_versioned_safari_compatible_icons(self) -> None:
+        response, body = self.request("GET", "/")
+
+        self.assertEqual(response.status, 200)
+        html = body.decode("utf-8")
+        self.assertIn('href="/icons/favicon-20260923-32.png"', html)
+        self.assertIn('href="/favicon-20260923.ico"', html)
+        self.assertIn('href="/icons/safari-pinned-tab-20260923.svg"', html)
 
     def test_diagnostics_endpoint_returns_the_current_capture_as_gzip(self) -> None:
         run_reporting.configure_logging(enabled=False, command="test")
@@ -337,13 +367,40 @@ class LocalWebServerTests(unittest.TestCase):
     def test_unsubmitted_queue_is_read_and_written_through_local_api(self) -> None:
         requests = [{"id": "queue-1", "kind": "user", "serials": ["SERIAL123"]}]
 
-        response, raw = self.request("POST", "/api/queue", payload={"requests": requests})
+        response, raw = self.request(
+            "POST", "/api/queue", payload={"requests": requests, "base_requests": []}
+        )
         self.assertEqual(response.status, 200)
         self.assertEqual(json.loads(raw), {"requests": requests})
 
         response, raw = self.request("GET", "/api/queue")
         self.assertEqual(response.status, 200)
         self.assertEqual(json.loads(raw), {"requests": requests})
+
+    def test_old_window_must_refresh_before_saving_shared_queue(self) -> None:
+        response, raw = self.request("POST", "/api/queue", payload={"requests": []})
+
+        self.assertEqual(response.status, 409)
+        self.assertIn("Refresh this AutoEUDM window", json.loads(raw)["error"])
+
+    def test_queue_save_reports_duplicates_removed_during_cross_window_merge(self) -> None:
+        requests = [{"id": "kept", "serials": ["SERIAL123"]}]
+        self.app.save_request_queue_with_conflicts = lambda _local, _base: (
+            requests,
+            ["SERIAL123"],
+        )
+
+        response, raw = self.request(
+            "POST",
+            "/api/queue",
+            payload={"requests": requests, "base_requests": []},
+        )
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(json.loads(raw), {
+            "requests": requests,
+            "duplicate_serials": ["SERIAL123"],
+        })
 
     def test_non_loopback_host_header_is_rejected(self) -> None:
         response, raw = self.request(

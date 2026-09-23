@@ -17,6 +17,7 @@ import urllib.parse
 from . import eudm_request as eudm
 from . import run_reporting
 from .local_service import LocalServiceManager
+from .web_runtime import SubmissionConflict
 from .web_models import Location, RequestSpec, validate_queue
 
 
@@ -243,6 +244,9 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
         if path == "/api/service":
             self._json(self.server.service_manager.status())  # type: ignore[attr-defined]
             return
+        if path == "/api/jobs/active":
+            self._json({"runs": self.app.jobs.active_jobs()})
+            return
         if path == "/api/config":
             self._json(self.app.config_json())
             return
@@ -334,6 +338,22 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
     def _static(self, request_path: str) -> None:
         if request_path == "/":
             relative = "index.html"
+        elif request_path == "/favicon-20260923.ico":
+            relative = "icons/favicon.ico"
+        elif request_path in {
+            "/icons/favicon-20260923-16.png",
+            "/icons/favicon-20260923-32.png",
+            "/icons/favicon-20260923.svg",
+            "/icons/safari-pinned-tab-20260923.svg",
+            "/icons/apple-touch-icon-20260923.png",
+        }:
+            relative = {
+                "/icons/favicon-20260923-16.png": "icons/favicon-16.png",
+                "/icons/favicon-20260923-32.png": "icons/favicon-32.png",
+                "/icons/favicon-20260923.svg": "icons/favicon.svg",
+                "/icons/safari-pinned-tab-20260923.svg": "icons/safari-pinned-tab.svg",
+                "/icons/apple-touch-icon-20260923.png": "icons/apple-touch-icon.png",
+            }[request_path]
         elif request_path == "/favicon.ico":
             # A few browsers and local app shells probe the conventional root
             # favicon path even when the page also declares explicit icon URLs.
@@ -504,7 +524,29 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
             self._json({"drafts": self.app.save_import_draft(payload)})
             return
         if path == "/api/queue":
-            self._json({"requests": self.app.save_request_queue(payload.get("requests"))})
+            base_requests = payload.get("base_requests")
+            if not isinstance(base_requests, list):
+                raise HTTPInputError(
+                    "Refresh this AutoEUDM window before saving so its queue can safely "
+                    "merge changes from other windows.",
+                    409,
+                )
+            save_with_conflicts = getattr(
+                self.app, "save_request_queue_with_conflicts", None
+            )
+            if callable(save_with_conflicts):
+                requests, duplicate_serials = save_with_conflicts(
+                    payload.get("requests"), base_requests
+                )
+            else:
+                requests = self.app.save_request_queue(
+                    payload.get("requests"), base_requests
+                )
+                duplicate_serials = []
+            response = {"requests": requests}
+            if duplicate_serials:
+                response["duplicate_serials"] = duplicate_serials
+            self._json(response)
             return
         if path == "/api/connection/health":
             self._json(self.app.clients.check_connection())
@@ -636,7 +678,11 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
                 return
             concurrency = int(payload.get("concurrency") or self.app.config.concurrency)
             concurrency = max(1, min(50, concurrency))
-            job = self.app.jobs.create(specs, request_for, concurrency)
+            try:
+                job = self.app.jobs.create(specs, request_for, concurrency)
+            except SubmissionConflict as exc:
+                self._error(str(exc), 409)
+                return
             self._json(job.to_json(), 202)
             return
         self._error("Unknown local API endpoint.", 404)

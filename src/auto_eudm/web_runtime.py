@@ -47,6 +47,159 @@ HISTORY_FILENAME = "request-history.json"
 LEGACY_HISTORY_FILENAMES = ("web-request-history.json",)
 MAX_QUEUED_REQUESTS = 1000
 MAX_QUEUED_REQUEST_BYTES = 5 * 1024 * 1024
+_QUEUE_MISSING = object()
+
+
+class SubmissionConflict(eudm.EUDMError):
+    """A request ID is already claimed by a current or previous submission."""
+
+
+def _merge_queue_value(base: Any, local: Any, remote: Any) -> Any:
+    """Three-way merge JSON fields, preferring this save on true conflicts."""
+    if local == remote:
+        return local
+    if local == base:
+        return remote
+    if remote == base:
+        return local
+
+    if isinstance(base, dict) or base is _QUEUE_MISSING:
+        if (isinstance(local, dict) or local is _QUEUE_MISSING) and (
+            isinstance(remote, dict) or remote is _QUEUE_MISSING
+        ):
+            base_values = base if isinstance(base, dict) else {}
+            local_values = local if isinstance(local, dict) else {}
+            remote_values = remote if isinstance(remote, dict) else {}
+            merged: dict[str, Any] = {}
+            for key in base_values.keys() | local_values.keys() | remote_values.keys():
+                value = _merge_queue_value(
+                    base_values.get(key, _QUEUE_MISSING),
+                    local_values.get(key, _QUEUE_MISSING),
+                    remote_values.get(key, _QUEUE_MISSING),
+                )
+                if value is not _QUEUE_MISSING:
+                    merged[key] = value
+            return merged
+    return local
+
+
+def _queue_items_by_id(requests: list[dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    items: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for index, request in enumerate(requests):
+        request_id = str(request.get("id") or f"\0index:{index}")
+        items[request_id] = request
+        if request_id not in order:
+            order.append(request_id)
+    return items, order
+
+
+def _merge_queue_request(base: Any, local: dict[str, Any], remote: dict[str, Any]) -> dict[str, Any]:
+    merged = _merge_queue_value(base, local, remote)
+    if not isinstance(merged, dict):
+        return local
+
+    progress_rank = {"queued": 0, "running": 1, "failed": 2, "succeeded": 2}
+    local_state = str(local.get("result_state") or "")
+    remote_state = str(remote.get("result_state") or "")
+    local_rank = progress_rank.get(local_state, -1)
+    remote_rank = progress_rank.get(remote_state, -1)
+    if local_rank != remote_rank:
+        advanced = local if local_rank > remote_rank else remote
+        for key in ("result_state", "result_message", "request_id", "order_id"):
+            if key in advanced:
+                merged[key] = advanced[key]
+            else:
+                merged.pop(key, None)
+
+    for key in ("request_id", "order_id"):
+        if not merged.get(key):
+            merged[key] = local.get(key) or remote.get(key) or merged.get(key)
+        if not merged.get(key):
+            merged.pop(key, None)
+    return merged
+
+
+def merge_request_queues(
+    base: list[dict[str, Any]],
+    local: list[dict[str, Any]],
+    remote: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge two windows' queue edits without dropping independent changes."""
+    base_items, base_order = _queue_items_by_id(base)
+    local_items, local_order = _queue_items_by_id(local)
+    remote_items, remote_order = _queue_items_by_id(remote)
+    merged_items: dict[str, dict[str, Any]] = {}
+
+    for request_id in base_items.keys() | local_items.keys() | remote_items.keys():
+        before = base_items.get(request_id, _QUEUE_MISSING)
+        ours = local_items.get(request_id, _QUEUE_MISSING)
+        theirs = remote_items.get(request_id, _QUEUE_MISSING)
+        if before is not _QUEUE_MISSING:
+            if ours is _QUEUE_MISSING:
+                value = theirs if theirs != before else _QUEUE_MISSING
+            elif theirs is _QUEUE_MISSING:
+                value = ours if ours != before else _QUEUE_MISSING
+            else:
+                value = _merge_queue_request(before, ours, theirs)
+        elif ours is _QUEUE_MISSING:
+            value = theirs
+        elif theirs is _QUEUE_MISSING:
+            value = ours
+        else:
+            value = _merge_queue_request({}, ours, theirs)
+        if value is not _QUEUE_MISSING:
+            merged_items[request_id] = value
+
+    base_ids = set(base_order)
+    local_base_order = [key for key in local_order if key in base_ids and key in merged_items]
+    remote_base_order = [key for key in remote_order if key in base_ids and key in merged_items]
+    common_base_order = [key for key in base_order if key in merged_items]
+    local_reordered = local_base_order != common_base_order
+    remote_reordered = remote_base_order != common_base_order
+    preferred = local_order if local_reordered or not remote_reordered else remote_order
+    secondary = remote_order if preferred is local_order else local_order
+    merged_order = [key for key in preferred if key in merged_items]
+    merged_order.extend(key for key in secondary if key in merged_items and key not in merged_order)
+    merged_order.extend(key for key in merged_items if key not in merged_order)
+    return [merged_items[key] for key in merged_order]
+
+
+def deduplicate_request_queue(
+    requests: list[dict[str, Any]], preferred_request_ids: list[str]
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Keep each serial once, preferring entries already present on the server."""
+    items, order = _queue_items_by_id(requests)
+    preferred = [key for key in preferred_request_ids if key in items]
+    preferred.extend(key for key in order if key not in preferred)
+    seen_serials: set[str] = set()
+    duplicates: list[str] = []
+    cleaned: dict[str, dict[str, Any]] = {}
+
+    for request_id in preferred:
+        request = items[request_id]
+        serials = request.get("serials")
+        if not isinstance(serials, list):
+            cleaned[request_id] = request
+            continue
+        unique_serials = []
+        for serial in serials:
+            value = str(serial or "")
+            key = " ".join(value.split()).casefold()
+            if key and key in seen_serials:
+                if value.strip() and value.strip() not in duplicates:
+                    duplicates.append(value.strip())
+                continue
+            if key:
+                seen_serials.add(key)
+            unique_serials.append(serial)
+        if serials and not unique_serials:
+            continue
+        if unique_serials != serials:
+            request = {**request, "serials": unique_serials}
+        cleaned[request_id] = request
+
+    return [cleaned[key] for key in order if key in cleaned], duplicates
 
 
 def populate_spec(
@@ -829,6 +982,7 @@ class JobStore:
     def create(
         self, specs: list[RequestSpec], request_for: str, concurrency: int
     ) -> SubmissionJob:
+        request_ids = {spec.client_id for spec in specs}
         job = SubmissionJob(
             uuid.uuid4().hex,
             [JobEntry(spec) for spec in specs],
@@ -836,7 +990,52 @@ class JobStore:
             concurrency,
             self.clients.config.simulate,
         )
-        self._register_job(job)
+        with self.lock:
+            for existing in self.jobs.values():
+                existing_ids = {entry.spec.client_id for entry in existing.entries}
+                if not request_ids.intersection(existing_ids):
+                    continue
+                existing_specs = {
+                    entry.spec.client_id: entry.spec for entry in existing.entries
+                }
+                requested_specs = {spec.client_id: spec for spec in specs}
+                if request_ids == existing_ids and all(
+                    existing_specs[request_id] == requested_specs[request_id]
+                    for request_id in request_ids
+                ):
+                    return existing
+                raise SubmissionConflict(
+                    "Some queued requests already belong to another submission. "
+                    "Follow its progress, or re-add completed requests from history."
+                )
+            historical_request_ids: set[str] = set()
+            for run in self.persisted_history:
+                entries = run.get("entries") if isinstance(run, dict) else None
+                if not isinstance(entries, list):
+                    continue
+                historical_request_ids.update(
+                    str(entry.get("id"))
+                    for entry in entries
+                    if isinstance(entry, dict) and entry.get("id")
+                )
+            if request_ids.intersection(historical_request_ids):
+                raise SubmissionConflict(
+                    "These requests already have a submission record. "
+                    "Re-add them from request history to create a new request."
+                )
+            self.jobs[job.job_id] = job
+            while len(self.jobs) > MAX_LIVE_SUBMISSION_JOBS:
+                removable = next(
+                    (
+                        job_id
+                        for job_id, existing in self.jobs.items()
+                        if job_id != job.job_id and existing.is_finished()
+                    ),
+                    None,
+                )
+                if removable is None:
+                    break
+                self.jobs.pop(removable, None)
         threading.Thread(target=self._run, args=(job,), daemon=True).start()
         return job
 
@@ -851,6 +1050,12 @@ class JobStore:
         with self.lock:
             jobs = list(self.jobs.values())
         return sum(not job.is_finished() for job in jobs)
+
+    def active_jobs(self) -> list[dict[str, Any]]:
+        with self.lock:
+            jobs = list(self.jobs.values())
+        active = [job.to_json() for job in jobs if not job.is_finished()]
+        return sorted(active, key=lambda job: str(job.get("created_at", "")), reverse=True)
 
     def history(self, limit: int = 50) -> list[dict[str, Any]]:
         with self.lock:
@@ -1488,12 +1693,31 @@ class Application:
         with self.request_queue_lock:
             return json.loads(json.dumps(self.request_queue))
 
-    def save_request_queue(self, raw: Any) -> list[dict[str, Any]]:
-        requests = self._normalise_request_queue(raw)
+    def save_request_queue_with_conflicts(
+        self, raw: Any, base_raw: Any | None = None
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        incoming = self._normalise_request_queue(raw)
         with self.request_queue_lock:
+            if base_raw is None:
+                requests = incoming
+                preferred_ids: list[str] = []
+            else:
+                base = self._normalise_request_queue(base_raw)
+                requests = self._normalise_request_queue(
+                    merge_request_queues(base, incoming, self.request_queue)
+                )
+                _, preferred_ids = _queue_items_by_id(self.request_queue)
+            requests, duplicates = deduplicate_request_queue(requests, preferred_ids)
+            requests = self._normalise_request_queue(requests)
             self._write_request_queue(requests)
             self.request_queue = requests
-            return json.loads(json.dumps(self.request_queue))
+            return json.loads(json.dumps(self.request_queue)), duplicates
+
+    def save_request_queue(
+        self, raw: Any, base_raw: Any | None = None
+    ) -> list[dict[str, Any]]:
+        requests, _ = self.save_request_queue_with_conflicts(raw, base_raw)
+        return requests
 
     @staticmethod
     def _verification_cache_key(value: str) -> str:

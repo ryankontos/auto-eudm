@@ -5,6 +5,13 @@ const state = {
   queueLoaded: false,
   persistedQueueSnapshot: null,
   queuePersistTimer: null,
+  queuePersistInFlight: false,
+  queueSyncTimer: null,
+  queueSyncInFlight: false,
+  sharedSubmissionTimer: null,
+  preferencesSyncTimer: null,
+  preferencesSyncInFlight: false,
+  settingsBasePreferences: null,
   queueSearch: "",
   selectedId: null,
   connection: null,
@@ -558,6 +565,35 @@ function queueSnapshot() {
   }
 }
 
+function renderSharedUpdate() {
+  const active = document.activeElement;
+  const focusId = active instanceof HTMLElement ? active.id : "";
+  let selection = null;
+  if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) {
+    try {
+      if (Number.isInteger(active.selectionStart) && Number.isInteger(active.selectionEnd)) {
+        selection = {
+          start: active.selectionStart,
+          end: active.selectionEnd,
+          direction: active.selectionDirection,
+        };
+      }
+    } catch (_) {}
+  }
+
+  renderAll();
+
+  if (!focusId) return;
+  const replacement = document.getElementById(focusId);
+  if (!replacement || replacement.disabled || replacement.hidden) return;
+  replacement.focus({ preventScroll: true });
+  if (selection && typeof replacement.setSelectionRange === "function") {
+    try {
+      replacement.setSelectionRange(selection.start, selection.end, selection.direction);
+    } catch (_) {}
+  }
+}
+
 function appStateSnapshot() {
   return {
     queue: structuredClone(state.queue),
@@ -660,12 +696,176 @@ function resetPersistedValidationState(request) {
 
 async function loadPersistedQueue() {
   const payload = await api("/api/queue");
-  state.queue = Array.isArray(payload.requests)
-    ? payload.requests.map(resetPersistedValidationState)
-    : [];
+  const storedRequests = Array.isArray(payload.requests) ? payload.requests : [];
+  state.queue = storedRequests.map(resetPersistedValidationState);
   state.selectedId = state.queue[0]?.id || null;
-  state.persistedQueueSnapshot = queueSnapshot();
+  state.persistedQueueSnapshot = JSON.stringify(storedRequests);
   state.queueLoaded = true;
+  if (queueSnapshot() !== state.persistedQueueSnapshot) persistQueueSoon();
+}
+
+const QUEUE_MISSING = Symbol("missing queue value");
+
+function queueValuesEqual(left, right) {
+  if (left === right) return true;
+  if (left === QUEUE_MISSING || right === QUEUE_MISSING) return false;
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function mergeQueueValue(base, local, remote) {
+  if (queueValuesEqual(local, remote)) return local;
+  if (queueValuesEqual(local, base)) return remote;
+  if (queueValuesEqual(remote, base)) return local;
+  const plain = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+  if ((plain(base) || base === QUEUE_MISSING)
+    && (plain(local) || local === QUEUE_MISSING)
+    && (plain(remote) || remote === QUEUE_MISSING)) {
+    const baseValues = plain(base) ? base : {};
+    const localValues = plain(local) ? local : {};
+    const remoteValues = plain(remote) ? remote : {};
+    const merged = {};
+    const keys = new Set([
+      ...Object.keys(baseValues),
+      ...Object.keys(localValues),
+      ...Object.keys(remoteValues),
+    ]);
+    keys.forEach((key) => {
+      const value = mergeQueueValue(
+        Object.prototype.hasOwnProperty.call(baseValues, key) ? baseValues[key] : QUEUE_MISSING,
+        Object.prototype.hasOwnProperty.call(localValues, key) ? localValues[key] : QUEUE_MISSING,
+        Object.prototype.hasOwnProperty.call(remoteValues, key) ? remoteValues[key] : QUEUE_MISSING,
+      );
+      if (value !== QUEUE_MISSING) merged[key] = value;
+    });
+    return merged;
+  }
+  return local;
+}
+
+function mergeQueueSnapshots(base, local, remote) {
+  const keyRequests = (requests) => {
+    const items = new Map();
+    const order = [];
+    requests.forEach((request, index) => {
+      const key = String(request?.id || `__index:${index}`);
+      if (!items.has(key)) order.push(key);
+      items.set(key, request);
+    });
+    return { items, order };
+  };
+  const before = keyRequests(base);
+  const ours = keyRequests(local);
+  const theirs = keyRequests(remote);
+  const ids = new Set([...before.items.keys(), ...ours.items.keys(), ...theirs.items.keys()]);
+  const merged = new Map();
+
+  ids.forEach((id) => {
+    const original = before.items.has(id) ? before.items.get(id) : QUEUE_MISSING;
+    const localValue = ours.items.has(id) ? ours.items.get(id) : QUEUE_MISSING;
+    const remoteValue = theirs.items.has(id) ? theirs.items.get(id) : QUEUE_MISSING;
+    let value;
+    if (original !== QUEUE_MISSING) {
+      if (localValue === QUEUE_MISSING) {
+        value = queueValuesEqual(remoteValue, original) ? QUEUE_MISSING : remoteValue;
+      } else if (remoteValue === QUEUE_MISSING) {
+        value = queueValuesEqual(localValue, original) ? QUEUE_MISSING : localValue;
+      } else {
+        value = mergeQueueValue(original, localValue, remoteValue);
+      }
+    } else if (localValue === QUEUE_MISSING) {
+      value = remoteValue;
+    } else if (remoteValue === QUEUE_MISSING) {
+      value = localValue;
+    } else {
+      value = mergeQueueValue({}, localValue, remoteValue);
+    }
+    if (value !== QUEUE_MISSING) merged.set(id, value);
+  });
+
+  const baseIds = new Set(before.order);
+  const baseOrder = before.order.filter((id) => merged.has(id));
+  const localBaseOrder = ours.order.filter((id) => baseIds.has(id) && merged.has(id));
+  const remoteBaseOrder = theirs.order.filter((id) => baseIds.has(id) && merged.has(id));
+  const localReordered = localBaseOrder.some((id, index) => id !== baseOrder[index]);
+  const remoteReordered = remoteBaseOrder.some((id, index) => id !== baseOrder[index]);
+  const preferred = localReordered || !remoteReordered ? ours.order : theirs.order;
+  const secondary = preferred === ours.order ? theirs.order : ours.order;
+  const order = [];
+  [...preferred, ...secondary, ...merged.keys()].forEach((id) => {
+    if (merged.has(id) && !order.includes(id)) order.push(id);
+  });
+  return order.map((id) => merged.get(id));
+}
+
+function applyQueueFromServer(requests, snapshot) {
+  const previousSnapshot = queueSnapshot();
+  state.queue = requests.map(resetPersistedValidationState);
+  state.persistedQueueSnapshot = snapshot;
+  if (state.currentJob?.state === "finished") {
+    const jobIds = new Set((state.currentJob.entries || []).map((entry) => entry.id));
+    if (!state.queue.some((request) => jobIds.has(request.id))) state.currentJob = null;
+  }
+  if (state.selectedId && !state.queue.some((request) => request.id === state.selectedId)) {
+    state.selectedId = state.queue[0]?.id || null;
+  }
+  if (queueSnapshot() !== previousSnapshot) renderSharedUpdate();
+  if (queueSnapshot() !== state.persistedQueueSnapshot) persistQueueSoon();
+}
+
+async function syncSharedQueue() {
+  if (!state.queueLoaded || state.queueSyncInFlight || document.hidden) return;
+  state.queueSyncInFlight = true;
+  try {
+    const payload = await api("/api/queue");
+    const requests = Array.isArray(payload.requests) ? payload.requests : [];
+    const snapshot = JSON.stringify(requests);
+    const localSnapshot = queueSnapshot();
+    if (snapshot === state.persistedQueueSnapshot) {
+      if (localSnapshot !== state.persistedQueueSnapshot
+        && !state.queuePersistTimer && !state.queuePersistInFlight) persistQueueSoon();
+      return;
+    }
+    if (localSnapshot === snapshot) {
+      state.persistedQueueSnapshot = snapshot;
+    } else if (localSnapshot === state.persistedQueueSnapshot && !state.queuePersistTimer) {
+      applyQueueFromServer(requests, snapshot);
+    } else {
+      // The server merges this window's pending edits with the latest queue.
+      persistQueueSoon();
+    }
+  } catch (error) {
+    console.warn("Could not refresh the shared request queue.", error);
+  } finally {
+    state.queueSyncInFlight = false;
+  }
+}
+
+async function syncSharedPreferences() {
+  if (document.hidden || state.preferencesSyncInFlight || $("dialog[open]")) return;
+  state.preferencesSyncInFlight = true;
+  try {
+    const incoming = await api("/api/preferences");
+    if (JSON.stringify(incoming) === JSON.stringify(state.preferences)) return;
+    const pcToolkitWasEnabled = state.preferences?.pc_toolkit_enabled === true;
+    state.preferences = incoming;
+    const concurrency = Number(incoming.concurrency);
+    if (Number.isInteger(concurrency) && concurrency >= 1 && concurrency <= 50
+      && !elements.concurrency.matches(":focus")) {
+      elements.concurrency.value = String(concurrency);
+      try {
+        localStorage.setItem(CONCURRENCY_STORAGE_KEY, String(concurrency));
+      } catch (_) {}
+    }
+    renderConnectionSheet();
+    renderSharedUpdate();
+    if (pcToolkitWasEnabled !== (incoming.pc_toolkit_enabled === true)) {
+      void refreshPcToolkitStatus();
+    }
+  } catch (error) {
+    console.warn("Could not refresh shared AutoEUDM settings.", error);
+  } finally {
+    state.preferencesSyncInFlight = false;
+  }
 }
 
 function persistQueueSoon() {
@@ -677,18 +877,43 @@ function persistQueueSoon() {
     state.queuePersistTimer = null;
     const queuedSnapshot = queueSnapshot();
     if (!queuedSnapshot || queuedSnapshot === state.persistedQueueSnapshot) return;
+    if (state.queuePersistInFlight) return;
+    state.queuePersistInFlight = true;
+    let saveSucceeded = false;
     try {
+      const baseRequests = JSON.parse(state.persistedQueueSnapshot || "[]");
       const payload = await api("/api/queue", {
         method: "POST",
-        body: JSON.stringify({ requests: state.queue }),
+        body: JSON.stringify({
+          requests: JSON.parse(queuedSnapshot),
+          base_requests: baseRequests,
+        }),
       });
-      if (queuedSnapshot === queueSnapshot()) {
-        state.persistedQueueSnapshot = JSON.stringify(payload.requests || []);
-      } else {
-        persistQueueSoon();
+      const savedRequests = Array.isArray(payload.requests) ? payload.requests : [];
+      const savedSnapshot = JSON.stringify(savedRequests);
+      const duplicateSerials = Array.isArray(payload.duplicate_serials)
+        ? payload.duplicate_serials : [];
+      if (duplicateSerials.length) {
+        const examples = duplicateSerials.slice(0, 4).join(", ");
+        const more = duplicateSerials.length > 4 ? ` and ${duplicateSerials.length - 4} more` : "";
+        toast(`Already in the shared queue; duplicate serials were not added: ${examples}${more}.`, "error");
       }
+      const beforeMergeSnapshot = queueSnapshot();
+      const merged = queuedSnapshot === beforeMergeSnapshot
+        ? savedRequests
+        : mergeQueueSnapshots(JSON.parse(queuedSnapshot), state.queue, savedRequests);
+      state.queue = merged.map(resetPersistedValidationState);
+      state.persistedQueueSnapshot = savedSnapshot;
+      if (state.selectedId && !state.queue.some((request) => request.id === state.selectedId)) {
+        state.selectedId = state.queue[0]?.id || null;
+      }
+      if (queueSnapshot() !== beforeMergeSnapshot) renderSharedUpdate();
+      saveSucceeded = true;
     } catch (error) {
       toast(`Could not save the request queue: ${error.message}`, "error");
+    } finally {
+      state.queuePersistInFlight = false;
+      if (saveSucceeded && queueSnapshot() !== state.persistedQueueSnapshot) persistQueueSoon();
     }
   }, 250);
 }
@@ -3848,6 +4073,7 @@ async function enrichImportPreview(payload = state.importPreview, { requests: re
 }
 
 function openSettings({ tab = "", model = "" } = {}) {
+  state.settingsBasePreferences = structuredClone(state.preferences || {});
   const columns = importColumns() || {};
   $("#spreadsheetUsernameColumnInput").value = columns.username || "Username";
   $("#spreadsheetDeploymentColumnInput").value = columns.deployment_serial || "SN";
@@ -5001,12 +5227,7 @@ function updateImportColumnMapButton() {
 }
 
 async function saveImportColumnPreferences(columns) {
-  const preferences = {
-    concurrency: Number(elements.concurrency.value),
-    validate_quick_import: validationEnabled("validate_quick_import"),
-    validate_workbook_import: validationEnabled("validate_workbook_import"),
-    import_columns: columns,
-  };
+  const preferences = { import_columns: columns };
   state.preferences = await api("/api/preferences", {
     method: "POST",
     body: JSON.stringify(preferences),
@@ -8246,6 +8467,22 @@ async function restoreSubmissionFromHistory() {
   }
 }
 
+async function discoverSharedSubmission() {
+  if (document.hidden || state.currentJob || state.submissionStarting || !state.queue.length) return;
+  try {
+    const queueIds = new Set(state.queue.map((request) => request.id));
+    const payload = await api("/api/jobs/active");
+    const matchingRun = (payload.runs || []).find((run) =>
+      (run.entries || []).some((entry) => queueIds.has(entry.id)),
+    );
+    if (!matchingRun || state.currentJob || state.submissionStarting) return;
+    renderProgress(matchingRun);
+    if (matchingRun.state !== "finished") scheduleJobPoll(matchingRun.job_id, 0);
+  } catch (error) {
+    console.warn("Could not discover a submission from another window.", error);
+  }
+}
+
 async function pollJob(jobId) {
   if (state.pollInFlight) return;
   if (state.currentJob && state.currentJob.job_id !== jobId) return;
@@ -8572,12 +8809,18 @@ function bindEvents() {
         ? $("#startAtLoginInput").checked
         : Boolean(state.preferences?.start_at_login),
     };
+    const settingsBase = state.settingsBasePreferences || state.preferences || {};
+    const changedPreferences = Object.fromEntries(
+      Object.entries(preferences).filter(([key, value]) =>
+        JSON.stringify(value) !== JSON.stringify(settingsBase[key])),
+    );
     button.disabled = true;
     try {
       state.preferences = await api("/api/preferences", {
         method: "POST",
-        body: JSON.stringify(preferences),
+        body: JSON.stringify(changedPreferences),
       });
+      state.settingsBasePreferences = structuredClone(state.preferences);
       void refreshServiceStatus({ check: true });
       renderConnectionSheet();
       const pcToolkitTransportChanged = state.preferences.pc_toolkit_transport !== pcToolkitTransportWas;
@@ -9048,9 +9291,18 @@ function bindEvents() {
     renderSubmissionNotice();
   });
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden && state.currentJob && state.currentJob.state !== "finished") {
+    if (document.hidden) return;
+    void syncSharedQueue();
+    void syncSharedPreferences();
+    void discoverSharedSubmission();
+    if (state.currentJob && state.currentJob.state !== "finished") {
       scheduleJobPoll(state.currentJob.job_id, 0);
     }
+  });
+  window.addEventListener("focus", () => {
+    void syncSharedQueue();
+    void syncSharedPreferences();
+    void discoverSharedSubmission();
   });
   document.addEventListener("keydown", (event) => {
     const mac = /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent);
@@ -9128,6 +9380,9 @@ async function init() {
     await refreshPcToolkitStatus();
     void startAuthenticationChecks();
     await loadPersistedQueue();
+    state.queueSyncTimer = window.setInterval(syncSharedQueue, 1800);
+    state.sharedSubmissionTimer = window.setInterval(discoverSharedSubmission, 2400);
+    state.preferencesSyncTimer = window.setInterval(syncSharedPreferences, 5000);
     if (state.preferences.save_alm_import_drafts !== false) await loadImportDrafts();
     const spreadsheetEnabled = Boolean(state.config.spreadsheet_import_enabled);
     $("#importSheetButton").hidden = !spreadsheetEnabled;

@@ -17,6 +17,7 @@ from auto_eudm import web_runtime as eudm_runtime
 from auto_eudm.web_models import RequestSpec, WorkbookImport
 from auto_eudm.web_runtime import (
     Application,
+    SubmissionConflict,
     ClientManager,
     ImportJob,
     JobEntry,
@@ -26,6 +27,7 @@ from auto_eudm.web_runtime import (
     MAX_PENDING_IMPORTS,
     SEARCH_PROBE_POOL_SIZE,
     SubmissionJob,
+    merge_request_queues,
 )
 
 
@@ -804,6 +806,119 @@ class SubmissionHistoryTests(unittest.TestCase):
             loaded.request_queue_lock = threading.Lock()
             loaded.request_queue = loaded._load_request_queue()
             self.assertEqual(loaded.request_queue_json(), requests)
+
+    def test_request_queue_merge_preserves_changes_from_both_windows(self) -> None:
+        base = [
+            {"id": "one", "status": "Pending Rebuild", "user": "alice"},
+            {"id": "two", "status": "Used Stock", "user": "bob"},
+        ]
+        local = [
+            {"id": "one", "status": "Pending Rebuild", "user": "alice.smith"},
+            {"id": "two", "status": "Used Stock", "user": "bob"},
+            {"id": "three", "status": "Pending Decom", "user": ""},
+        ]
+        remote = [
+            {"id": "one", "status": "Pending Decom", "user": "alice"},
+            {"id": "two", "status": "Used Stock", "user": "bob"},
+            {"id": "four", "status": "Used Stock", "user": ""},
+        ]
+
+        merged = merge_request_queues(base, local, remote)
+
+        self.assertEqual(
+            {item["id"]: item for item in merged},
+            {
+                "one": {"id": "one", "status": "Pending Decom", "user": "alice.smith"},
+                "two": {"id": "two", "status": "Used Stock", "user": "bob"},
+                "three": {"id": "three", "status": "Pending Decom", "user": ""},
+                "four": {"id": "four", "status": "Used Stock", "user": ""},
+            },
+        )
+
+    def test_request_queue_merge_keeps_submission_progress_monotonic(self) -> None:
+        base = [{"id": "one", "result_state": "running", "result_message": "Step 2"}]
+        local = [{"id": "one", "result_state": "running", "result_message": "Step 2", "request_id": ""}]
+        remote = [{"id": "one", "result_state": "succeeded", "result_message": "Submitted", "request_id": "163600"}]
+
+        merged = merge_request_queues(base, local, remote)
+
+        self.assertEqual(merged[0]["result_state"], "succeeded")
+        self.assertEqual(merged[0]["result_message"], "Submitted")
+        self.assertEqual(merged[0]["request_id"], "163600")
+
+    def test_stale_window_queue_save_merges_against_current_server_state(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            app = bare_application()
+            app.request_queue_path = Path(folder) / "queue.json"
+            app.request_queue_lock = threading.Lock()
+            base = [{"id": "one", "status": "Pending Rebuild", "user": "alice"}]
+            app.request_queue = [
+                {"id": "one", "status": "Pending Decom", "user": "alice"},
+                {"id": "remote", "status": "Used Stock", "user": "bob"},
+            ]
+            local = [
+                {"id": "one", "status": "Pending Rebuild", "user": "alice.smith"},
+                {"id": "local", "status": "Used Stock", "user": "carol"},
+            ]
+
+            saved = app.save_request_queue(local, base)
+
+        by_id = {request["id"]: request for request in saved}
+        self.assertEqual(by_id["one"]["status"], "Pending Decom")
+        self.assertEqual(by_id["one"]["user"], "alice.smith")
+        self.assertIn("remote", by_id)
+        self.assertIn("local", by_id)
+
+    def test_shared_queue_keeps_duplicate_serials_only_once(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            app = bare_application()
+            app.request_queue_path = Path(folder) / "queue.json"
+            app.request_queue_lock = threading.Lock()
+            app.request_queue = [{"id": "remote", "serials": ["SERIAL123"]}]
+            incoming = [
+                {"id": "duplicate", "serials": ["serial123"]},
+                {"id": "unique", "serials": ["UNIQUE456", "unique456"]},
+            ]
+
+            saved, duplicates = app.save_request_queue_with_conflicts(incoming, [])
+
+        by_id = {request["id"]: request for request in saved}
+        self.assertNotIn("duplicate", by_id)
+        self.assertEqual(by_id["remote"]["serials"], ["SERIAL123"])
+        self.assertEqual(by_id["unique"]["serials"], ["UNIQUE456"])
+        self.assertEqual(set(duplicates), {"serial123", "unique456"})
+
+    def test_job_store_reuses_identical_active_run_and_rejects_overlap(self) -> None:
+        store = bare_job_store(Path("history.json"))
+        store.clients = SimpleNamespace(config=SimpleNamespace(simulate=True))
+
+        with mock.patch.object(store, "_run") as run_job:
+            active = store.create([valid_request("shared")], "requester", 1)
+            duplicate = store.create([valid_request("shared")], "requester", 1)
+
+            self.assertIs(duplicate, active)
+            self.assertEqual(run_job.call_count, 1)
+            self.assertEqual(store.active_jobs()[0]["job_id"], active.job_id)
+            active.set_state("finished")
+            self.assertEqual(store.active_jobs(), [])
+            self.assertIs(
+                store.create([valid_request("shared")], "requester", 1), active
+            )
+            self.assertEqual(run_job.call_count, 1)
+            with self.assertRaises(SubmissionConflict):
+                store.create(
+                    [valid_request("shared"), valid_request("different")],
+                    "requester",
+                    1,
+                )
+
+    def test_job_store_rejects_request_ids_already_in_saved_history(self) -> None:
+        store = bare_job_store(Path("history.json"))
+        store.clients = SimpleNamespace(config=SimpleNamespace(simulate=True))
+        store.persisted_history = [{"job_id": "old", "entries": [{"id": "already-sent"}]}]
+
+        with self.assertRaises(SubmissionConflict):
+            store.create([valid_request("already-sent")], "requester", 1)
 
     def test_parallel_completions_are_all_persisted(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
