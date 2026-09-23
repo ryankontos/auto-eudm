@@ -184,6 +184,18 @@ class LocalWebServerTests(unittest.TestCase):
         self.assertEqual(response.getheader("Content-Type"), "application/json; charset=utf-8")
         self.assertIn("Unknown local API endpoint", json.loads(raw)["error"])
 
+    def test_app_icon_and_manifest_assets_are_served(self) -> None:
+        for path, expected_type in (
+            ("/icons/favicon-32.png", "image/png"),
+            ("/icons/favicon.ico", "image/"),
+            ("/site.webmanifest", "application/manifest+json"),
+        ):
+            with self.subTest(path=path):
+                response, body = self.request("GET", path)
+                self.assertEqual(response.status, 200)
+                self.assertTrue(response.getheader("Content-Type").startswith(expected_type))
+                self.assertTrue(body)
+
     def test_diagnostics_endpoint_returns_the_current_capture_as_gzip(self) -> None:
         run_reporting.configure_logging(enabled=False, command="test")
         self.addCleanup(run_reporting.configure_logging, enabled=False, command="test")
