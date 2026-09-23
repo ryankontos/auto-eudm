@@ -34,7 +34,7 @@
         </button>
       </div>
       <div class="header-tools" aria-label="Application tools">
-        <button id="updateAvailableButton" class="button update-available-button" type="button" hidden><i data-lucide="download"></i><span>Update ready</span></button>
+        <button id="updateAvailableButton" class="button secondary compact header-icon-button update-available-button" type="button" aria-haspopup="dialog" aria-controls="updateNotesDialog" aria-label="Review available AutoEUDM update" title="Review update notes" hidden><i data-lucide="download"></i><span class="visually-hidden">Update available</span></button>
         <button id="checkUpdatesHeaderButton" class="button secondary compact header-icon-button" type="button" aria-label="Check for updates" title="Check GitHub for newer commits"><i data-lucide="refresh-cw"></i><span class="visually-hidden">Check updates</span></button>
         <button id="commandPaletteButton" class="button secondary compact header-icon-button" type="button" aria-label="Open command palette" title="Open command palette (⌘K or Ctrl+K)"><i data-lucide="command"></i><span class="visually-hidden">Commands</span></button>
         <button id="historyButton" class="button secondary compact header-icon-button" type="button" aria-keyshortcuts="Alt+Shift+H Control+Shift+H" aria-label="Open request history" title="Open request history"><i data-lucide="history"></i><span class="visually-hidden">Request history</span></button>
@@ -341,6 +341,22 @@
     </section>
   </dialog>
 
+  <dialog id="updateNotesDialog" class="modal update-notes-dialog" aria-labelledby="updateNotesTitle">
+    <section class="modal-card update-notes-card">
+      <div class="modal-header">
+        <h2 id="updateNotesTitle"><span class="modal-title-icon" aria-hidden="true"><i data-lucide="download"></i></span><span>AutoEUDM update</span></h2>
+        <button id="closeUpdateNotesButton" class="icon-button" type="button" aria-label="Later"><i data-lucide="x"></i></button>
+      </div>
+      <p id="updateNotesSummary" class="update-notes-summary"></p>
+      <div id="updateNotesContent" class="update-notes-content"></div>
+      <p id="updateNotesConstraint" class="update-notes-constraint" hidden></p>
+      <div class="modal-actions">
+        <button id="laterUpdateButton" class="button secondary" type="button">Later</button>
+        <button id="confirmUpdateButton" class="button primary" type="button"><i data-lucide="download"></i><span>Update now</span></button>
+      </div>
+    </section>
+  </dialog>
+
   <dialog id="pasteDialog" class="modal">
     <form method="dialog" class="modal-card">
       <div class="modal-header">
@@ -591,10 +607,15 @@
         <div class="service-settings-card">
           <div class="service-settings-heading">
             <div><strong>Background app</strong><small>Runs in the background and checks GitHub for newer commits automatically.</small></div>
-            <label class="service-branch-field">Update branch<select id="updateBranchInput" aria-label="Git branch to check for updates"></select></label>
+            <label class="service-channel-field">Build channel
+              <select id="updateChannelInput" aria-label="AutoEUDM build channel">
+                <option value="stable">Stable releases</option>
+                <option value="development">Development builds (main)</option>
+              </select>
+            </label>
           </div>
           <div class="service-update-row">
-            <p id="serviceUpdateStatus" role="status">Checking for updates…</p>
+            <p id="serviceUpdateStatus" role="status">Update status will appear here.</p>
             <div class="service-update-actions">
               <button id="checkUpdatesButton" class="button secondary compact" type="button">Check</button>
               <button id="applyUpdateButton" class="button primary compact" type="button" hidden><i data-lucide="download"></i><span>Update AutoEUDM</span></button>

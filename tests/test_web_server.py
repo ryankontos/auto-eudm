@@ -166,7 +166,10 @@ class LocalWebServerTests(unittest.TestCase):
         response, raw = self.request("GET", "/api/runtime")
 
         self.assertEqual(response.status, 200)
-        self.assertEqual(json.loads(raw), {"commit_id": "test-commit", "pid": mock.ANY})
+        self.assertEqual(
+            json.loads(raw),
+            {"commit_id": "test-commit", "pid": mock.ANY, "background": False},
+        )
         self.assertEqual(response.getheader("Server"), "AutoEUDM/1.0")
         self.assertEqual(response.getheader("Cache-Control"), "no-store")
         self.assertEqual(response.getheader("X-Frame-Options"), "DENY")

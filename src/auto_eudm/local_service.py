@@ -18,6 +18,44 @@ CONTROL_FILE = ROOT / "results" / "auto-eudm-service-control.json"
 SERVICE_LABEL = "com.ryankontos.auto-eudm"
 UPDATE_INTERVAL_SECONDS = 60
 GIT_TIMEOUT_SECONDS = 30
+UPDATE_NOTES_DIRECTORY = "update-notes"
+UPDATE_NOTES_MAX_COUNT = 20
+UPDATE_NOTE_MAX_CHARACTERS = 6000
+
+
+def branch_for_channel(channel: object) -> str:
+    return "main" if str(channel or "").strip().casefold() == "development" else "stable"
+
+
+def _update_notes_since(base_commit: str, target_ref: str) -> list[dict[str, str]]:
+    """Read concise Markdown notes added or changed by incoming commits."""
+    changed = _git(
+        "diff", "--name-only", "--diff-filter=ACMR",
+        f"{base_commit}..{target_ref}", "--", UPDATE_NOTES_DIRECTORY,
+    )
+    if changed.returncode != 0:
+        return []
+    paths = sorted(set(changed.stdout.splitlines()), reverse=True)[:UPDATE_NOTES_MAX_COUNT]
+    notes: list[dict[str, str]] = []
+    for path in paths:
+        parts = path.split("/")
+        if (
+            len(parts) != 2
+            or parts[0] != UPDATE_NOTES_DIRECTORY
+            or not parts[1].lower().endswith(".md")
+            or parts[1] in {"", ".", ".."}
+        ):
+            continue
+        result = _git("show", f"{target_ref}:{path}", timeout=5)
+        if result.returncode != 0:
+            continue
+        markdown = result.stdout.strip()
+        if markdown:
+            notes.append({
+                "file": parts[1],
+                "markdown": markdown[:UPDATE_NOTE_MAX_CHARACTERS],
+            })
+    return notes
 
 
 def control_file_for_port(port: int) -> Path:
@@ -98,12 +136,14 @@ class LocalServiceManager:
         self._update_thread: threading.Thread | None = None
         self._state: dict[str, Any] = {
             "checking": False,
+            "manual_check": False,
             "updating": False,
             "update_available": False,
             "update_error": "",
-            "update_message": "Checking for updates…",
+            "update_message": "Update status will appear here.",
             "remote_commit": "",
             "behind_count": 0,
+            "update_notes": [],
         }
         self._poll_thread = threading.Thread(
             target=self._poll_updates,
@@ -114,8 +154,7 @@ class LocalServiceManager:
 
     def _selected_branch(self) -> str:
         preferences = self.app.preferences_json()
-        branch = str(preferences.get("update_branch") or current_branch()).strip()
-        return branch if valid_branch_name(branch) else current_branch()
+        return branch_for_channel(preferences.get("update_channel"))
 
     def _login_agent_path(self) -> Path:
         return Path.home() / "Library" / "LaunchAgents" / f"{SERVICE_LABEL}.plist"
@@ -184,23 +223,40 @@ class LocalServiceManager:
 
     def request_check(self) -> dict[str, Any]:
         with self._lock:
+            if self._state.get("updating"):
+                return self.status()
+            if self._state.get("checking"):
+                self._state["manual_check"] = True
+                self._state["update_message"] = "Checking for updates…"
+                return self.status()
             if self._check_thread and self._check_thread.is_alive():
+                self._state["manual_check"] = True
+                self._state["update_message"] = "Checking for updates…"
                 return self.status()
             self._check_thread = threading.Thread(
                 target=self._check_updates,
+                kwargs={"manual": True},
                 name="auto-eudm-update-check",
                 daemon=True,
             )
             self._check_thread.start()
         return self.status()
 
-    def _check_updates(self) -> None:
+    def _check_updates(self, *, manual: bool = False) -> None:
         with self._lock:
-            if self._state.get("checking") or self._state.get("updating"):
+            if self._state.get("updating"):
                 return
+            if self._state.get("checking"):
+                if manual:
+                    self._state["manual_check"] = True
+                    self._state["update_message"] = "Checking for updates…"
+                return
+            manual = manual or bool(self._state.get("manual_check"))
             self._state["checking"] = True
-            self._state["update_error"] = ""
-            self._state["update_message"] = "Checking for updates…"
+            self._state["manual_check"] = manual
+            if manual:
+                self._state["update_error"] = ""
+                self._state["update_message"] = "Checking for updates…"
         branch = self._selected_branch()
         try:
             if not valid_branch_name(branch):
@@ -221,9 +277,10 @@ class LocalServiceManager:
                     raise RuntimeError(f"The branch '{branch}' is not available on origin.")
                 count_text = _git_text("rev-list", "--count", f"HEAD..{remote_ref}")
                 behind_count = int(count_text or "0")
-                changed_branch = branch != checked_out_branch and remote_commit != head
+                changed_branch = branch != checked_out_branch
                 available = behind_count > 0 or changed_branch
                 local_changes = bool(_git_text("status", "--porcelain", "--untracked-files=all"))
+                update_notes = _update_notes_since(head, remote_ref) if available else []
             with self._lock:
                 self._state.update({
                     "branch": branch,
@@ -233,9 +290,12 @@ class LocalServiceManager:
                     "behind_count": behind_count,
                     "update_available": available,
                     "working_tree_clean": not local_changes,
+                    "update_notes": update_notes,
                     "update_message": (
                         f"An update is ready on {branch}."
-                        if available
+                        if behind_count > 0
+                        else f"Switch to the {branch} update channel."
+                        if changed_branch
                         else f"AutoEUDM is up to date on {branch}."
                     ),
                     "update_error": "",
@@ -246,6 +306,7 @@ class LocalServiceManager:
                 self._state.update({
                     "branch": branch,
                     "update_available": False,
+                    "update_notes": [],
                     "update_error": str(exc),
                     "update_message": str(exc),
                     "last_checked": time.time(),
@@ -253,6 +314,7 @@ class LocalServiceManager:
         finally:
             with self._lock:
                 self._state["checking"] = False
+                self._state["manual_check"] = False
 
     def request_update(self) -> dict[str, Any]:
         with self._lock:
@@ -293,12 +355,13 @@ class LocalServiceManager:
                 head = _git_text("rev-parse", "HEAD")
                 checked_out_branch = current_branch()
                 ahead_of_remote = int(_git_text("rev-list", "--count", f"HEAD..{remote_ref}") or "0")
-                if remote_commit == head or (branch == checked_out_branch and ahead_of_remote == 0):
+                if branch == checked_out_branch and ahead_of_remote == 0:
                     with self._lock:
                         self._state.update({
                             "update_available": False,
                             "remote_commit": remote_commit,
                             "current_commit": head,
+                            "update_notes": [],
                             "update_message": f"AutoEUDM is up to date on {branch}.",
                         })
                     return
@@ -317,6 +380,20 @@ class LocalServiceManager:
                 new_commit = _git_text("rev-parse", "HEAD")
                 if not new_commit:
                     raise RuntimeError("Git updated the files, but AutoEUDM could not confirm the new version.")
+                if new_commit == head:
+                    with self._lock:
+                        self._state.update({
+                            "branch": branch,
+                            "current_branch": branch,
+                            "current_commit": new_commit,
+                            "remote_commit": remote_commit,
+                            "behind_count": 0,
+                            "update_available": False,
+                            "update_notes": [],
+                            "update_message": f"Switched to the {branch} update channel.",
+                            "update_error": "",
+                        })
+                    return
             with self._lock:
                 self._state.update({
                     "branch": branch,
@@ -325,6 +402,7 @@ class LocalServiceManager:
                     "remote_commit": new_commit,
                     "behind_count": 0,
                     "update_available": False,
+                    "update_notes": [],
                     "update_message": "Restarting with the latest version…",
                     "update_error": "",
                 })
@@ -361,14 +439,16 @@ class LocalServiceManager:
     def status(self) -> dict[str, Any]:
         with self._lock:
             values = dict(self._state)
-        branch = self._selected_branch()
+        preferences = self.app.preferences_json()
+        channel = str(preferences.get("update_channel") or "stable").strip().casefold()
+        branch = branch_for_channel(channel)
         values["branch"] = branch
+        values["update_channel"] = channel
         values["branches"] = available_branches()
         values["current_branch"] = current_branch()
         values["current_commit"] = values.get("current_commit") or _git_text("rev-parse", "HEAD")
         values["background"] = self.supervised
         values["start_at_login_supported"] = sys.platform == "darwin"
-        preferences = self.app.preferences_json()
         values["start_at_login"] = bool(preferences.get("start_at_login"))
         values["active_submissions"] = self.app.jobs.active_job_count()
         return values

@@ -6,6 +6,13 @@ AutoEUDM is a local web UI I developed to speed up device-management work in EUD
 - Keep the repository on `main` unless the user explicitly requests another branch.
 - Preserve unrelated user changes and mention blockers before stopping.
 
+## Update notes
+
+- Include one concise Markdown note in `update-notes/` with every commit. Use a unique `YYYY-MM-DD-short-description.md` filename, one clear heading, and one to three plain-language bullets. Keep it brief; skip implementation detail and release-note ceremony.
+- Write notes for the person using AutoEUDM. For internal-only commits, say briefly what maintenance changed.
+- The app shows notes added between the installed commit and the selected update channel before applying an update.
+- Push normal development work to `main`. Keep `stable` as the release channel and move it forward only when intentionally publishing a release.
+
 ## Project map
 
 - `eudm_web.py`: small web entry point.
@@ -36,6 +43,7 @@ AutoEUDM is a local web UI I developed to speed up device-management work in EUD
 - PC Toolkit device lookups default to a real Chrome page using the same dedicated profile as sign-in. Puppeteer is an optional real-Chrome transport for machines where it is more reliable; Direct API remains an explicit fallback in Settings. Portal role/heartbeat authentication does not use a fabricated serial probe; the first real lookup validates the device API. Helix always authenticates first and explicitly pauses PC Toolkit before reauthentication so the optional service never holds the shared profile while Helix needs it. Browser-backed PC Toolkit bulk lookups run inside Chrome in concurrent batches of up to 60, retry only the failed subset, refresh the bearer token in-page, and may fall back to cached enrichment. The Puppeteer transport uses the tracked `puppeteer-core` dependency and `src/auto_eudm/pc_toolkit_puppeteer.cjs` JSON-lines bridge.
 - Submission jobs are asynchronous. Preserve queue state, progress, request IDs, and failed rows if the UI is closed while a job runs.
 - The command launchers start AutoEUDM as a detached background service. Its supervisor restarts the web process after updates; Settings can stop the service or enable launch at login. Update requests must use fast-forward Git pulls and refuse to overwrite a dirty checkout. Keep the service control file and all persistent user data under `results/`.
+- Update checks use the `stable` branch by default. Settings can switch to `development` to track `main`; the same Git fetch, fast-forward, and supervised restart flow is used by the Windows launchers.
 - Workbook columns are selected by heading. ALM drafts must be saved while editing and removed when their requests enter the queue; late verification must not recreate a completed draft.
 - Validation remains active even when cached verification fills a result immediately.
 - PC Toolkit enriches Helix data but never replaces Helix validation or blocks submission. Its compact cache and automatically discovered model catalogue live in `results/pc-toolkit-cache.json`; model-to-status mappings live in settings.

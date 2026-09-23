@@ -19,7 +19,11 @@ class WebTargetTests(unittest.TestCase):
 
 class ExistingServerTests(unittest.TestCase):
     @mock.patch.object(launcher.webbrowser, "open")
-    @mock.patch.object(launcher, "request_json", return_value={"commit_id": "abc", "pid": 42})
+    @mock.patch.object(
+        launcher,
+        "request_json",
+        return_value={"commit_id": "abc", "pid": 42, "background": True},
+    )
     @mock.patch.object(launcher, "current_commit_id", return_value="abc")
     @mock.patch.object(launcher, "web_ui_is_running", return_value=True)
     def test_matching_commit_is_reused_without_opening_for_no_open(
