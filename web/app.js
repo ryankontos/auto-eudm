@@ -105,6 +105,18 @@ const ALM_IMPORT_STATUS_OPTIONS = {
   ],
 };
 const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
+const appBootStartedAt = performance.now();
+let appRevealPromise = null;
+
+function revealWorkspace() {
+  if (appRevealPromise) return appRevealPromise;
+  const remaining = Math.max(0, 700 - (performance.now() - appBootStartedAt));
+  appRevealPromise = new Promise((resolve) => window.setTimeout(resolve, remaining)).then(() => {
+    document.body.classList.remove("app-initializing");
+    document.body.classList.add("app-ready");
+  });
+  return appRevealPromise;
+}
 
 function pcToolkitKey(value) {
   return String(value || "").trim().replace(/\s+/g, " ").toLocaleLowerCase();
@@ -518,6 +530,12 @@ function updateThemeButton() {
     ? "Return to the system appearance"
     : `Following the system appearance. Switch to ${dark ? "light" : "dark"} mode`;
   $("#themeToggle").setAttribute("aria-pressed", String(dark));
+  const themeColor = document.querySelector("meta[name='theme-color']");
+  const header = $(".app-header");
+  if (themeColor && header) {
+    const headerColor = getComputedStyle(header).backgroundColor;
+    if (headerColor && headerColor !== "rgba(0, 0, 0, 0)") themeColor.setAttribute("content", headerColor);
+  }
 }
 
 function toggleTheme() {
@@ -9541,7 +9559,7 @@ async function init() {
       api("/api/config"),
       api("/api/preferences"),
     ]);
-    await refreshPcToolkitStatus();
+    void refreshPcToolkitStatus();
     void startAuthenticationChecks();
     await loadPersistedQueue();
     state.queueSyncTimer = window.setInterval(syncSharedQueue, 1800);
@@ -9562,6 +9580,7 @@ async function init() {
     await window.autoAnimateReady;
     setupOptionalListAnimation();
     renderAll();
+    void revealWorkspace();
     await restoreSubmissionFromHistory();
     await refreshDiagnosticsStatus();
     renderConnectionSheet();

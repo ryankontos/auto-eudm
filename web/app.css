@@ -184,6 +184,24 @@ body {
   background: var(--surface-alt);
 }
 
+.boot-splash {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  background: color-mix(in srgb, var(--header) 96%, var(--header-accent));
+  opacity: 1;
+  visibility: visible;
+  transition: opacity .16s ease, visibility 0s linear .16s;
+}
+.boot-splash span { font-size: clamp(32px, 6vw, 56px); font-weight: 760; letter-spacing: -.035em; }
+body.app-ready .boot-splash { opacity: 0; visibility: hidden; }
+body.app-initializing .workspace,
+body.app-initializing .inspector,
+body.app-initializing .inspector-shell { transition: none !important; }
+
 .visually-hidden {
   position: absolute !important;
   width: 1px !important;
@@ -2585,6 +2603,7 @@ input:hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .boot-splash { transition: none; }
   .workspace,
   .inspector,
   .inspector-shell,

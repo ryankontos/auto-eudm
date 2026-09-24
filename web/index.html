@@ -4,14 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <meta name="theme-color" content="#252b31">
+  <meta id="appThemeColor" name="theme-color" content="#252b31">
   <title>AutoEUDM</title>
-  <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-20260924-32.png">
-  <link rel="icon" type="image/x-icon" href="/favicon-20260924.ico">
-  <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-20260924-16.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-20260924-v2-32.png">
+  <link rel="icon" type="image/x-icon" href="/favicon-20260924-v2.ico">
+  <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-20260924-v2-16.png">
   <link rel="mask-icon" href="/icons/safari-pinned-tab-20260923-v3.svg" color="#252b31">
-  <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon-20260924.png">
-  <link rel="manifest" href="/site.webmanifest?v=4">
+  <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon-20260924-v2.png">
+  <link rel="manifest" href="/site.webmanifest?v=5">
   <script>
     try {
       const savedTheme = localStorage.getItem("auto-eudm-theme");
@@ -23,7 +23,8 @@
   <link rel="stylesheet" href="/app.css">
   <link rel="stylesheet" href="/vendor/tippy.css">
 </head>
-<body>
+<body class="app-initializing">
+  <div class="boot-splash" aria-hidden="true"><span>AutoEUDM</span></div>
   <header class="app-header">
     <div class="product-name"><span class="product-wordmark">AutoEUDM</span><span class="product-context">Device requests</span></div>
     <div class="header-actions">
@@ -48,7 +49,7 @@
     </div>
   </header>
 
-  <main class="workspace">
+  <main class="workspace inspector-closed">
     <aside class="tool-rail" aria-label="Request preparation tools">
       <div class="rail-section">
         <h2>Import</h2>
