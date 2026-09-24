@@ -1,6 +1,6 @@
 {
-  "name": "AutoEUDM",
-  "short_name": "AutoEUDM",
+  "name": "Deployments",
+  "short_name": "Deployments",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

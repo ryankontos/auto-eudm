@@ -1287,7 +1287,7 @@ class PCToolkitPuppeteerTransport:
             "1", "true", "yes", "on"
         }:
             raise PCToolkitError(
-                "Puppeteer is not installed. Run npm install in the AutoEUDM folder."
+                "Puppeteer is not installed. Run npm install in the project folder."
             )
         npm = shutil.which("npm")
         if not npm:
@@ -1321,7 +1321,7 @@ class PCToolkitPuppeteerTransport:
                 reason="timeout",
             )
             raise PCToolkitError(
-                "Installing the Puppeteer dependency timed out. Run npm install in the AutoEUDM folder, then try again."
+                "Installing the Puppeteer dependency timed out. Run npm install in the project folder, then try again."
             ) from exc
         except OSError as exc:
             run_reporting.pc_toolkit_event(
@@ -1343,7 +1343,7 @@ class PCToolkitPuppeteerTransport:
         )
         if installed.returncode != 0:
             raise PCToolkitError(
-                "Puppeteer dependencies could not be installed. Run npm install in the AutoEUDM folder, then try again."
+                "Puppeteer dependencies could not be installed. Run npm install in the project folder, then try again."
             )
         check = subprocess.run(
             [node, "-e", "require.resolve('puppeteer-core')"],
@@ -1354,7 +1354,7 @@ class PCToolkitPuppeteerTransport:
         )
         if check.returncode != 0:
             raise PCToolkitError(
-                "Puppeteer dependencies were installed but could not be loaded. Run npm install in the AutoEUDM folder, then try again."
+                "Puppeteer dependencies were installed but could not be loaded. Run npm install in the project folder, then try again."
             )
 
     def start(self) -> None:

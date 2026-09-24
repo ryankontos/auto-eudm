@@ -575,7 +575,7 @@ def write_result_file(command: str, lines: Iterable[str]) -> Path:
     folder = PROJECT_DIR / "results"
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"{datetime.now():%Y%m%d-%H%M%S-%f}-{command}.txt"
-    content = [f"AutoEUDM results — {command}", f"Generated: {datetime.now():%Y-%m-%d %H:%M:%S}", ""]
+    content = [f"Deployments results — {command}", f"Generated: {datetime.now():%Y-%m-%d %H:%M:%S}", ""]
     content.extend(lines)
     path.write_text("\n".join(content).rstrip() + "\n", encoding="utf-8")
     print(f"Results saved: {path}")

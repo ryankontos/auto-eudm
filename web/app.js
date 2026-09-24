@@ -3229,7 +3229,7 @@ function renderDiagnosticsStatus(status) {
   elements.downloadDiagnosticsButton.disabled = !available;
   elements.diagnosticsStatus.textContent = available
     ? "Includes the last five minutes of API traffic. Request and response bodies are included with credentials removed."
-    : "The capture is kept only while AutoEUDM is running; reproduce the problem first, then export it.";
+    : "The capture is kept only while Deployments is running; reproduce the problem first, then export it.";
 }
 
 async function refreshDiagnosticsStatus() {
@@ -3298,7 +3298,7 @@ function renderUpdateReview(status = state.serviceStatus) {
 
   const activeSubmissions = Number(status?.active_submissions || 0);
   let constraint = "";
-  if (status?.updating) constraint = "AutoEUDM is updating.";
+  if (status?.updating) constraint = "Deployments is updating.";
   else if (status?.checking && status?.manual_check) constraint = "Wait for the update check to finish before updating.";
   else if (activeSubmissions > 0) constraint = "Wait for active request submissions to finish before updating.";
   else if (status?.working_tree_clean === false) constraint = "Commit or move local project changes before updating.";
@@ -3345,7 +3345,7 @@ function renderServiceStatus(status) {
         ? `An update is ready on ${branch}. Commit or move local changes before applying it.`
       : manualCheck
         ? "Checking for updates…"
-        : status.update_message || `AutoEUDM is up to date on ${branch}.`;
+        : status.update_message || `Deployments is up to date on ${branch}.`;
     statusText.dataset.state = status.update_error ? "error" : changed ? "available" : manualCheck ? "busy" : "ready";
   }
   const checkButton = $("#checkUpdatesButton");
@@ -3373,8 +3373,8 @@ function renderServiceStatus(status) {
   const runMode = $("#serviceRunMode");
   if (runMode) {
     runMode.textContent = status.background
-      ? "AutoEUDM is running in the background."
-      : "AutoEUDM is running in this server process.";
+      ? "Deployments is running in the background."
+      : "Deployments is running in this server process.";
   }
   const loginLabel = $("#startAtLoginLabel");
   if (loginLabel) loginLabel.hidden = !status.start_at_login_supported;
@@ -3404,7 +3404,7 @@ async function checkForUpdates() {
   const lastChecked = Number(state.serviceStatus?.last_checked || 0);
   const started = await refreshServiceStatus({ check: true, populateSettings: true });
   if (!started) {
-    toast("Could not check for AutoEUDM updates.", "error");
+    toast("Could not check for Deployments updates.", "error");
     return;
   }
   const deadline = Date.now() + 75_000;
@@ -3412,7 +3412,7 @@ async function checkForUpdates() {
     const status = await refreshServiceStatus();
     if (status && !status.checking && Number(status.last_checked || 0) > lastChecked) {
       if (status.update_error) toast(status.update_error, "error");
-      else if (!status.update_available) toast("AutoEUDM is up to date.", "success");
+      else if (!status.update_available) toast("Deployments is up to date.", "success");
       else toast("An update is ready. Use the download icon in the header to review its notes.", "info");
       return;
     }
@@ -3451,11 +3451,11 @@ async function applyServiceUpdate() {
   const status = state.serviceStatus;
   if (!status?.update_available || status.updating || (status.checking && status.manual_check)) return;
   if (Number(status.active_submissions || 0) > 0) {
-    toast("Wait for active request submissions to finish before updating AutoEUDM.", "error");
+    toast("Wait for active request submissions to finish before updating Deployments.", "error");
     return;
   }
   if (status.working_tree_clean === false) {
-    toast("Commit or move local project changes before updating AutoEUDM.", "error");
+    toast("Commit or move local project changes before updating Deployments.", "error");
     return;
   }
   try {
@@ -3472,14 +3472,14 @@ async function applyServiceUpdate() {
 async function quitApplication() {
   const activeSubmissions = Number(state.serviceStatus?.active_submissions || 0);
   const message = activeSubmissions
-    ? `Quit AutoEUDM? ${activeSubmissions} active request submission${activeSubmissions === 1 ? "" : "s"} will be interrupted. Your queue and saved imports are kept on this computer.`
-    : "Quit AutoEUDM? Your queue and saved imports are kept on this computer.";
+    ? `Quit Deployments? ${activeSubmissions} active request submission${activeSubmissions === 1 ? "" : "s"} will be interrupted. Your queue and saved imports are kept on this computer.`
+    : "Quit Deployments? Your queue and saved imports are kept on this computer.";
   if (!window.confirm(message)) return;
   const button = $("#quitApplicationButton");
   if (button) button.disabled = true;
   try {
     await api("/api/service/quit", { method: "POST", body: "{}" });
-    document.body.innerHTML = '<main class="service-stopped"><h1>AutoEUDM has stopped</h1><p>You can close this browser tab.</p></main>';
+    document.body.innerHTML = '<main class="service-stopped"><h1>Deployments has stopped</h1><p>You can close this browser tab.</p></main>';
   } catch (error) {
     if (button) button.disabled = false;
     toast(error.message, "error");
@@ -9598,7 +9598,7 @@ async function init() {
     state.serviceStatusTimer = window.setInterval(refreshServiceStatus, 15_000);
     renderAll();
   } catch (error) {
-    document.body.innerHTML = `<main class="empty-state"><h1>AutoEUDM could not start</h1><p>${escapeHtml(error.message)}</p></main>`;
+    document.body.innerHTML = `<main class="empty-state"><h1>Deployments could not start</h1><p>${escapeHtml(error.message)}</p></main>`;
   }
 }
 

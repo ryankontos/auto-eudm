@@ -196,7 +196,11 @@ body {
   visibility: visible;
   transition: opacity .16s ease, visibility 0s linear .16s;
 }
-.boot-splash span { font-size: clamp(32px, 6vw, 56px); font-weight: 760; letter-spacing: -.035em; }
+.boot-splash-content { display: grid; justify-items: center; gap: 15px; }
+.boot-splash-icon { display: block; width: 78px; height: 78px; object-fit: cover; }
+.boot-splash-wordmark { font-size: clamp(32px, 6vw, 56px); font-weight: 760; letter-spacing: -.035em; }
+.boot-splash-spinner { display: block; width: 17px; height: 17px; margin-top: 5px; border: 2px solid rgba(255,255,255,.2); border-top-color: var(--header-accent); border-radius: 50%; animation: boot-splash-spin .8s linear infinite; }
+@keyframes boot-splash-spin { to { transform: rotate(360deg); } }
 body.app-ready .boot-splash { opacity: 0; visibility: hidden; }
 body.app-initializing .workspace,
 body.app-initializing .inspector,
@@ -259,9 +263,9 @@ textarea:focus-visible {
 }
 .app-header::after { content: none; }
 
-.product-name { display: flex; align-items: baseline; gap: 9px; min-width: 0; white-space: nowrap; }
+.product-name { display: flex; align-items: center; gap: 8px; min-width: 0; white-space: nowrap; }
+.product-icon { display: block; width: 26px; height: 26px; flex: 0 0 26px; object-fit: cover; }
 .product-wordmark { font-size: 17px; font-weight: 760; letter-spacing: -.01em; }
-.product-context { color: color-mix(in srgb, var(--header-muted) 72%, transparent); font-size: 11px; font-weight: 560; }
 
 .header-actions { display: flex; min-width: 0; align-items: center; justify-content: flex-end; gap: 10px; }
 .header-connections,
@@ -2488,7 +2492,7 @@ input:hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var
 
 @media (max-width: 650px) {
   .app-header { height: 54px; min-height: 54px; align-items: center; padding: 0 10px; gap: 8px; }
-  .product-context { display: none; }
+  .product-icon { width: 23px; height: 23px; flex-basis: 23px; }
   .product-wordmark { font-size: 15px; }
   .header-actions { flex-wrap: nowrap; justify-content: flex-end; gap: 5px; }
   .header-connections, .header-tools { gap: 2px; }
@@ -2604,6 +2608,7 @@ input:hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var
 
 @media (prefers-reduced-motion: reduce) {
   .boot-splash { transition: none; }
+  .boot-splash-spinner { animation: none; border-right-color: var(--header-accent); }
   .workspace,
   .inspector,
   .inspector-shell,

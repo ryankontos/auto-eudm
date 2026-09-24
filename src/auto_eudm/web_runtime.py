@@ -334,17 +334,17 @@ def verify_helix_api(
 def open_existing_server(
     url: str,
 ) -> bool:
-    """Open a live AutoEUDM server when this process cannot bind its port."""
+    """Open a live Deployments server when this process cannot bind its port."""
     try:
         request = urllib.request.Request(url, headers={"User-Agent": "AutoEUDM launcher"})
         with urllib.request.urlopen(request, timeout=0.8) as response:
             body = response.read(4096).decode("utf-8", errors="ignore")
-        if response.status >= 400 or "AutoEUDM" not in body:
+        if response.status >= 400 or 'id="connectionStatus"' not in body:
             return False
     except (OSError, urllib.error.URLError):
         return False
     webbrowser.open(url)
-    print(f"AutoEUDM is already running at {url}; opening it in your browser.", flush=True)
+    print(f"Deployments is already running at {url}; opening it in your browser.", flush=True)
     return True
 
 
@@ -625,7 +625,7 @@ class ClientManager:
                 self.message = (
                     "Checking the saved SSO session…"
                     if headless
-                    else "Complete SSO in the Chrome window; AutoEUDM is waiting…"
+                    else "Complete SSO in the Chrome window; Deployments is waiting…"
                 )
             deadline = time.monotonic() + (
                 15 if headless else 120
@@ -675,7 +675,7 @@ class ClientManager:
                     time.sleep(1)
             if client is None:
                 raise eudm.EUDMError(
-                    "Helix opened successfully, but AutoEUDM could not establish "
+                    "Helix opened successfully, but Deployments could not establish "
                     "an authenticated API session. Try Authenticate again."
                 ) from handoff_error
             inferred_user = verified_session.authenticated_user or ""
@@ -1211,7 +1211,7 @@ class JobStore:
         job = self.get(job_id)
         data = job.to_json()
         lines = [
-            "AutoEUDM submission summary",
+            "Deployments submission summary",
             f"Run: {job.job_id}",
             f"Created: {job.created_at}",
             "",

@@ -256,6 +256,13 @@ class LocalWebServerTests(unittest.TestCase):
 
         self.assertEqual(response.status, 200)
         html = body.decode("utf-8")
+        self.assertIn("<title>Deployments</title>", html)
+        self.assertNotIn("AutoEUDM", html)
+        self.assertNotIn("Device requests", html)
+        self.assertIn('aria-label="Deployments is starting"', html)
+        self.assertIn('class="boot-splash-icon" src="/icons/icon-192.png?v=6"', html)
+        self.assertIn('class="boot-splash-spinner"', html)
+        self.assertIn('class="product-icon" src="/icons/icon-192.png?v=6"', html)
         self.assertIn('href="/icons/favicon-20260924-v3-32.png"', html)
         self.assertIn('href="/favicon-20260924-v3.ico"', html)
         self.assertIn('href="/icons/safari-pinned-tab-20260924-v3.svg"', html)
@@ -265,6 +272,11 @@ class LocalWebServerTests(unittest.TestCase):
         self.assertNotIn('rel="icon" type="image/svg+xml"', html)
         self.assertNotIn('id="connectionDialog"', html)
         self.assertIn('id="connectionStatus"', html)
+
+        _, manifest_body = self.request("GET", "/site.webmanifest")
+        manifest = json.loads(manifest_body)
+        self.assertEqual(manifest["name"], "Deployments")
+        self.assertEqual(manifest["short_name"], "Deployments")
 
     def test_diagnostics_endpoint_returns_the_current_capture_as_gzip(self) -> None:
         run_reporting.configure_logging(enabled=False, command="test")
@@ -427,7 +439,7 @@ class LocalWebServerTests(unittest.TestCase):
         response, raw = self.request("POST", "/api/queue", payload={"requests": []})
 
         self.assertEqual(response.status, 409)
-        self.assertIn("Refresh this AutoEUDM window", json.loads(raw)["error"])
+        self.assertIn("Refresh this Deployments window", json.loads(raw)["error"])
 
     def test_queue_save_reports_duplicates_removed_during_cross_window_merge(self) -> None:
         requests = [{"id": "kept", "serials": ["SERIAL123"]}]

@@ -296,7 +296,7 @@ class LocalServiceManager:
                         if behind_count > 0
                         else f"Switch to the {branch} update channel."
                         if changed_branch
-                        else f"AutoEUDM is up to date on {branch}."
+                        else f"Deployments is up to date on {branch}."
                     ),
                     "update_error": "",
                     "last_checked": time.time(),
@@ -338,7 +338,7 @@ class LocalServiceManager:
                 if not valid_branch_name(branch):
                     raise RuntimeError("Choose a valid Git branch in Settings.")
                 if _git_text("status", "--porcelain", "--untracked-files=all"):
-                    raise RuntimeError("Commit or move local project changes before updating AutoEUDM.")
+                    raise RuntimeError("Commit or move local project changes before updating Deployments.")
                 with self._lock:
                     self._state["update_message"] = f"Downloading {branch}…"
                 remote_ref = f"refs/remotes/origin/{branch}"
@@ -362,7 +362,7 @@ class LocalServiceManager:
                             "remote_commit": remote_commit,
                             "current_commit": head,
                             "update_notes": [],
-                            "update_message": f"AutoEUDM is up to date on {branch}.",
+                            "update_message": f"Deployments is up to date on {branch}.",
                         })
                     return
                 local_branch = _git("show-ref", "--verify", "--quiet", f"refs/heads/{branch}")
@@ -379,7 +379,7 @@ class LocalServiceManager:
                     raise RuntimeError("The update could not be applied as a fast-forward. Check the selected branch.")
                 new_commit = _git_text("rev-parse", "HEAD")
                 if not new_commit:
-                    raise RuntimeError("Git updated the files, but AutoEUDM could not confirm the new version.")
+                    raise RuntimeError("Git updated the files, but Deployments could not confirm the new version.")
                 if new_commit == head:
                     with self._lock:
                         self._state.update({

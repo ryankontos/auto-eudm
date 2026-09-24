@@ -64,7 +64,7 @@ class WorkbookLoadLog:
 
     def _write_header(self) -> None:
         self.path.write_text(
-            "AutoEUDM ALM workbook load diagnostic\n"
+            "Deployments ALM workbook load diagnostic\n"
             "====================================\n"
             f"Attempt ID: {self.attempt_id}\n"
             f"Started UTC: {self.started_at.isoformat()}\n"

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <meta id="appThemeColor" name="theme-color" content="#252b31">
-  <title>AutoEUDM</title>
+  <title>Deployments</title>
   <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-20260924-v3-32.png">
   <link rel="icon" type="image/x-icon" href="/favicon-20260924-v3.ico">
   <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-20260924-v3-16.png">
@@ -24,9 +24,15 @@
   <link rel="stylesheet" href="/vendor/tippy.css">
 </head>
 <body class="app-initializing">
-  <div class="boot-splash" aria-hidden="true"><span>AutoEUDM</span></div>
+  <div class="boot-splash" role="status" aria-label="Deployments is starting">
+    <div class="boot-splash-content">
+      <img class="boot-splash-icon" src="/icons/icon-192.png?v=6" alt="">
+      <span class="boot-splash-wordmark">Deployments</span>
+      <span class="boot-splash-spinner" aria-hidden="true"></span>
+    </div>
+  </div>
   <header class="app-header">
-    <div class="product-name"><span class="product-wordmark">AutoEUDM</span><span class="product-context">Device requests</span></div>
+    <div class="product-name"><img class="product-icon" src="/icons/icon-192.png?v=6" alt=""><span class="product-wordmark">Deployments</span></div>
     <div class="header-actions">
       <div class="header-connections" aria-label="Service connections">
         <button id="connectionStatus" class="connection-status" type="button" aria-live="polite" aria-label="Authenticate with Helix" hidden>
@@ -41,7 +47,7 @@
         </button>
       </div>
       <div class="header-tools" aria-label="Application tools">
-        <button id="updateAvailableButton" class="button secondary compact header-icon-button update-available-button" type="button" aria-haspopup="dialog" aria-controls="updateNotesDialog" aria-label="Review available AutoEUDM update" title="Review update notes" hidden><i data-lucide="download"></i><span class="visually-hidden">Update available</span></button>
+        <button id="updateAvailableButton" class="button secondary compact header-icon-button update-available-button" type="button" aria-haspopup="dialog" aria-controls="updateNotesDialog" aria-label="Review available Deployments update" title="Review update notes" hidden><i data-lucide="download"></i><span class="visually-hidden">Update available</span></button>
         <button id="checkUpdatesHeaderButton" class="button secondary compact header-icon-button" type="button" aria-label="Check for updates" title="Check GitHub for newer commits"><i data-lucide="refresh-cw"></i><span class="visually-hidden">Check updates</span></button>
         <button id="commandPaletteButton" class="button secondary compact header-icon-button" type="button" aria-label="Open command palette" title="Open command palette (⌘K or Ctrl+K)"><i data-lucide="command"></i><span class="visually-hidden">Commands</span></button>
         <button id="historyButton" class="button secondary compact header-icon-button" type="button" aria-keyshortcuts="Alt+Shift+H Control+Shift+H" aria-label="Open request history" title="Open request history"><i data-lucide="history"></i><span class="visually-hidden">Request history</span></button>
@@ -322,7 +328,7 @@
   <dialog id="updateNotesDialog" class="modal update-notes-dialog" aria-labelledby="updateNotesTitle">
     <section class="modal-card update-notes-card">
       <div class="modal-header">
-        <h2 id="updateNotesTitle"><span class="modal-title-icon" aria-hidden="true"><i data-lucide="download"></i></span><span>AutoEUDM update</span></h2>
+        <h2 id="updateNotesTitle"><span class="modal-title-icon" aria-hidden="true"><i data-lucide="download"></i></span><span>Deployments update</span></h2>
         <button id="closeUpdateNotesButton" class="icon-button" type="button" aria-label="Later"><i data-lucide="x"></i></button>
       </div>
       <p id="updateNotesSummary" class="update-notes-summary"></p>
@@ -588,12 +594,12 @@
             <button id="downloadDiagnosticsButton" class="button secondary compact" type="button">Export log</button>
           </div>
         </div>
-        <p id="diagnosticsStatus" class="diagnostics-status">The capture is kept only while AutoEUDM is running.</p>
+        <p id="diagnosticsStatus" class="diagnostics-status">The capture is kept only while Deployments is running.</p>
         <div class="service-settings-card">
           <div class="service-settings-heading">
             <div><strong>Background app</strong><small>Runs in the background and checks GitHub for newer commits automatically.</small></div>
             <label class="service-channel-field">Build channel
-              <select id="updateChannelInput" aria-label="AutoEUDM build channel">
+              <select id="updateChannelInput" aria-label="Deployments build channel">
                 <option value="stable">Stable releases</option>
                 <option value="development">Development builds (main)</option>
               </select>
@@ -603,13 +609,13 @@
             <p id="serviceUpdateStatus" role="status">Update status will appear here.</p>
             <div class="service-update-actions">
               <button id="checkUpdatesButton" class="button secondary compact" type="button">Check</button>
-              <button id="applyUpdateButton" class="button primary compact" type="button" hidden><i data-lucide="download"></i><span>Update AutoEUDM</span></button>
+              <button id="applyUpdateButton" class="button primary compact" type="button" hidden><i data-lucide="download"></i><span>Update Deployments</span></button>
             </div>
           </div>
-          <label id="startAtLoginLabel" class="settings-checkbox service-login-checkbox"><input id="startAtLoginInput" type="checkbox"><span>Start AutoEUDM automatically when I log in</span></label>
+          <label id="startAtLoginLabel" class="settings-checkbox service-login-checkbox"><input id="startAtLoginInput" type="checkbox"><span>Start Deployments automatically when I log in</span></label>
           <label class="settings-checkbox"><input id="headlessAuthInput" type="checkbox"><span>Keep Helix and enabled PC Toolkit connected in the background</span></label>
-          <small class="settings-help">Checks the saved Chrome sessions while AutoEUDM runs, even with no page open. After three unsuccessful sign-in attempts it pauses; click the top-bar status to retry visibly in Chrome.</small>
-          <div class="service-quit-row"><small id="serviceRunMode">The local service is running in the background.</small><button id="quitApplicationButton" class="button secondary compact" type="button">Quit AutoEUDM</button></div>
+          <small class="settings-help">Checks the saved Chrome sessions while Deployments runs, even with no page open. After three unsuccessful sign-in attempts it pauses; click the top-bar status to retry visibly in Chrome.</small>
+          <div class="service-quit-row"><small id="serviceRunMode">The local service is running in the background.</small><button id="quitApplicationButton" class="button secondary compact" type="button">Quit Deployments</button></div>
         </div>
       </section>
       <section data-settings-panel="validation" hidden>

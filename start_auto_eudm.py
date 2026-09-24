@@ -37,11 +37,11 @@ def venv_python() -> Path:
 
 
 def say(message: str) -> None:
-    print(f"AutoEUDM  ·  {message}", flush=True)
+    print(f"Deployments  ·  {message}", flush=True)
 
 
 def fail(message: str) -> int:
-    print(f"\nAutoEUDM could not start: {message}", file=sys.stderr)
+    print(f"\nDeployments could not start: {message}", file=sys.stderr)
     return 1
 
 
@@ -120,7 +120,7 @@ def web_ui_is_running(url: str) -> bool:
         request = urllib.request.Request(url, headers={"User-Agent": "AutoEUDM launcher"})
         with urllib.request.urlopen(request, timeout=0.8) as response:
             body = response.read(4096).decode("utf-8", errors="ignore")
-        return response.status < 400 and "AutoEUDM" in body
+        return response.status < 400 and 'id="connectionStatus"' in body
     except (OSError, urllib.error.URLError):
         return False
 
@@ -247,11 +247,11 @@ def open_existing_web_ui(arguments: list[str]) -> bool:
         say("The running web workspace is from an older commit; restarting it…")
     shutdown = request_json(f"{url.rstrip('/')}/api/shutdown", method="POST")
     if shutdown is None and not stop_server_process(port, runtime.get("pid") if runtime else None):
-        raise ValueError("Could not stop the older AutoEUDM server. Close its launcher window, then try again.")
+        raise ValueError("Could not stop the older Deployments server. Close its launcher window, then try again.")
     if not wait_for_web_server_stop(url):
         stopped = stop_server_process(port, runtime.get("pid") if runtime else None)
         if not stopped or not wait_for_web_server_stop(url):
-            raise ValueError("Could not stop the older AutoEUDM server. Close its launcher window, then try again.")
+            raise ValueError("Could not stop the older Deployments server. Close its launcher window, then try again.")
     return False
 
 
@@ -354,14 +354,14 @@ def supervise_service(arguments: list[str]) -> int:
                 if return_code == 0:
                     return 0
                 if web_ui_is_running(url):
-                    say("Another AutoEUDM service already owns this local port.")
+                    say("Another Deployments service already owns this local port.")
                     return 0
                 say(f"The web process stopped with exit code {return_code}; restarting it…")
                 restart = True
                 break
             time.sleep(0.25)
         if should_quit:
-            say("AutoEUDM has stopped.")
+            say("Deployments has stopped.")
             return 0
         if restart:
             time.sleep(0.2)
@@ -396,13 +396,13 @@ def start_background_service(arguments: list[str], python: Path, env: dict[str, 
     finally:
         log.close()
     if "--no-open" in arguments:
-        say("AutoEUDM is starting in the background.")
+        say("Deployments is starting in the background.")
         return 0
     deadline = time.monotonic() + 40
     while time.monotonic() < deadline:
         if web_ui_is_running(url):
             webbrowser.open(url)
-            say("AutoEUDM is running in the background.")
+            say("Deployments is running in the background.")
             return 0
         time.sleep(0.25)
     return fail("The background web service did not become ready. Check results/auto-eudm-service.log.")

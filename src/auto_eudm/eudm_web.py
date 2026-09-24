@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Run the local AutoEUDM request workspace.",
+        description="Run the local Deployments request workspace.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""The server binds to this computer only and does not expose EUDM cookies.
 
@@ -84,9 +84,9 @@ Examples:
             ) from exc
         raise
     app.start_auth_monitor()
-    print(f"AutoEUDM is ready at {url}", flush=True)
+    print(f"Deployments is ready at {url}", flush=True)
     if os.environ.get("AUTO_EUDM_SERVICE_CONTROL"):
-        print("AutoEUDM is running under its background service manager.", flush=True)
+        print("Deployments is running under its background service manager.", flush=True)
     else:
         print("Keep this window open while using the web interface. Press Control-C to stop.", flush=True)
     if not args.no_open:
@@ -94,7 +94,7 @@ Examples:
     try:
         server.serve_forever(poll_interval=0.25)
     except KeyboardInterrupt:
-        print("\nAutoEUDM stopped.")
+        print("\nDeployments stopped.")
     finally:
         app.flush_pending_state()
         server.server_close()
@@ -111,7 +111,7 @@ def cli() -> None:
     try:
         raise SystemExit(main())
     except KeyboardInterrupt:
-        print("\nAutoEUDM stopped.")
+        print("\nDeployments stopped.")
         raise SystemExit(130)
     except eudm.EUDMError as exc:
         print(f"Error: {exc}")

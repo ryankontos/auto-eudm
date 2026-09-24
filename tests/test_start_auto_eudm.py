@@ -18,6 +18,20 @@ class WebTargetTests(unittest.TestCase):
 
 
 class ExistingServerTests(unittest.TestCase):
+    @mock.patch.object(launcher.urllib.request, "urlopen")
+    def test_web_ui_identity_check_uses_stable_app_marker(
+        self,
+        urlopen: mock.Mock,
+    ) -> None:
+        response = mock.MagicMock()
+        response.__enter__.return_value.status = 200
+        response.__enter__.return_value.read.return_value = (
+            b'<button id="connectionStatus"></button>'
+        )
+        urlopen.return_value = response
+
+        self.assertTrue(launcher.web_ui_is_running("http://127.0.0.1:8877/"))
+
     @mock.patch.object(launcher.webbrowser, "open")
     @mock.patch.object(
         launcher,

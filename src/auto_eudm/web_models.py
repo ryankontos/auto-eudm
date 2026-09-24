@@ -394,12 +394,12 @@ def validate_queue(
     if any(count > 1 for count in client_id_counts.values()):
         add_error(
             "_queue",
-            "The request queue contains duplicate internal IDs. Reopen AutoEUDM and rebuild the queue.",
+            "The request queue contains duplicate internal IDs. Reopen Deployments and rebuild the queue.",
         )
     if "_queue" in client_id_counts:
         add_error(
             "_queue",
-            "A request used a reserved internal ID. Reopen AutoEUDM and rebuild the queue.",
+            "A request used a reserved internal ID. Reopen Deployments and rebuild the queue.",
         )
 
     owners: dict[str, list[str]] = {}

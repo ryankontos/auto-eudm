@@ -56,7 +56,7 @@ def acquire_browser_profile_lock(profile: str, *, timeout: float = 60.0) -> thre
         lock = _BROWSER_PROFILE_LOCKS.setdefault(key, threading.Lock())
     if not lock.acquire(timeout=max(0.0, float(timeout))):
         raise EUDMError(
-            "The shared Chrome profile is being used by another AutoEUDM connection. "
+            "The shared Chrome profile is being used by another Deployments connection. "
             "Try again shortly."
         )
     return lock

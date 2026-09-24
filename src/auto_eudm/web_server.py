@@ -493,7 +493,7 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
         if path == "/api/service/update":
             if self.app.jobs.active_job_count():
                 raise HTTPInputError(
-                    "Wait for active request submissions to finish before updating AutoEUDM.",
+                    "Wait for active request submissions to finish before updating Deployments.",
                     409,
                 )
             self._json(self.server.service_manager.request_update(), 202)  # type: ignore[attr-defined]
@@ -555,7 +555,7 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
             base_requests = payload.get("base_requests")
             if not isinstance(base_requests, list):
                 raise HTTPInputError(
-                    "Refresh this AutoEUDM window before saving so its queue can safely "
+                    "Refresh this Deployments window before saving so its queue can safely "
                     "merge changes from other windows.",
                     409,
                 )
@@ -623,7 +623,7 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/import":
             if not self.app.config.spreadsheet_import_enabled:
-                raise eudm.EUDMError("Spreadsheet import is disabled by this AutoEUDM environment.")
+                raise eudm.EUDMError("Spreadsheet import is disabled in this Deployments environment.")
             job = self.app.start_import(
                 str(payload.get("filename", "")),
                 str(payload.get("data", "")),
@@ -632,7 +632,7 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/import/map":
             if not self.app.config.spreadsheet_import_enabled:
-                raise eudm.EUDMError("Spreadsheet import is disabled by this AutoEUDM environment.")
+                raise eudm.EUDMError("Spreadsheet import is disabled in this Deployments environment.")
             columns = payload.get("columns")
             if not isinstance(columns, dict):
                 raise eudm.EUDMError("Choose all spreadsheet columns.")

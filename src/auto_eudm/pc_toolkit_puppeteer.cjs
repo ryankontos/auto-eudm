@@ -406,7 +406,7 @@ async function start(message) {
   try {
     puppeteer = require("puppeteer-core");
   } catch (error) {
-    throw new Error("Puppeteer is not installed. Run npm install in the AutoEUDM folder, then try again.");
+    throw new Error("Puppeteer is not installed. Run npm install in the project folder, then try again.");
   }
   options = message.options || {};
   const executablePath = chromeExecutable(options.chromeExecutable);
