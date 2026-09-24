@@ -344,6 +344,7 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
             "/favicon-20260923-v3.ico",
             "/favicon-20260924.ico",
             "/favicon-20260924-v2.ico",
+            "/favicon-20260924-v3.ico",
         }:
             relative = "icons/favicon.ico"
         elif request_path in {
@@ -367,9 +368,20 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
             "/icons/favicon-20260924-v2-16.png",
             "/icons/favicon-20260924-v2-32.png",
             "/icons/apple-touch-icon-20260924-v2.png",
+            "/icons/favicon-20260924-v3-16.png",
+            "/icons/favicon-20260924-v3-32.png",
+            "/icons/apple-touch-icon-20260924-v3.png",
+            "/icons/safari-pinned-tab-20260924-v3.svg",
         }:
             relative = request_path.lstrip("/")
-            for version in ("-20260924-v2", "-20260924", "-20260923-v3", "-20260923-v2", "-20260923"):
+            for version in (
+                "-20260924-v3",
+                "-20260924-v2",
+                "-20260924",
+                "-20260923-v3",
+                "-20260923-v2",
+                "-20260923",
+            ):
                 relative = relative.replace(version, "")
         elif request_path == "/favicon.ico":
             # A few browsers and local app shells probe the conventional root

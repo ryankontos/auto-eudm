@@ -1,5 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 180">
-  <path fill="#000" fill-rule="evenodd" d="M29 20h122c7 0 12 5 12 12v99H17V32c0-7 5-12 12-12Zm1 12v88h120V32H30Z"/>
-  <path fill="#000" d="M20 131h140l16 19c2 3-1 7-5 7H9c-4 0-7-4-5-7l16-19Z"/>
-  <path fill="#000" d="M134 47h25l11 12v48c0 5-4 9-9 9h-45c-5 0-9-4-9-9V74l27-27Z"/>
+  <g fill="none" stroke="#000" stroke-linecap="round" stroke-linejoin="round" stroke-width="19">
+    <path d="M75 97a37.5 37.5 0 0 0 53 0l26.5-26.5a37.5 37.5 0 0 0-53-53L86.3 32.7"/>
+    <path d="M105 83a37.5 37.5 0 0 0-53 0L25.5 109.5a37.5 37.5 0 0 0 53 53l15.2-15.2"/>
+  </g>
 </svg>
