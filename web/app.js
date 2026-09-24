@@ -138,6 +138,7 @@ function pcToolkitHasModel(result) {
 }
 
 function pcToolkitImportSerials(request) {
+  if (request?.group === "Pending returns" || request?.has_pending_return_serial) return [];
   return [...new Map([
     ...(Array.isArray(request?.serials) ? request.serials : []),
     request?.serial,
@@ -4089,6 +4090,7 @@ function applyPcToolkitImportResults(payload, requests, results) {
 }
 
 function pcToolkitImportQueries(request) {
+  if (request?.group === "Pending returns" || request?.has_pending_return_serial) return [];
   return [...new Map([
     ...pcToolkitImportSerials(request),
     String(request?.username || request?.user || request?.returning_user || "").trim(),
