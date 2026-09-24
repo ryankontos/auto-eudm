@@ -129,6 +129,24 @@ function pcToolkitResultFor(results, value) {
   return match ? match[1] : null;
 }
 
+function pcToolkitHasModel(result) {
+  return Boolean(String(
+    result?.primary?.model
+    || result?.devices?.find((device) => device?.model)?.model
+    || "",
+  ).trim());
+}
+
+function pcToolkitImportSerials(request) {
+  return [...new Map([
+    ...(Array.isArray(request?.serials) ? request.serials : []),
+    request?.serial,
+    request?.manual_return_serial,
+  ].map((value) => String(value || "").trim())
+    .filter((value) => value.length >= 2)
+    .map((value) => [pcToolkitKey(value), value])).values()];
+}
+
 function pcToolkitSuggestedStatus(request, model) {
   const mapping = pcToolkitMappingFor(model);
   if (!mapping) return "";
@@ -3145,6 +3163,9 @@ async function connect() {
 }
 
 async function connectPcToolkitAfterHelix() {
+  // Background authentication is owned by the server monitor. This helper is
+  // only for the opt-in visible Chrome flow when background auth is disabled.
+  if (state.preferences?.headless_auth_enabled) return;
   if (state.pcToolkitWaitingForHelix) return;
   state.pcToolkitWaitingForHelix = true;
   try {
@@ -3823,8 +3844,87 @@ async function pcToolkitEnrichQueries(queries, { fresh = false, onBatch = null }
   return { results, errors };
 }
 
+async function pcToolkitEnrichImportQueries(queries, serialQueries, { fresh = false, onBatch = null } = {}) {
+  const unique = [...new Map(
+    queries
+      .map((value) => String(value || "").trim())
+      .filter((value) => value.length >= 2)
+      .map((value) => [pcToolkitKey(value), value]),
+  ).values()];
+  const serialKeys = new Set(serialQueries.map(pcToolkitKey).filter(Boolean));
+  const results = {};
+  const errors = {};
+  const completed = new Set();
+  const maxAttempts = 3;
+
+  const recordBatch = (batchResults, meta, attempt) => {
+    const batchQueries = meta.queries || [];
+    batchQueries.forEach((query) => {
+      const key = pcToolkitKey(query);
+      const result = pcToolkitResultFor(batchResults, query);
+      if (result) {
+        results[key] = result;
+        delete errors[key];
+      } else {
+        const message = meta.errors?.[key] || meta.errors?.[query];
+        if (message) errors[key] = message;
+      }
+      const modelFound = pcToolkitHasModel(result || results[key]);
+      if (!serialKeys.has(key) || modelFound || attempt === maxAttempts) {
+        completed.add(key);
+        if (serialKeys.has(key) && !modelFound) {
+          errors[key] = errors[key] || "PC Toolkit did not return a model after three searches.";
+        }
+      } else {
+        completed.delete(key);
+      }
+    });
+    if (onBatch) {
+      onBatch(batchResults, {
+        ...meta,
+        attempt,
+        completed: completed.size,
+        total: unique.length,
+        completedQueries: batchQueries.filter((query) => completed.has(pcToolkitKey(query))),
+        errors: { ...errors },
+      });
+    }
+  };
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const attemptQueries = attempt === 1
+      ? unique
+      : unique.filter((query) => serialKeys.has(pcToolkitKey(query))
+        && !pcToolkitHasModel(results[pcToolkitKey(query)]));
+    if (!attemptQueries.length) break;
+    if (attempt > 1) await new Promise((resolve) => window.setTimeout(resolve, 350 * (attempt - 1)));
+    const response = await pcToolkitEnrichQueries(attemptQueries, {
+      fresh: fresh || attempt > 1,
+      onBatch: (batchResults, meta) => recordBatch(batchResults, meta, attempt),
+    });
+    attemptQueries.forEach((query) => {
+      const key = pcToolkitKey(query);
+      const result = pcToolkitResultFor(response.results, query);
+      if (result) {
+        results[key] = result;
+        delete errors[key];
+      } else if (response.errors?.[key]) {
+        errors[key] = response.errors[key];
+      }
+    });
+  }
+  serialKeys.forEach((key) => {
+    if (!pcToolkitHasModel(results[key])) {
+      errors[key] = errors[key] || "PC Toolkit did not return a model after three searches.";
+      completed.add(key);
+    }
+  });
+  return { results, errors };
+}
+
 function pcToolkitModelFor(request) {
   return request?.pc_toolkit?.serial?.primary?.model
+    || Object.values(request?.pc_toolkit?.serials || {}).find((result) => pcToolkitHasModel(result))?.primary?.model
     || request?.pc_toolkit?.primary?.model
     || request?.device_allocation
     || "";
@@ -3962,10 +4062,16 @@ function pcToolkitDeploymentRelation(request, device) {
 
 function applyPcToolkitImportResults(payload, requests, results) {
   (requests || []).forEach((request) => {
-    const serial = String(request.serials?.[0] || request.serial || "").trim();
+    const serials = pcToolkitImportSerials(request);
+    const serialResults = Object.fromEntries(serials.map((serial) => [
+      pcToolkitKey(serial),
+      pcToolkitResultFor(results, serial) || request.pc_toolkit?.serials?.[pcToolkitKey(serial)] || null,
+    ]));
     const username = String(request.username || request.user || request.returning_user || "").trim();
+    const firstSerial = serials[0] || "";
     request.pc_toolkit = {
-      serial: pcToolkitResultFor(results, serial) || request.pc_toolkit?.serial || null,
+      serial: pcToolkitResultFor(results, firstSerial) || request.pc_toolkit?.serial || null,
+      serials: serialResults,
       user: pcToolkitResultFor(results, username) || request.pc_toolkit?.user || null,
       enriched_at: new Date().toISOString(),
     };
@@ -3983,18 +4089,17 @@ function applyPcToolkitImportResults(payload, requests, results) {
 }
 
 function pcToolkitImportQueries(request) {
-  if (request?.group === "Pending returns" || request?.has_pending_return_serial) return [];
   return [...new Map([
-    String(request?.serials?.[0] || request?.serial || "").trim(),
+    ...pcToolkitImportSerials(request),
     String(request?.username || request?.user || request?.returning_user || "").trim(),
   ].filter((value) => value.length >= 2).map((value) => [pcToolkitKey(value), value])).values()];
 }
 
 function pcToolkitRelevantFailedQueries(request, failedKeys, payload = state.importPreview) {
-  const serialKey = pcToolkitKey(request?.serials?.[0] || request?.serial);
+  const serialKeys = new Set(pcToolkitImportSerials(request).map(pcToolkitKey));
   const userKey = pcToolkitKey(request?.username || request?.user || request?.returning_user);
   const needsUserDetails = importDeploymentNeedsManualReturn(request, payload);
-  return failedKeys.filter((key) => key === serialKey || (needsUserDetails && key === userKey));
+  return failedKeys.filter((key) => serialKeys.has(key) || (needsUserDetails && key === userKey));
 }
 
 function updatePcToolkitImportLookupState(requests, completedKeys, results, errors, { final = false, payload = state.importPreview } = {}) {
@@ -4011,7 +4116,10 @@ function updatePcToolkitImportLookupState(requests, completedKeys, results, erro
     request.pc_toolkit_loading = !complete;
     if (!complete) return;
     request.pc_toolkit_checked = true;
-    const failed = keys.filter((key) => errors[key] && !results[key]);
+    const serialKeys = new Set(pcToolkitImportSerials(request).map(pcToolkitKey));
+    const failed = keys.filter((key) => errors[key] && (
+      !results[key] || (serialKeys.has(key) && !pcToolkitHasModel(results[key]))
+    ));
     const relevantFailed = pcToolkitRelevantFailedQueries(request, failed, payload);
     request.pc_toolkit_failed_queries = relevantFailed;
     request.pc_toolkit_error = relevantFailed.length
@@ -4038,7 +4146,14 @@ async function enrichImportPreview(payload = state.importPreview, { requests: re
     .filter((request) => importDeploymentNeedsManualReturn(request, payload))
     .map((request) => String(request.username || request.user || "").trim())
     .filter((value) => value.length >= 2);
-  const queries = [...new Set([...missingReturnUsers, ...requests.flatMap(pcToolkitImportQueries)])];
+  const serialQueries = [...new Map(
+    requests.flatMap(pcToolkitImportSerials)
+      .map((value) => [pcToolkitKey(value), value]),
+  ).values()];
+  const queries = [...new Map(
+    [...missingReturnUsers, ...requests.flatMap(pcToolkitImportQueries)]
+      .map((value) => [pcToolkitKey(value), value]),
+  ).values()];
   const lookupRequests = requests.filter((request) => pcToolkitImportQueries(request).length);
   requests.filter((request) => !lookupRequests.includes(request)).forEach((request) => {
     request.pc_toolkit_loading = false;
@@ -4072,21 +4187,25 @@ async function enrichImportPreview(payload = state.importPreview, { requests: re
   const accumulatedErrors = {};
   const onBatch = (batchResults, meta = {}) => {
     if (state.importPreview !== payload || epoch !== state.pcToolkitEnrichmentEpoch) return;
-    payload.pc_toolkit_completed = Number(meta.completed || payload.pc_toolkit_completed || 0);
-    (meta.queries || []).forEach((query) => completedKeys.add(pcToolkitKey(query)));
+    payload.pc_toolkit_completed = Number(meta.completed ?? payload.pc_toolkit_completed ?? 0);
+    (meta.completedQueries || meta.queries || []).forEach((query) => completedKeys.add(pcToolkitKey(query)));
     Object.assign(accumulatedResults, batchResults || {});
+    Object.keys(accumulatedErrors).forEach((key) => {
+      if (!Object.prototype.hasOwnProperty.call(meta.errors || {}, key)) delete accumulatedErrors[key];
+    });
     Object.assign(accumulatedErrors, meta.errors || {});
-    applyPcToolkitImportResults(payload, requests, batchResults);
+    applyPcToolkitImportResults(payload, requests, accumulatedResults);
     updatePcToolkitImportLookupState(requests, completedKeys, accumulatedResults, accumulatedErrors, { payload });
     schedulePcToolkitImportRender(payload);
   };
   try {
-    const response = await pcToolkitEnrichQueries(queries, { fresh, onBatch });
+    const response = await pcToolkitEnrichImportQueries(queries, serialQueries, { fresh, onBatch });
     if (state.importPreview !== payload || epoch !== state.pcToolkitEnrichmentEpoch) return;
     const results = response.results || {};
     Object.assign(accumulatedResults, results);
+    Object.keys(accumulatedErrors).forEach((key) => delete accumulatedErrors[key]);
     Object.assign(accumulatedErrors, response.errors || {});
-    applyPcToolkitImportResults(payload, requests, results);
+    applyPcToolkitImportResults(payload, requests, accumulatedResults);
   } catch (_) {
     // Keep the workbook fully usable when the optional service is unavailable.
   } finally {
@@ -6052,7 +6171,7 @@ async function enrichManualReturnSerial(payload, source, { fresh = false, render
   source.manual_return_lookup_error = "";
   if (render) renderImportPreview();
   try {
-    const response = await pcToolkitEnrichQueries([serial], { fresh });
+    const response = await pcToolkitEnrichImportQueries([serial], [serial], { fresh });
     if (state.importPreview !== payload
       || source.manual_return_lookup_epoch !== epoch
       || pcToolkitKey(source.manual_return_serial) !== serialKey) return null;

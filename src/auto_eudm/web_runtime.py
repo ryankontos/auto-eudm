@@ -1652,7 +1652,12 @@ class Application:
                 self.auth_attempt_active["pc_toolkit"] = False
                 self.auth_attempt_active["helix"] = True
                 self.clients.connect_async(headless=True)
-            return
+                return
+            # Helix owns the shared Chrome profile while it is actively
+            # authenticating. If it is disconnected or has failed, PC Toolkit
+            # can still connect and maintain its own background session.
+            if helix_state == "connecting":
+                return
         if not self.pc_toolkit.enabled():
             return
         pc_state = self.pc_toolkit.status()["state"]
