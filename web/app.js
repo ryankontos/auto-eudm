@@ -15,9 +15,7 @@ const state = {
   queueSearch: "",
   selectedId: null,
   connection: null,
-  connectionSheetEventsBound: false,
-  connectionDismissTimer: null,
-  connectionSheetManual: false,
+  connectionEventsBound: false,
   connectionAutoStarted: false,
   diagnosticsStatusTimer: null,
   workbook: null,
@@ -39,6 +37,7 @@ const state = {
   notifiedJobs: new Set(),
   celebratedJobs: new Set(),
   connectionHeartbeatTimer: null,
+  pcToolkitHeartbeatTimer: null,
   serviceStatus: null,
   serviceStatusTimer: null,
   liveOptionsLoaded: false,
@@ -73,6 +72,7 @@ const state = {
   importPreviewNeedsFullRender: false,
   historyRuns: [],
   pcToolkitStatus: null,
+  pcToolkitReviewReconnectPending: null,
   pcToolkitReviewStatusTimer: null,
   pcToolkitEnrichmentEpoch: 0,
   pcToolkitImportRenderFrame: null,
@@ -254,7 +254,6 @@ function runCommandPaletteItem(index) {
 }
 
 function openCommandPalette() {
-  if ($("#connectionDialog")?.open) return;
   const dialog = $("#commandPaletteDialog");
   if (!dialog) return;
   state.commandPaletteIndex = 0;
@@ -298,15 +297,6 @@ const elements = {
   submissionNoticeState: $(".submission-notice-state"),
   submissionNoticeTitle: $("#submissionNoticeTitle"),
   submissionNoticeDetail: $("#submissionNoticeDetail"),
-  connectionDialog: $("#connectionDialog"),
-  closeConnectionButton: $("#closeConnectionButton"),
-  connectionSheetTitle: $("#connectionSheetTitle"),
-  connectionVisual: $("#connectionVisual"),
-  connectionLinkIcon: $("#connectionLinkIcon"),
-  connectionLoading: $("#connectionLoading"),
-  connectionErrorMessage: $("#connectionErrorMessage"),
-  connectionAuthenticateButton: $("#connectionAuthenticateButton"),
-  exportDiagnosticsSheetButton: $("#exportDiagnosticsSheetButton"),
   downloadDiagnosticsButton: $("#downloadDiagnosticsButton"),
   diagnosticsStatus: $("#diagnosticsStatus"),
   railResizeHandle: $("#railResizeHandle"),
@@ -3033,28 +3023,13 @@ function renderPcToolkitHeaderStatus() {
   const ready = ["connected", "simulation"].includes(status.state);
   const failed = status.state === "error";
   wrapper.dataset.state = ready ? "connected" : failed ? "error" : connecting ? "connecting" : "disconnected";
-  label.textContent = ready ? "Ready" : connecting ? "Connecting…" : failed ? "Unavailable" : "Connect";
+  label.textContent = ready ? "Ready" : connecting ? "Connecting…"
+    : status.background_auth_stopped ? "Sign-in needed" : failed ? "Retry" : "Connect";
   wrapper.disabled = connecting;
   wrapper.setAttribute("aria-label", connecting
     ? "Connecting to PC Toolkit"
-    : ready ? "Reconnect to PC Toolkit" : "Connect to PC Toolkit");
+    : ready ? "Reconnect to PC Toolkit in Chrome" : "Connect to PC Toolkit in Chrome");
   wrapper.title = status.message || wrapper.getAttribute("aria-label");
-}
-
-function renderConnectionOptionalStatus() {
-  const element = $("#connectionOptionalStatus");
-  if (!element) return;
-  const enabled = state.preferences?.pc_toolkit_enabled === true;
-  element.hidden = !enabled;
-  if (!enabled) return;
-  const status = state.pcToolkitStatus || {};
-  const ready = ["connected", "simulation"].includes(status.state);
-  element.dataset.state = ready ? "connected" : status.state === "error" ? "error" : "optional";
-  element.textContent = ready
-    ? "PC Toolkit · Ready"
-    : status.state === "connecting"
-      ? "PC Toolkit · Connecting…"
-      : status.state === "error" ? "PC Toolkit · Unavailable" : "PC Toolkit · Optional";
 }
 
 function renderConnectionSheet(status = state.connection) {
@@ -3062,11 +3037,7 @@ function renderConnectionSheet(status = state.connection) {
   const stateName = status?.state || "checking";
   const connecting = ["checking", "connecting"].includes(stateName);
   const hasError = connectionHasError(status);
-  const visualState = ready ? "connected" : stateName === "connecting" ? "connecting" : "disconnected";
-  if (!ready && state.connectionDismissTimer) {
-    window.clearTimeout(state.connectionDismissTimer);
-    state.connectionDismissTimer = null;
-  }
+  const stopped = Boolean(status?.background_auth_stopped);
   elements.connectionStatus.hidden = false;
   elements.connectionStatus.dataset.state = ready
     ? "connected"
@@ -3078,56 +3049,21 @@ function renderConnectionSheet(status = state.connection) {
       ? "Authenticated"
       : stateName === "connecting"
         ? "Authenticating…"
-        : hasError ? "Attention needed" : "Authenticate";
+        : stopped ? "Sign-in needed" : hasError ? "Retry sign-in" : "Authenticate";
   elements.connectionStatus.disabled = connecting || stateName === "simulation";
   elements.connectionStatus.setAttribute(
     "aria-label",
     stateName === "connecting"
       ? "Authenticating with Helix"
-      : ready ? "View Helix connection" : hasError ? "Review Helix authentication error" : "Authenticate with Helix",
+      : ready ? "Reauthenticate with Helix in Chrome" : hasError ? "Retry Helix authentication in Chrome" : "Authenticate with Helix",
   );
   elements.connectionStatus.title = stateName === "simulation"
     ? "Simulation mode"
-    : hasError ? "Helix authentication failed"
+    : hasError ? (status?.message || "Helix authentication failed. Click to retry in Chrome.")
     : stateName === "connecting" ? "Helix authentication in progress"
     : ready ? "Authenticated with Helix" : "Helix is not authenticated";
-  elements.closeConnectionButton.hidden = !ready;
-  elements.connectionSheetTitle.textContent = hasError
-    ? "Helix authentication failed"
-    : ready ? "Authenticated with Helix" : "Helix Authentication Required";
-  elements.connectionLoading.hidden = !connecting;
-  elements.connectionErrorMessage.hidden = !hasError;
-  elements.connectionErrorMessage.textContent = hasError
-    ? (status?.message || "Helix authentication could not be completed.")
-    : "";
-  elements.connectionAuthenticateButton.disabled = stateName === "connecting";
-  elements.connectionAuthenticateButton.textContent = stateName === "connecting"
-    ? "Authenticating…"
-    : ready ? "Reauthenticate" : "Authenticate in Helix";
-  elements.connectionDialog.dataset.state = visualState;
-  elements.connectionVisual.dataset.state = visualState;
-  elements.connectionVisual.setAttribute(
-    "aria-label",
-    ready
-      ? "AutoEUDM is connected to Helix"
-      : visualState === "connecting"
-        ? "AutoEUDM is connecting to Helix"
-        : "AutoEUDM is waiting for Helix authentication",
-  );
-  const linkIcon = visualState === "connected" ? "link-2" : "link-2-off";
-  if (elements.connectionLinkIcon.dataset.icon !== linkIcon) {
-    elements.connectionLinkIcon.dataset.icon = linkIcon;
-    elements.connectionLinkIcon.innerHTML = iconMarkup(linkIcon);
-  }
-  refreshIcons(elements.connectionVisual);
   renderPcToolkitHeaderStatus();
-  renderConnectionOptionalStatus();
   renderAlmPcToolkitNotice();
-  if (connecting || (ready && !state.connectionSheetManual)) {
-    if (elements.connectionDialog.open) elements.connectionDialog.close();
-    return;
-  }
-  if (hasError && !elements.connectionDialog.open) elements.connectionDialog.showModal();
 }
 
 function updateConnection(status) {
@@ -3182,7 +3118,9 @@ async function refreshConnection({ verify = false } = {}) {
 async function checkConnection() {
   if (!state.connection || state.connection.state === "simulation") return;
   try {
-    const status = await api("/api/connection/health", { method: "POST", body: "{}" });
+    const status = state.preferences?.headless_auth_enabled
+      ? await api("/api/status")
+      : await api("/api/connection/health", { method: "POST", body: "{}" });
     updateConnection(status);
   } catch (error) {
     toast(error.message, "error");
@@ -3191,8 +3129,6 @@ async function checkConnection() {
 
 async function connect() {
   if (state.connection?.state === "connecting") return;
-  state.connectionSheetManual = false;
-  if (elements.connectionDialog.open) elements.connectionDialog.close();
   try {
     const status = await api("/api/connect", { method: "POST", body: "{}" });
     updateConnection(status);
@@ -3228,6 +3164,7 @@ async function connectPcToolkitAfterHelix() {
 
 async function startAuthenticationChecks() {
   await refreshConnection({ verify: true });
+  if (state.preferences?.headless_auth_enabled) return;
   if (!state.connection?.simulation && ["disconnected", "expired"].includes(state.connection?.state)) {
     state.connectionAutoStarted = true;
     await connect();
@@ -3239,35 +3176,11 @@ async function startAuthenticationChecks() {
 }
 
 function bindConnectionSheetEvents() {
-  if (state.connectionSheetEventsBound) return;
-  state.connectionSheetEventsBound = true;
-  elements.connectionAuthenticateButton.addEventListener("click", connect);
-  elements.connectionStatus.addEventListener("click", () => {
-    if (connectionIsReady() || connectionHasError()) {
-      openConnectionSheet();
-      renderConnectionSheet();
-      return;
-    }
-    void connect();
-  });
+  if (state.connectionEventsBound) return;
+  state.connectionEventsBound = true;
+  elements.connectionStatus.addEventListener("click", connect);
   $("#pcToolkitHeaderStatus")?.addEventListener("click", connectPcToolkit);
-  elements.exportDiagnosticsSheetButton?.addEventListener("click", exportDiagnostics);
   elements.downloadDiagnosticsButton?.addEventListener("click", exportDiagnostics);
-  elements.closeConnectionButton.addEventListener("click", () => {
-    state.connectionSheetManual = false;
-    elements.connectionDialog.close();
-  });
-  elements.connectionDialog.addEventListener("cancel", (event) => {
-    if (!connectionIsReady()) event.preventDefault();
-    else state.connectionSheetManual = false;
-  });
-}
-
-function openConnectionSheet() {
-  state.connectionSheetManual = true;
-  if (!elements.connectionDialog.open) elements.connectionDialog.showModal();
-  renderConnectionSheet();
-  void refreshDiagnosticsStatus();
 }
 
 function renderDiagnosticsStatus(status) {
@@ -3277,7 +3190,6 @@ function renderDiagnosticsStatus(status) {
   elements.diagnosticsStatus.textContent = available
     ? "Includes the last five minutes of API traffic. Request and response bodies are included with credentials removed."
     : "The capture is kept only while AutoEUDM is running; reproduce the problem first, then export it.";
-  if (elements.exportDiagnosticsSheetButton) elements.exportDiagnosticsSheetButton.disabled = !available;
 }
 
 async function refreshDiagnosticsStatus() {
@@ -3695,7 +3607,6 @@ function renderPcToolkitStatus() {
       : "A detailed session log will be saved here after PC Toolkit activity.";
   }
   renderPcToolkitHeaderStatus();
-  renderConnectionOptionalStatus();
   renderAlmPcToolkitNotice();
 }
 
@@ -3751,6 +3662,7 @@ async function refreshPcToolkitStatus() {
   try {
     state.pcToolkitStatus = await api("/api/pc-toolkit/status");
     renderPcToolkitStatus();
+    restartPcToolkitReviewAfterReconnect();
   } catch (_) {}
   return state.pcToolkitStatus;
 }
@@ -3786,6 +3698,10 @@ async function connectPcToolkitFromImportReview() {
   if (state.connection?.state === "connecting") return;
   const button = $("#importPcToolkitConnectButton");
   if (button) button.disabled = true;
+  const preview = state.importPreview;
+  if (preview && elements.importDialog.open && !elements.importPreview.hidden) {
+    state.pcToolkitReviewReconnectPending = preview;
+  }
   try {
     if (state.preferences?.pc_toolkit_enabled !== true) {
       state.preferences = await api("/api/preferences", {
@@ -3795,11 +3711,58 @@ async function connectPcToolkitFromImportReview() {
       renderConnectionSheet();
     }
     await connectPcToolkit();
+    restartPcToolkitReviewAfterReconnect();
   } catch (error) {
+    if (state.pcToolkitReviewReconnectPending === preview) state.pcToolkitReviewReconnectPending = null;
     toast(error.message, "error");
   } finally {
     renderAlmPcToolkitNotice();
   }
+}
+
+function restartPcToolkitReviewAfterReconnect() {
+  const preview = state.pcToolkitReviewReconnectPending;
+  if (!preview || !["connected", "simulation"].includes(state.pcToolkitStatus?.state)) return;
+  if (state.importPreview !== preview) {
+    state.pcToolkitReviewReconnectPending = null;
+    return;
+  }
+  if (!elements.importDialog.open || elements.importPreview.hidden) return;
+  state.pcToolkitReviewReconnectPending = null;
+
+  // A previous unavailable lookup must not masquerade as the fresh result.
+  // Preserve user-selected inclusion, statuses and manually entered serials.
+  state.pcToolkitEnrichmentEpoch += 1;
+  preview.pc_toolkit_loading = false;
+  preview.pc_toolkit_completed = 0;
+  preview.pc_toolkit_total = 0;
+  preview.pc_toolkit_error_count = 0;
+  const manualReturnSources = [];
+  (preview.requests || []).forEach((request) => {
+    request.pc_toolkit = null;
+    request.pc_toolkit_checked = false;
+    request.pc_toolkit_loading = false;
+    request.pc_toolkit_error = "";
+    request.pc_toolkit_failed_queries = [];
+    request.pc_toolkit_suggested_status = "";
+    request.pc_toolkit_conflict = null;
+    request.pc_toolkit_default_excluded = false;
+    if (request.manual_return_serial) {
+      request.manual_return_pc_toolkit = null;
+      request.manual_return_model = "";
+      request.manual_return_lookup_state = "idle";
+      request.manual_return_lookup_error = "";
+      request.manual_return_lookup_epoch = Number(request.manual_return_lookup_epoch || 0) + 1;
+      manualReturnSources.push(request);
+    }
+  });
+  renderImportPreview();
+  updateImportPrepareButton(preview);
+  saveCurrentImportDraft();
+  void enrichImportPreview(preview, { fresh: true });
+  manualReturnSources.forEach((request) => {
+    void enrichManualReturnSerial(preview, request, { fresh: true });
+  });
 }
 
 function pcToolkitAssignedLabel(device) {
@@ -4012,10 +3975,8 @@ function applyPcToolkitImportResults(payload, requests, results) {
     const model = pcToolkitModelFor(request);
     request.pc_toolkit_suggested_status = pcToolkitSuggestedStatus(context, model);
     request.pc_toolkit_conflict = pcToolkitConflictFor(context);
-    if (payload.mode === "backlog"
-      && request.pc_toolkit_conflict?.level === "complete"
-      && request.included !== false) {
-      request.included = false;
+    if (payload.mode === "backlog" && request.pc_toolkit_conflict?.level === "complete") {
+      if (request.included !== false) request.included = false;
       request.pc_toolkit_default_excluded = true;
     }
   });
@@ -4162,6 +4123,7 @@ function openSettings({ tab = "", model = "" } = {}) {
   $("#saveAlmImportDraftsInput").checked = state.preferences.save_alm_import_drafts !== false;
   $("#showReturnedSerialsOnHandInput").checked = state.preferences.show_returned_serials_on_hand !== false;
   $("#pcToolkitEnabledInput").checked = state.preferences.pc_toolkit_enabled === true;
+  $("#headlessAuthInput").checked = state.preferences.headless_auth_enabled === true;
   $("#pcToolkitAutoConnectInput").checked = state.preferences.pc_toolkit_auto_connect === true;
   $("#pcToolkitTransportInput").value = state.preferences.pc_toolkit_transport || "browser";
   renderPcToolkitMappings(model ? { model, user_status: "", location_status: "" } : null);
@@ -4189,6 +4151,7 @@ function openBacklogForCurrentWorkbook() {
   if (!workbook?.import_id) return openAlmBacklogImport();
   state.importMode = "backlog";
   state.importPreview = null;
+  state.pcToolkitReviewReconnectPending = null;
   state.importDraftId = newImportDraftId();
   state.importUndoStack = [];
   state.importRedoStack = [];
@@ -6806,7 +6769,7 @@ function renderBacklogPreview(payload) {
       ? "Did not attend"
       : request.pc_toolkit_default_excluded
         ? "Already deployed to this user in PC Toolkit"
-        : "Ignored in future backlog checks";
+        : request.backlog_ignored ? "Ignored in future backlog checks" : "Excluded from this review";
     const includedRow = request.included !== false;
     const needsStatus = includedRow && !request.status;
     const statusControl = `<div class="import-status-cell${needsStatus ? " needs-status" : ""}">
@@ -8878,6 +8841,7 @@ function bindEvents() {
       save_alm_import_drafts: $("#saveAlmImportDraftsInput").checked,
       show_returned_serials_on_hand: $("#showReturnedSerialsOnHandInput").checked,
       pc_toolkit_enabled: $("#pcToolkitEnabledInput").checked,
+      headless_auth_enabled: $("#headlessAuthInput").checked,
       pc_toolkit_auto_connect: $("#pcToolkitAutoConnectInput").checked,
       pc_toolkit_transport: $("#pcToolkitTransportInput").value,
       pc_toolkit_model_mappings: readPcToolkitMappings(),
@@ -9481,6 +9445,14 @@ async function init() {
     await refreshDiagnosticsStatus();
     renderConnectionSheet();
     state.connectionHeartbeatTimer = window.setInterval(checkConnection, 30_000);
+    state.pcToolkitHeartbeatTimer = window.setInterval(() => {
+      if (state.preferences?.pc_toolkit_enabled) void refreshPcToolkitStatus();
+    }, 15_000);
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) return;
+      void refreshConnection();
+      if (state.preferences?.pc_toolkit_enabled) void refreshPcToolkitStatus();
+    });
     state.diagnosticsStatusTimer = window.setInterval(refreshDiagnosticsStatus, 5_000);
     await refreshServiceStatus();
     state.serviceStatusTimer = window.setInterval(refreshServiceStatus, 15_000);

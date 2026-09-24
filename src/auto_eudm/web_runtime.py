@@ -41,6 +41,10 @@ MAX_LIVE_SUBMISSION_JOBS = 100
 SEARCH_PROBE_POOL_SIZE = 16
 VERIFICATION_CACHE_MAX_ENTRIES = 10000
 VERIFICATION_CACHE_WRITE_COALESCE_SECONDS = 0.75
+AUTH_MONITOR_TICK_SECONDS = 15
+HELIX_HEALTH_INTERVAL_SECONDS = 30
+PC_TOOLKIT_HEALTH_INTERVAL_SECONDS = 60
+AUTH_RETRY_INTERVAL_SECONDS = 45
 MAX_ALM_IMPORT_DRAFTS = 10
 ALM_IMPORT_DRAFT_MAX_AGE = timedelta(hours=6)
 HISTORY_FILENAME = "request-history.json"
@@ -520,6 +524,8 @@ class SearchProbe:
 class ClientManager:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
+        self.headless_auth_enabled = False
+        self.background_auth_stopped = False
         self.lock = threading.Lock()
         self.state = "simulation" if config.simulate else "disconnected"
         self.message = (
@@ -551,6 +557,7 @@ class ClientManager:
             return {
                 "state": self.state,
                 "message": self.message,
+                "background_auth_stopped": self.background_auth_stopped,
                 "simulation": self.config.simulate,
                 "connected_at": self.connected_at,
                 "last_checked_at": self.last_checked_at,
@@ -561,7 +568,7 @@ class ClientManager:
                 ),
             }
 
-    def connect_async(self) -> None:
+    def connect_async(self, *, headless: bool | None = None) -> None:
         with self.lock:
             if self.state in {"connecting", "simulation"}:
                 return
@@ -572,7 +579,11 @@ class ClientManager:
                 self.fresh_probe_cursor = 0
             self.state = "connecting"
             self.message = "Opening the saved Helix session…"
-        thread = threading.Thread(target=self._connect, daemon=True)
+        use_headless = (
+            self.headless_auth_enabled or self.config.browser_headless
+            if headless is None else headless
+        )
+        thread = threading.Thread(target=self._connect, args=(use_headless,), daemon=True)
         thread.start()
 
     def mark_sso_expired(self) -> None:
@@ -595,25 +606,29 @@ class ClientManager:
                 "environment" if self.config.request_for else "pending"
             )
 
-    def _connect(self) -> None:
+    def _connect(self, headless: bool | None = None) -> None:
         browser: Any | None = None
+        headless = (
+            self.headless_auth_enabled or self.config.browser_headless
+            if headless is None else headless
+        )
         try:
             browser = eudm.open_client(
                 base=self.config.base,
                 browser_profile=self.config.browser_profile,
                 simulate=False,
                 verbose=self.config.verbose,
-                headless=self.config.browser_headless,
+                headless=headless,
                 interactive_browser_auth=False,
             )
             with self.lock:
                 self.message = (
                     "Checking the saved SSO session…"
-                    if self.config.browser_headless
+                    if headless
                     else "Complete SSO in the Chrome window; AutoEUDM is waiting…"
                 )
             deadline = time.monotonic() + (
-                15 if self.config.browser_headless else 120
+                15 if headless else 120
             )
             last_error: Exception | None = None
             request_for = ""
@@ -630,10 +645,10 @@ class ClientManager:
                     last_error = exc
                 time.sleep(2)
             if last_error:
-                if self.config.browser_headless:
+                if headless:
                     raise eudm.EUDMError(
-                        "The saved SSO session is not ready. Set "
-                        "EUDM_BROWSER_HEADLESS=false once, connect, and complete SSO."
+                        "The saved Helix session is not ready. Click the Helix "
+                        "status in the top bar to sign in visibly in Chrome."
                     ) from last_error
                 raise eudm.EUDMError(
                     "Helix SSO did not complete within two minutes. Try Connect again."
@@ -1327,6 +1342,19 @@ class Application:
             verbose=self.config.verbose,
             preferences=lambda: self.preferences,
         )
+        self.clients.headless_auth_enabled = bool(self.preferences["headless_auth_enabled"])
+        self.pc_toolkit.browser_headless = bool(
+            self.config.browser_headless or self.preferences["headless_auth_enabled"]
+        )
+        self.auth_monitor_stop = threading.Event()
+        self.auth_monitor_wake = threading.Event()
+        self.auth_monitor_thread: threading.Thread | None = None
+        self.auth_last_helix_health = 0.0
+        self.auth_last_pc_health = 0.0
+        self.auth_last_helix_retry = 0.0
+        self.auth_last_pc_retry = 0.0
+        self.auth_failure_counts = {"helix": 0, "pc_toolkit": 0}
+        self.auth_attempt_active = {"helix": False, "pc_toolkit": False}
         self.allowed_user_statuses = {value for _, value in USER_STATUSES}
         self.allowed_location_statuses = {
             value for _, value in LOCATION_STATUSES
@@ -1373,6 +1401,7 @@ class Application:
             "show_returned_serials_on_hand": True,
             "update_channel": "stable",
             "start_at_login": False,
+            "headless_auth_enabled": False,
             "pc_toolkit_enabled": False,
             "pc_toolkit_auto_connect": False,
             "pc_toolkit_transport": "browser",
@@ -1422,6 +1451,7 @@ class Application:
             "save_alm_import_drafts",
             "show_returned_serials_on_hand",
             "start_at_login",
+            "headless_auth_enabled",
             "pc_toolkit_enabled",
             "pc_toolkit_auto_connect",
         ):
@@ -1573,9 +1603,93 @@ class Application:
             temporary.write_text(payload + "\n", encoding="utf-8")
             temporary.replace(self.preferences_path)
             self.preferences = saved
+            self.clients.headless_auth_enabled = bool(saved["headless_auth_enabled"])
+            self.pc_toolkit.browser_headless = bool(
+                self.config.browser_headless or saved["headless_auth_enabled"]
+            )
+            self.auth_monitor_wake.set()
             values = json.loads(json.dumps(saved))
             values["_saved"] = True
             return values
+
+    def start_auth_monitor(self) -> None:
+        """Keep opt-in headless sessions ready without a browser UI tab."""
+        if self.config.simulate or (self.auth_monitor_thread and self.auth_monitor_thread.is_alive()):
+            return
+        self.auth_monitor_wake.set()
+        self.auth_monitor_thread = threading.Thread(
+            target=self._auth_monitor_loop,
+            name="auto-eudm-auth-monitor",
+            daemon=True,
+        )
+        self.auth_monitor_thread.start()
+
+    def _auth_monitor_loop(self) -> None:
+        while not self.auth_monitor_stop.is_set():
+            self.auth_monitor_wake.wait(AUTH_MONITOR_TICK_SECONDS)
+            self.auth_monitor_wake.clear()
+            if self.auth_monitor_stop.is_set():
+                break
+            try:
+                self._auth_monitor_tick()
+            except Exception as exc:
+                run_reporting.event("Background authentication check failed: %s", type(exc).__name__)
+
+    def _auth_monitor_tick(self) -> None:
+        if not self.preferences.get("headless_auth_enabled") or self.config.simulate:
+            return
+        now = time.monotonic()
+        helix_state = self.clients.status()["state"]
+        if helix_state == "connected" and now - self.auth_last_helix_health >= HELIX_HEALTH_INTERVAL_SECONDS:
+            self.auth_last_helix_health = now
+            helix_state = self.clients.check_connection()["state"]
+        self._record_background_auth_result("helix", helix_state)
+        if helix_state != "connected":
+            if (helix_state != "connecting" and not self.clients.background_auth_stopped
+                    and now - self.auth_last_helix_retry >= AUTH_RETRY_INTERVAL_SECONDS):
+                self.auth_last_helix_retry = now
+                self.pc_toolkit.pause_for_helix_auth()
+                self.auth_attempt_active["pc_toolkit"] = False
+                self.auth_attempt_active["helix"] = True
+                self.clients.connect_async(headless=True)
+            return
+        if not self.pc_toolkit.enabled():
+            return
+        pc_state = self.pc_toolkit.status()["state"]
+        if pc_state == "connected" and now - self.auth_last_pc_health >= PC_TOOLKIT_HEALTH_INTERVAL_SECONDS:
+            self.auth_last_pc_health = now
+            pc_state = self.pc_toolkit.check_connection()["state"]
+        self._record_background_auth_result("pc_toolkit", pc_state)
+        if (pc_state not in {"connected", "connecting", "simulation"}
+                and not self.pc_toolkit.background_auth_stopped
+                and now - self.auth_last_pc_retry >= AUTH_RETRY_INTERVAL_SECONDS):
+            self.auth_last_pc_retry = now
+            self.auth_attempt_active["pc_toolkit"] = True
+            self.pc_toolkit.connect_async(headless=True)
+
+    def _record_background_auth_result(self, service: str, state: str) -> None:
+        target = self.clients if service == "helix" else self.pc_toolkit
+        if state == "connected":
+            self.auth_failure_counts[service] = 0
+            self.auth_attempt_active[service] = False
+            target.background_auth_stopped = False
+        elif self.auth_attempt_active[service] and state not in {"connecting", "simulation"}:
+            self.auth_attempt_active[service] = False
+            self.auth_failure_counts[service] += 1
+            if self.auth_failure_counts[service] >= 3:
+                target.background_auth_stopped = True
+
+    def retry_auth_visible(self, service: str) -> None:
+        """User-initiated retry: keep background retries paused until it succeeds."""
+        self.auth_attempt_active[service] = False
+        target = self.clients if service == "helix" else self.pc_toolkit
+        target.background_auth_stopped = True
+        if service == "helix":
+            self.pc_toolkit.pause_for_helix_auth()
+            self.auth_attempt_active["pc_toolkit"] = False
+            self.clients.connect_async(headless=False)
+        else:
+            self.pc_toolkit.connect_async(headless=False)
 
     def _load_import_drafts(self) -> list[dict[str, Any]]:
         """Load resumable ALM import state from the project filesystem."""
@@ -1879,6 +1993,13 @@ class Application:
 
     def flush_pending_state(self) -> None:
         """Persist deferred cache updates before the local server exits."""
+        monitor_stop = getattr(self, "auth_monitor_stop", None)
+        if monitor_stop is not None:
+            monitor_stop.set()
+            self.auth_monitor_wake.set()
+            monitor = self.auth_monitor_thread
+            if monitor is not None and monitor.is_alive():
+                monitor.join(timeout=2)
         with self.verification_cache_lock:
             timer = getattr(self, "verification_cache_write_timer", None)
             if timer is not None:

@@ -488,6 +488,12 @@ async function handle(message) {
       send({ id, ok: true, result: response });
       return;
     }
+    if (command === "health") {
+      const refreshed = await heartbeat(role);
+      if (refreshed.token) accessToken = refreshed.token;
+      send({ id, ok: true, result: { authenticated: Boolean(refreshed.token) } });
+      return;
+    }
     if (command === "close") {
       await closeBrowser();
       send({ id, ok: true });

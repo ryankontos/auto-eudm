@@ -954,5 +954,89 @@ class SubmissionHistoryTests(unittest.TestCase):
         persist_history.assert_called_once_with(job)
 
 
+class BackgroundAuthenticationTests(unittest.TestCase):
+    def test_visible_helix_retry_overrides_headless_default(self) -> None:
+        manager = ClientManager(SimpleNamespace(
+            simulate=False, request_for=None, browser_headless=True,
+            base="https://example.invalid", browser_profile="chrome-profile", verbose=False,
+        ))
+        with mock.patch.object(eudm, "open_client", side_effect=eudm.EUDMError("offline")) as open_client:
+            manager._connect(False)
+        self.assertFalse(open_client.call_args.kwargs["headless"])
+
+    def make_app(self) -> Application:
+        app = bare_application()
+        app.config = SimpleNamespace(simulate=False)
+        app.preferences = {"headless_auth_enabled": True}
+        app.clients = ClientManager(SimpleNamespace(
+            simulate=False, request_for=None, browser_headless=False,
+        ))
+        app.auth_last_helix_health = 10_000.0
+        app.auth_last_pc_health = 10_000.0
+        app.auth_last_helix_retry = 0.0
+        app.auth_last_pc_retry = 0.0
+        app.auth_failure_counts = {"helix": 0, "pc_toolkit": 0}
+        app.auth_attempt_active = {"helix": False, "pc_toolkit": False}
+        return app
+
+    def test_helix_stops_after_three_headless_failures_and_retries_visibly(self) -> None:
+        app = self.make_app()
+        app.pc_toolkit = mock.Mock()
+        app.pc_toolkit.enabled.return_value = False
+        attempts: list[bool] = []
+
+        def fail(*, headless: bool) -> None:
+            attempts.append(headless)
+            app.clients.state = "error"
+
+        app.clients.connect_async = fail
+        for attempt in range(3):
+            with mock.patch.object(eudm_runtime.time, "monotonic", return_value=100.0 + attempt * 100):
+                app._auth_monitor_tick()
+            with mock.patch.object(eudm_runtime.time, "monotonic", return_value=101.0 + attempt * 100):
+                app._auth_monitor_tick()
+        self.assertEqual(attempts, [True, True, True])
+        self.assertTrue(app.clients.status()["background_auth_stopped"])
+        with mock.patch.object(eudm_runtime.time, "monotonic", return_value=500.0):
+            app._auth_monitor_tick()
+        self.assertEqual(len(attempts), 3)
+
+        app.retry_auth_visible("helix")
+        self.assertEqual(attempts[-1], False)
+        self.assertTrue(app.clients.background_auth_stopped)
+        app.clients.state = "connected"
+        with mock.patch.object(eudm_runtime.time, "monotonic", return_value=501.0):
+            app._auth_monitor_tick()
+        self.assertFalse(app.clients.background_auth_stopped)
+
+    def test_pc_toolkit_has_independent_retry_limit(self) -> None:
+        app = self.make_app()
+        app.clients.state = "connected"
+        toolkit = SimpleNamespace(state="error", background_auth_stopped=False)
+        toolkit.enabled = lambda: True
+        toolkit.status = lambda: {"state": toolkit.state}
+        toolkit.check_connection = lambda: toolkit.status()
+        attempts: list[bool] = []
+
+        def fail(*, headless: bool) -> None:
+            attempts.append(headless)
+            toolkit.state = "error"
+
+        toolkit.connect_async = fail
+        app.pc_toolkit = toolkit
+        for attempt in range(3):
+            with mock.patch.object(eudm_runtime.time, "monotonic", return_value=100.0 + attempt * 100):
+                app._auth_monitor_tick()
+            with mock.patch.object(eudm_runtime.time, "monotonic", return_value=101.0 + attempt * 100):
+                app._auth_monitor_tick()
+        self.assertEqual(attempts, [True, True, True])
+        self.assertTrue(toolkit.background_auth_stopped)
+        with mock.patch.object(eudm_runtime.time, "monotonic", return_value=500.0):
+            app._auth_monitor_tick()
+        self.assertEqual(len(attempts), 3)
+        app.retry_auth_visible("pc_toolkit")
+        self.assertEqual(attempts[-1], False)
+
+
 if __name__ == "__main__":
     unittest.main()

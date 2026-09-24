@@ -127,6 +127,20 @@ class PCToolkitNormalisationTests(unittest.TestCase):
 
 
 class PCToolkitCacheTests(unittest.TestCase):
+    def test_browser_session_health_uses_portal_heartbeat(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            service = PCToolkitService(Path(folder) / "cache.json")
+            service.state = "connected"
+            transport = mock.Mock()
+            service._browser_transport = transport
+            transport.heartbeat.return_value = None
+            self.assertEqual(service.check_connection()["state"], "connected")
+            transport.heartbeat.return_value = True
+            self.assertEqual(service.check_connection()["state"], "connected")
+            transport.heartbeat.return_value = False
+            self.assertEqual(service.check_connection()["state"], "error")
+            transport.heartbeat.assert_called_with(service.role)
+
     def test_client_uses_portal_role_and_persists_full_safe_api_trace(self) -> None:
         payload = {"searchTerm": "ABC123", "devices": [
             device("ABC123", status="In Inventory", model="MacBook Pro (14-inch, 2023)")
@@ -256,7 +270,20 @@ class PCToolkitCacheTests(unittest.TestCase):
                 service._connect("pc-connect-test")
 
         self.assertEqual(service.status()["state"], "connected")
-        discover.assert_called_once_with("pc-connect-test")
+        discover.assert_called_once_with("pc-connect-test", headless=False)
+
+    def test_visible_pc_retry_overrides_headless_default(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            service = PCToolkitService(
+                Path(folder) / "cache.json",
+                browser_headless=True,
+                preferences=lambda: {"pc_toolkit_enabled": True, "pc_toolkit_transport": "api"},
+            )
+            service.state = "connecting"
+            service._connect_headless = False
+            with mock.patch.object(service, "_discover_role", return_value="maxrole:personal") as discover:
+                service._connect("pc-visible-retry")
+        discover.assert_called_once_with("pc-visible-retry", headless=False)
 
     def test_real_device_api_auth_error_marks_service_unavailable(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

@@ -6,12 +6,12 @@
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#252b31">
   <title>AutoEUDM</title>
-  <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-20260923-v3-32.png">
-  <link rel="icon" type="image/x-icon" href="/favicon-20260923-v3.ico">
-  <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-20260923-v3-16.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-20260924-32.png">
+  <link rel="icon" type="image/x-icon" href="/favicon-20260924.ico">
+  <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-20260924-16.png">
   <link rel="mask-icon" href="/icons/safari-pinned-tab-20260923-v3.svg" color="#252b31">
-  <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon-20260923-v3.png">
-  <link rel="manifest" href="/site.webmanifest?v=3">
+  <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon-20260924.png">
+  <link rel="manifest" href="/site.webmanifest?v=4">
   <script>
     try {
       const savedTheme = localStorage.getItem("auto-eudm-theme");
@@ -299,35 +299,6 @@
   <dialog id="requestCreateDialog" class="modal request-create-dialog" aria-labelledby="inspectorHeading">
     <section class="modal-card request-create-card">
       <div id="requestCreateHost"></div>
-    </section>
-  </dialog>
-
-  <dialog id="connectionDialog" class="connection-dialog">
-    <section class="connection-sheet-card" aria-labelledby="connectionSheetTitle">
-      <button id="closeConnectionButton" class="icon-button connection-close-button" type="button" aria-label="Close Helix authentication" title="Close" hidden><i data-lucide="x"></i></button>
-      <button id="exportDiagnosticsSheetButton" class="icon-button diagnostics-sheet-button" type="button" aria-label="Export diagnostics" title="Export diagnostics" disabled><i data-lucide="file-down"></i></button>
-      <h1 id="connectionSheetTitle">Helix Authentication Required</h1>
-      <div id="connectionVisual" class="connection-visual" data-state="disconnected" role="img" aria-label="Connection from AutoEUDM to Helix is unavailable">
-        <div class="connection-node">
-          <span class="connection-node-icon"><i data-lucide="laptop-minimal"></i></span>
-          <span class="connection-node-label">AutoEUDM</span>
-        </div>
-        <div class="connection-path" aria-hidden="true">
-          <span class="connection-path-line"></span>
-          <span id="connectionLinkIcon" class="connection-link-icon"><i data-lucide="link-2-off"></i></span>
-          <span class="connection-path-line"></span>
-        </div>
-        <div class="connection-node">
-          <span class="connection-node-icon"><i data-lucide="server"></i></span>
-          <span class="connection-node-label">Helix</span>
-        </div>
-      </div>
-      <div id="connectionLoading" class="connection-loading" role="status" aria-label="Checking Helix authentication" hidden></div>
-      <div id="connectionOptionalStatus" class="connection-optional-status" hidden></div>
-      <p id="connectionErrorMessage" class="connection-error-message" role="alert" hidden></p>
-      <div class="connection-sheet-actions">
-        <button id="connectionAuthenticateButton" class="button primary" type="button">Authenticate in Helix</button>
-      </div>
     </section>
   </dialog>
 
@@ -635,6 +606,8 @@
             </div>
           </div>
           <label id="startAtLoginLabel" class="settings-checkbox service-login-checkbox"><input id="startAtLoginInput" type="checkbox"><span>Start AutoEUDM automatically when I log in</span></label>
+          <label class="settings-checkbox"><input id="headlessAuthInput" type="checkbox"><span>Keep Helix and enabled PC Toolkit connected in the background</span></label>
+          <small class="settings-help">Checks the saved Chrome sessions while AutoEUDM runs, even with no page open. After three unsuccessful sign-in attempts it pauses; click the top-bar status to retry visibly in Chrome.</small>
           <div class="service-quit-row"><small id="serviceRunMode">The local service is running in the background.</small><button id="quitApplicationButton" class="button secondary compact" type="button">Quit AutoEUDM</button></div>
         </div>
       </section>

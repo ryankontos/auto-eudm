@@ -80,6 +80,15 @@ class FakeApp:
         self.request_queue: list[dict[str, object]] = []
         self.cached: dict[tuple[str, str], dict[str, object]] = {}
         self.ignored_backlog: set[tuple[str, str]] = set()
+        self.visible_retries: list[str] = []
+
+    def retry_auth_visible(self, service: str) -> None:
+        self.visible_retries.append(service)
+        if service == "helix":
+            self.pc_toolkit.pause_for_helix_auth()
+            self.clients.connect_async()
+        else:
+            self.pc_toolkit.connect_async()
 
     @staticmethod
     def config_json() -> dict[str, object]:
@@ -218,6 +227,10 @@ class LocalWebServerTests(unittest.TestCase):
             ("/icons/safari-pinned-tab-20260923-v3.svg", "image/svg+xml"),
             ("/icons/apple-touch-icon-20260923-v3.png", "image/png"),
             ("/favicon-20260923-v3.ico", "image/"),
+            ("/icons/favicon-20260924-16.png", "image/png"),
+            ("/icons/favicon-20260924-32.png", "image/png"),
+            ("/icons/apple-touch-icon-20260924.png", "image/png"),
+            ("/favicon-20260924.ico", "image/"),
             ("/icons/favicon-32.png", "image/png"),
             ("/icons/favicon.ico", "image/"),
             ("/favicon.ico", "image/"),
@@ -234,10 +247,12 @@ class LocalWebServerTests(unittest.TestCase):
 
         self.assertEqual(response.status, 200)
         html = body.decode("utf-8")
-        self.assertIn('href="/icons/favicon-20260923-v3-32.png"', html)
-        self.assertIn('href="/favicon-20260923-v3.ico"', html)
+        self.assertIn('href="/icons/favicon-20260924-32.png"', html)
+        self.assertIn('href="/favicon-20260924.ico"', html)
         self.assertIn('href="/icons/safari-pinned-tab-20260923-v3.svg"', html)
         self.assertNotIn('rel="icon" type="image/svg+xml"', html)
+        self.assertNotIn('id="connectionDialog"', html)
+        self.assertIn('id="connectionStatus"', html)
 
     def test_diagnostics_endpoint_returns_the_current_capture_as_gzip(self) -> None:
         run_reporting.configure_logging(enabled=False, command="test")
@@ -324,6 +339,13 @@ class LocalWebServerTests(unittest.TestCase):
         self.assertEqual(response.status, 202)
         self.assertTrue(self.app.pc_toolkit.paused_for_helix)
         self.assertTrue(self.app.clients.connected)
+        self.assertEqual(self.app.visible_retries, ["helix"])
+
+    def test_pc_toolkit_connect_uses_visible_retry(self) -> None:
+        response, _ = self.request("POST", "/api/pc-toolkit/connect", payload={})
+        self.assertEqual(response.status, 202)
+        self.assertTrue(self.app.pc_toolkit.connected)
+        self.assertEqual(self.app.visible_retries, ["pc_toolkit"])
 
     def test_import_drafts_are_read_written_and_deleted_through_local_api(self) -> None:
         draft = {

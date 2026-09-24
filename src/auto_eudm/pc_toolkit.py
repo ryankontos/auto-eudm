@@ -814,6 +814,33 @@ class PCToolkitBrowserTransport:
                 if future is None:
                     continue
                 try:
+                    if task_name == "heartbeat":
+                        result = page.evaluate(
+                            """async (role) => {
+                              const cookie = document.cookie.split(';').map(value => value.trim())
+                                .find(value => /^(XSRF_TOKEN|XSRF-TOKEN)=/i.test(value));
+                              const csrf = cookie ? decodeURIComponent(cookie.split('=').slice(1).join('=')) : '';
+                              const headers = {'Accept': 'application/json, text/plain, */*', 'Content-Type': 'application/json'};
+                              if (csrf) headers['X-XSRF-Token'] = csrf;
+                              if (role) headers['X-Max-Elevated-Role'] = role;
+                              const controller = new AbortController();
+                              const timer = setTimeout(() => controller.abort(), 8000);
+                              try {
+                                const response = await fetch('/auth/session/heartbeat', {
+                                  method: 'POST', headers, body: '{}', credentials: 'include',
+                                  cache: 'no-store', signal: controller.signal,
+                                });
+                                const body = await response.json().catch(() => null);
+                                return {status: response.status, token: typeof body?.token === 'string' ? body.token.trim() : ''};
+                              } finally { clearTimeout(timer); }
+                            }""",
+                            payload["role"],
+                        )
+                        token = clean(result.get("token")) if isinstance(result, dict) else ""
+                        if token:
+                            self._access_token = token
+                        future.set_result(bool(token))
+                        continue
                     if task_name == "get_many":
                         batch_result = page.evaluate(
                             """
@@ -1018,6 +1045,22 @@ class PCToolkitBrowserTransport:
             raise PCToolkitError("PC Toolkit's browser returned an invalid response.")
         return result
 
+    def heartbeat(self, role: str) -> bool | None:
+        """Refresh the portal session; defer if lookups already occupy the page."""
+        if not self._tasks.empty():
+            return None
+        with self._state_lock:
+            if self._closed or self._thread is None or not self._thread.is_alive():
+                raise PCToolkitError("PC Toolkit's browser transport is not running.")
+        future: Future[Any] = Future()
+        self._tasks.put(("heartbeat", {"role": role}, future))
+        try:
+            return bool(future.result(timeout=12.0))
+        except FutureTimeoutError:
+            # A busy lookup can delay a queued heartbeat. Do not treat that
+            # as an expired session or interrupt the lookup.
+            return None
+
     def get_many(
         self,
         requests: list[dict[str, Any]],
@@ -1201,6 +1244,9 @@ class PCToolkitPuppeteerTransport:
                 )
             result = response.get("result", {})
             return result if isinstance(result, dict) else {}
+
+    def heartbeat(self) -> bool:
+        return bool(self._send_command("health", timeout=15).get("authenticated"))
 
     def _acquire_profile(self) -> None:
         if not self.browser_profile:
@@ -1840,6 +1886,7 @@ class PCToolkitService:
         self.simulate = simulate
         self.browser_profile = browser_profile
         self.browser_headless = browser_headless
+        self._connect_headless = browser_headless
         self.verbose = verbose
         self.preferences = preferences or (lambda: {})
         self.lock = threading.RLock()
@@ -1861,6 +1908,7 @@ class PCToolkitService:
         self.message = "Simulation data available." if simulate else "Not connected."
         self.last_error = ""
         self.connected_at: str | None = None
+        self.background_auth_stopped = False
 
     def enabled(self) -> bool:
         return bool(self.preferences().get("pc_toolkit_enabled", False))
@@ -2072,6 +2120,7 @@ class PCToolkitService:
                 "enabled": self.enabled(),
                 "state": self.state,
                 "message": self.message,
+                "background_auth_stopped": self.background_auth_stopped,
                 "connected_at": self.connected_at,
                 "cached_queries": len(self.cache),
                 "models": sorted(self.models, key=str.casefold),
@@ -2080,6 +2129,34 @@ class PCToolkitService:
             }
         status["log"] = run_reporting.pc_toolkit_log_status()
         return status
+
+    def check_connection(self) -> dict[str, Any]:
+        """Check the real portal session without a fabricated device lookup."""
+        if self.simulate:
+            return self.status()
+        with self.lock:
+            if self.state != "connected":
+                return self.status()
+            browser_transport = self._browser_transport
+            puppeteer_transport = self._puppeteer_transport
+            role = self.role
+        try:
+            if browser_transport is not None:
+                healthy = browser_transport.heartbeat(role)
+            elif puppeteer_transport is not None:
+                healthy = puppeteer_transport.heartbeat()
+            else:
+                # Direct API mode has no persistent browser page. Refresh its
+                # portal token from the saved Chrome profile instead.
+                self.role = self._discover_role(headless=True)
+                healthy = bool(self.access_token)
+            if healthy is None:
+                return self.status()  # Busy lookups deferred the heartbeat.
+            if not healthy:
+                raise PCToolkitError("PC Toolkit's saved session is no longer authenticated.")
+        except Exception as exc:
+            self._set_state("error", str(exc), error=str(exc))
+        return self.status()
 
     def clear_cache(self) -> None:
         with self.lock:
@@ -2700,7 +2777,7 @@ class PCToolkitService:
         )
         return {"results": results, "errors": errors, "status": self.status()}
 
-    def connect_async(self) -> None:
+    def connect_async(self, *, headless: bool | None = None) -> None:
         operation_id = run_reporting.diagnostic_id("pc-connect")
         self._log_context(reason="connect", operation_id=operation_id)
         if self.simulate:
@@ -2727,6 +2804,7 @@ class PCToolkitService:
             self._connect_operation_id = operation_id
             self._connect_cancel = threading.Event()
             self.last_error = ""
+            self._connect_headless = self.browser_headless if headless is None else headless
         run_reporting.pc_toolkit_event(
             "connect_started",
             service_id=self.service_id,
@@ -2785,7 +2863,7 @@ class PCToolkitService:
                     timeout=18.0,
                     service_id=self.service_id,
                     operation_id=operation_id,
-                    headless=self.browser_headless,
+                    headless=self._connect_headless,
                 )
                 self._puppeteer_transport = puppeteer_transport
                 puppeteer_transport.start()
@@ -2841,7 +2919,7 @@ class PCToolkitService:
             # without interrupting Helix submissions.
             try:
                 self.access_token = ""
-                self.role = self._discover_role(operation_id)
+                self.role = self._discover_role(operation_id, headless=self._connect_headless)
                 authenticated_in_browser = True
                 browser_transport = PCToolkitBrowserTransport(
                     browser_profile=self.browser_profile,
@@ -2906,7 +2984,7 @@ class PCToolkitService:
             # device-API failure. Authenticate through the portal first and
             # let the first real lookup validate the device route.
             self.access_token = ""
-            self.role = self._discover_role(operation_id)
+            self.role = self._discover_role(operation_id, headless=self._connect_headless)
             authenticated_in_browser = True
         except Exception as exc:
             self._set_state(
@@ -2949,7 +3027,8 @@ class PCToolkitService:
             duration_ms=round((time.monotonic() - started) * 1000),
         )
 
-    def _discover_role(self, operation_id: str | None = None) -> str:
+    def _discover_role(self, operation_id: str | None = None, *, headless: bool | None = None) -> str:
+        use_headless = self.browser_headless if headless is None else headless
         if not self.browser_profile:
             run_reporting.pc_toolkit_event(
                 "role_discovery_rejected",
@@ -2966,7 +3045,7 @@ class PCToolkitService:
             role_url=DEFAULT_ROLE_URL,
             heartbeat_url=DEFAULT_HEARTBEAT_URL,
             browser_profile_configured=True,
-            browser_headless=self.browser_headless,
+            browser_headless=use_headless,
         )
         profile_wait_started = time.monotonic()
         profile_wait_logged = False
@@ -3400,7 +3479,7 @@ class PCToolkitService:
                 service_id=self.service_id,
                 operation_id=operation_id,
                 channel="chrome",
-                headless=self.browser_headless,
+                headless=use_headless,
                 user_data_dir_configured=bool(self.browser_profile),
             )
             launch_error: BaseException | None = None
@@ -3409,7 +3488,7 @@ class PCToolkitService:
                     context = playwright.chromium.launch_persistent_context(
                         user_data_dir=str(Path(self.browser_profile).expanduser()),
                         channel="chrome",
-                        headless=self.browser_headless,
+                        headless=use_headless,
                     )
                     launch_error = None
                     break
@@ -3496,7 +3575,7 @@ class PCToolkitService:
                     exception=run_reporting.exception_details(exc),
                 )
             role_probe_started = time.monotonic()
-            role_probe_timeout = 20 if self.browser_headless else 120
+            role_probe_timeout = 20 if use_headless else 120
             deadline = role_probe_started + role_probe_timeout
             role_request_headers = {
                 "Accept": "application/json, text/plain, */*",

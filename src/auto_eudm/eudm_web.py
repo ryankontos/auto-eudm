@@ -83,6 +83,7 @@ Examples:
                 "or choose another port with --port."
             ) from exc
         raise
+    app.start_auth_monitor()
     print(f"AutoEUDM is ready at {url}", flush=True)
     if os.environ.get("AUTO_EUDM_SERVICE_CONTROL"):
         print("AutoEUDM is running under its background service manager.", flush=True)
