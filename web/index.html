@@ -73,6 +73,10 @@
           <span class="tool-icon import-icon backlog-icon" aria-hidden="true"><i data-lucide="search-check"></i></span>
           <span class="tool-copy"><strong>ALM backlog</strong><small>Find undeployed devices</small></span>
         </button>
+        <button id="maxPortalButton" class="tool-button" type="button" title="Search Max portal device requests">
+          <span class="tool-icon import-icon" aria-hidden="true"><i data-lucide="ticket"></i></span>
+          <span class="tool-copy"><strong>Max requests</strong><small>Find INC tickets</small></span>
+        </button>
         <div id="resumeLatestImportControl" class="resume-import-control" hidden>
           <button id="resumeLatestImportButton" class="tool-button resume-import-tool" type="button">
           <span class="tool-icon resume-icon" aria-hidden="true"><i data-lucide="rotate-ccw"></i></span>
@@ -240,6 +244,12 @@
             <div id="userLookupStatus" class="lookup-status" role="status" aria-live="polite" hidden></div>
             <div id="userResults" class="search-results" hidden></div>
           </div>
+        </div>
+
+        <div id="maxRequestEditor" class="form-field" hidden>
+          <label>Max portal request</label>
+          <div class="max-editor-association"><span id="maxRequestEditorLabel">No INC linked</span><button id="maxRequestEditorFind" class="button secondary compact" type="button">Find request</button></div>
+          <div id="maxRequestEditorDetails" class="max-editor-details"></div>
         </div>
 
         <div id="locationFields" hidden>
@@ -521,6 +531,7 @@
               </div>
               <button id="importPcToolkitConnectButton" class="button secondary compact" type="button">Connect</button>
             </div>
+            <div id="importMaxSummary" class="import-max-summary" role="status" hidden></div>
             <div class="import-preview-heading">
               <div>
                 <strong id="importPreviewTitle">Requests ready to add</strong>
@@ -729,6 +740,7 @@
       </div>
       <div id="progressList" class="progress-list"></div>
       <div id="progressActions" class="modal-actions" hidden>
+        <button id="exportIncMatchesButton" class="button secondary" type="button">Export INC matches</button>
         <a id="downloadResultsLink" class="button secondary" href="#"><i data-lucide="download"></i><span>Download summary</span></a>
         <button id="doneButton" class="button primary" type="button"><i data-lucide="check"></i><span>Done</span></button>
       </div>
@@ -765,6 +777,19 @@
   </dialog>
 
   <div id="toastRegion" class="toast-region" aria-live="polite"></div>
+  <dialog id="maxPortalDialog" class="modal wide-modal">
+    <div class="modal-card wide">
+      <div class="modal-header"><h2>Max requests</h2><button id="maxPortalClose" class="icon-button" type="button" aria-label="Close"><i data-lucide="x"></i></button></div>
+      <div class="max-portal-toolbar">
+        <input id="maxPortalSearch" type="search" placeholder="Search username or request reference" aria-label="Search Max portal device requests" autocomplete="off">
+        <button id="maxPortalSearchButton" class="button primary" type="button">Search</button>
+        <button id="maxPortalConnect" class="button secondary" type="button" hidden>Connect</button>
+      </div>
+      <p id="maxPortalMessage" class="max-portal-message" role="status"></p>
+      <div id="maxPortalResults" class="max-portal-results"></div>
+      <div class="modal-actions"><button id="maxPortalMore" class="button secondary" type="button" hidden>Load more</button><button id="maxPortalDismiss" class="button secondary" type="button">Close</button></div>
+    </div>
+  </dialog>
   <script src="/vendor/lucide.min.js" defer></script>
   <script src="/vendor/canvas-confetti.js" defer></script>
   <script src="/vendor/sortable.min.js" defer></script>

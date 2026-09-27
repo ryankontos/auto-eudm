@@ -16,6 +16,7 @@ const PORTAL_ORIGIN = "https://portal.platform.infraportal.syd.c1.macquarie.com"
 const DEVICE_URL = "https://autoscalecomponent.prod-eapi-devices.wkpautoapps.iptauto.syd.c1.macquarie.com/v1/Computers";
 const ROLE_URL = `${PORTAL_ORIGIN}/auth/session/maxroles`;
 const HEARTBEAT_URL = `${PORTAL_ORIGIN}/auth/session/heartbeat`;
+const MAX_GRAPHQL_URL = "https://autoscalecomponent.eapiv3-prod.apps.syd.ptauto.s1.macquarie.com/graphql";
 const DEFAULT_ROLE = "maxrole:personal";
 
 let puppeteer;
@@ -401,6 +402,21 @@ async function deviceLookup(query) {
   return response;
 }
 
+async function maxGraphql(body) {
+  await authenticate(Number(options.lookupAuthTimeoutMs || 30000));
+  const headers = { Accept: "application/json", "Content-Type": "application/json", "X-Max-Elevated-Role": role };
+  let response = await pageFetch(MAX_GRAPHQL_URL, { method: "POST", headers,
+    body: JSON.stringify(body), credentials: "omit" });
+  if (response.status === 401 || response.status === 403) {
+    const refreshed = await heartbeat(role);
+    if (refreshed.token) accessToken = refreshed.token;
+    response = await pageFetch(MAX_GRAPHQL_URL, { method: "POST",
+      headers: { ...headers, Authorization: `Bearer ${accessToken}` },
+      body: JSON.stringify(body), credentials: "omit" });
+  }
+  return { status: response.status, body: response.body };
+}
+
 async function start(message) {
   if (browser) return { role, page_url: page ? page.url() : "" };
   try {
@@ -486,6 +502,10 @@ async function handle(message) {
     if (command === "lookup") {
       const response = await deviceLookup(message.query);
       send({ id, ok: true, result: response });
+      return;
+    }
+    if (command === "max_graphql") {
+      send({ id, ok: true, result: await maxGraphql(message.body) });
       return;
     }
     if (command === "health") {

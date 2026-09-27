@@ -51,6 +51,7 @@ DEFAULT_ROLE_URL = (
 DEFAULT_HEARTBEAT_URL = (
     "https://portal.platform.infraportal.syd.c1.macquarie.com/auth/session/heartbeat"
 )
+MAX_GRAPHQL_URL = "https://autoscalecomponent.eapiv3-prod.apps.syd.ptauto.s1.macquarie.com/graphql"
 # The production PC Toolkit client sends this role on its read requests.  It
 # is also returned by the portal's maxroles endpoint for the normal personal
 # session.  Keeping it as a default means enrichment works immediately after
@@ -902,6 +903,37 @@ class PCToolkitBrowserTransport:
                             self._access_token = refreshed_token
                         future.set_result(batch_result.get("responses", []))
                         continue
+                    if task_name == "graphql":
+                        result = page.evaluate(
+                            """async ({url, role, body, timeoutMs}) => {
+                              const controller = new AbortController();
+                              const timer = setTimeout(() => controller.abort(), timeoutMs);
+                              try {
+                                const headers = {'Accept': 'application/json', 'Content-Type': 'application/json'};
+                                if (role) headers['X-Max-Elevated-Role'] = role;
+                                let response = await fetch(url, {method: 'POST', headers,
+                                  body: JSON.stringify(body), credentials: 'omit', cache: 'no-store', signal: controller.signal});
+                                if ((response.status === 401 || response.status === 403) && role) {
+                                  const cookie = document.cookie.split(';').map(value => value.trim())
+                                    .find(value => /^(XSRF_TOKEN|XSRF-TOKEN)=/i.test(value));
+                                  const csrf = cookie ? decodeURIComponent(cookie.split('=').slice(1).join('=')) : '';
+                                  const authHeaders = {'Content-Type': 'application/json', 'X-Max-Elevated-Role': role};
+                                  if (csrf) authHeaders['X-XSRF-Token'] = csrf;
+                                  const heartbeat = await fetch('/auth/session/heartbeat', {
+                                    method: 'POST', headers: authHeaders, body: '{}', credentials: 'include', signal: controller.signal});
+                                  const session = await heartbeat.json().catch(() => ({}));
+                                  if (session.token) response = await fetch(url, {method: 'POST',
+                                    headers: {...headers, Authorization: `Bearer ${session.token}`},
+                                    body: JSON.stringify(body), credentials: 'omit', cache: 'no-store', signal: controller.signal});
+                                }
+                                return {status: response.status, body: await response.text()};
+                              } finally { clearTimeout(timer); }
+                            }""",
+                            {"url": payload["url"], "role": payload["role"],
+                             "body": payload["body"], "timeoutMs": int(self.timeout * 1000)},
+                        )
+                        future.set_result(result)
+                        continue
                     if task_name != "get":
                         raise PCToolkitError("Unknown PC Toolkit browser task.")
                     request_headers = dict(payload["headers"])
@@ -1044,6 +1076,20 @@ class PCToolkitBrowserTransport:
         if not isinstance(result, dict):
             raise PCToolkitError("PC Toolkit's browser returned an invalid response.")
         return result
+
+    def graphql(self, url: str, role: str, body: dict[str, Any]) -> dict[str, Any]:
+        with self._state_lock:
+            if self._closed or self._thread is None or not self._thread.is_alive():
+                raise PCToolkitError("The portal browser session is not connected.")
+        future: Future[Any] = Future()
+        self._tasks.put(("graphql", {"url": url, "role": role, "body": body}, future))
+        try:
+            response = future.result(timeout=self.timeout + 12.0)
+        except FutureTimeoutError as exc:
+            raise PCToolkitError("The Max portal request timed out.") from exc
+        if not isinstance(response, dict):
+            raise PCToolkitError("The Max portal returned an invalid response.")
+        return response
 
     def heartbeat(self, role: str) -> bool | None:
         """Refresh the portal session; defer if lookups already occupy the page."""
@@ -1460,6 +1506,9 @@ class PCToolkitPuppeteerTransport:
             {"query": value},
             timeout=max(2.0, float(timeout or self.timeout) + 5.0),
         )
+
+    def graphql(self, body: dict[str, Any]) -> dict[str, Any]:
+        return self._send_command("max_graphql", {"body": body}, timeout=45.0)
 
     def close(self) -> None:
         with self._state_lock:
@@ -2295,6 +2344,77 @@ class PCToolkitService:
                 access_token=self.access_token,
             )
         return PCToolkitClient(role=self.role, access_token=self.access_token)
+
+    def portal_graphql(self, operation: str, query: str, variables: dict[str, Any]) -> dict[str, Any]:
+        """Use the authenticated portal session for captured read-only Max queries."""
+        if self.simulate:
+            root = "allDeviceRequests" if operation == "getDeviceRequests" else ""
+            return {"data": {root: {"edges": [], "totalCount": 0, "pageInfo": {"hasNextPage": False}}}}
+        if not self.enabled():
+            raise PCToolkitError("Enable PC Toolkit in Settings to use Max portal requests.")
+        with self.lock:
+            state = self.state
+            role = self.role
+            token = self.access_token
+            mode = self.transport_mode()
+            browser = self._browser_transport
+            puppeteer = self._puppeteer_transport
+        if state != "connected":
+            raise PCToolkitError("Connect PC Toolkit to search Max portal requests.")
+        body = {"operationName": operation, "query": query, "variables": variables}
+        started = time.monotonic()
+        try:
+            if mode == "browser" and browser is not None:
+                response = browser.graphql(MAX_GRAPHQL_URL, role, body)
+            elif mode == "puppeteer" and puppeteer is not None:
+                response = puppeteer.graphql(body)
+            else:
+                headers = pc_toolkit_request_headers(role)
+                headers["Content-Type"] = "application/json"
+                data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+                response = None
+                for bearer in ("", token):
+                    if bearer:
+                        headers["Authorization"] = f"Bearer {bearer}"
+                    request = urllib.request.Request(MAX_GRAPHQL_URL, data=data, headers=headers, method="POST")
+                    try:
+                        with urllib.request.urlopen(request, timeout=25) as stream:
+                            response = {"status": stream.status, "body": _decoded_http_body(stream.read(), stream.headers).decode("utf-8")}
+                        break
+                    except urllib.error.HTTPError as exc:
+                        response = {"status": exc.code, "body": exc.read().decode("utf-8", "replace")}
+                        if exc.code not in (401, 403) or not token or bearer:
+                            break
+                    except (OSError, ValueError) as exc:
+                        raise PCToolkitError("Max portal could not be reached through this session.") from exc
+        except Exception as exc:
+            run_reporting.network(
+                "POST", "/graphql", transport="pc-toolkit", request_url=MAX_GRAPHQL_URL,
+                request_body=body, request_headers={"Content-Type": "application/json", "X-Max-Elevated-Role": role},
+                duration_ms=round((time.monotonic() - started) * 1000),
+                error=type(exc).__name__, error_detail=str(exc),
+            )
+            raise
+        status = int(response.get("status") or 0) if isinstance(response, dict) else 0
+        response_body = response.get("body", "") if isinstance(response, dict) else ""
+        run_reporting.network(
+            "POST", "/graphql", status=status, duration_ms=round((time.monotonic() - started) * 1000),
+            transport="pc-toolkit", request_url=MAX_GRAPHQL_URL, request_body=body,
+            response_body=response_body,
+            request_headers={"Content-Type": "application/json", "X-Max-Elevated-Role": role},
+        )
+        if status in (401, 403):
+            raise PCToolkitError("Max portal rejected the session. Reconnect PC Toolkit and try again.")
+        if status != 200:
+            raise PCToolkitError(f"Max portal returned HTTP {status or 'unknown'}.")
+        try:
+            payload = json.loads(response_body)
+        except (TypeError, ValueError) as exc:
+            raise PCToolkitError("Max portal returned unreadable request data.") from exc
+        if not isinstance(payload, dict):
+            raise PCToolkitError("Max portal returned an invalid request result.")
+        run_reporting.pc_toolkit_event("max_portal_query", operation=operation, status=status)
+        return payload
 
     def _fetch(
         self,

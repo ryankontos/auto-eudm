@@ -49,6 +49,7 @@ AutoEUDM is a local web UI I developed to speed up device-management work in EUD
 - Workbook columns are selected by heading. ALM drafts must be saved while editing and removed when their requests enter the queue; late verification must not recreate a completed draft.
 - Validation remains active even when cached verification fills a result immediately.
 - PC Toolkit enriches Helix data but never replaces Helix validation or blocks submission. Its compact cache and automatically discovered model catalogue live in `results/pc-toolkit-cache.json`; model-to-status mappings live in settings.
+- Max Portal request lookup is read-only and uses the authenticated PC Toolkit session. Match only exact usernames, rank active INCs ahead of closed/cancelled requests, retain the chosen request details with the deployment, and do not attempt ticket closure until that workflow is explicitly captured and implemented.
 
 ## Checks
 

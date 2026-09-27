@@ -76,6 +76,12 @@ const state = {
   pcToolkitReviewStatusTimer: null,
   pcToolkitEnrichmentEpoch: 0,
   pcToolkitImportRenderFrame: null,
+  maxPortalResults: [],
+  maxPortalCursor: "",
+  maxPortalSearchToken: 0,
+  maxPortalContext: null,
+  maxPortalImportRenderFrame: null,
+  maxPortalQueueLookups: new Map(),
 };
 
 const THEME_STORAGE_KEY = "auto-eudm-theme";
@@ -1275,6 +1281,10 @@ function applyInferredKind(request, status, bulk = request.kind === "bulk_locati
   const previousReturningValidation = request.returning_user_validation || (previousReturningInfo ? "valid" : "empty");
   request.kind = kind;
   request.status = status;
+  if (kind !== "user" && request.max_portal) {
+    request.max_portal = null;
+    state.maxPortalQueueLookups.delete(request.id);
+  }
   request.group = kind === "user"
     ? "Deploy to user"
     : kind === "bulk_location"
@@ -2110,6 +2120,18 @@ function renderInspector() {
 
   const bulk = request.kind === "bulk_location";
   const user = request.kind === "user";
+  if (user) void maybeMatchMaxPortalForQueue(request, { render: false });
+  $("#maxRequestEditor").hidden = !user;
+  const maxLookup = state.maxPortalQueueLookups.get(request.id);
+  $("#maxRequestEditorLabel").textContent = request.max_portal?.helix_id
+    ? `${request.max_portal.helix_id} · ${request.max_portal.reference}`
+    : request.max_portal?.reference
+      || (maxLookup?.loading ? "Looking for an open request…" : maxLookup?.error
+        ? "Lookup unavailable" : maxLookup?.checked && !maxLookup.candidates?.length
+          ? "No matching request found" : maxLookup?.candidates?.length
+            ? `${maxLookup.candidates.length} possible requests` : "No INC linked");
+  $("#maxRequestEditorDetails").innerHTML = maxQueueMarkup(request, maxLookup);
+  bindMaxQueueControls(request);
   $("#requestSizeInput").value = bulk ? "bulk" : "single";
   $("#serialSearchControl").hidden = bulk;
   elements.serialsInput.hidden = !bulk;
@@ -3648,6 +3670,9 @@ function renderPcToolkitStatus() {
   }
   renderPcToolkitHeaderStatus();
   renderAlmPcToolkitNotice();
+  if (connected && selectedRequest()?.kind === "user") {
+    void maybeMatchMaxPortalForQueue(selectedRequest());
+  }
 }
 
 function renderAlmPcToolkitNotice() {
@@ -3800,6 +3825,7 @@ function restartPcToolkitReviewAfterReconnect() {
   updateImportPrepareButton(preview);
   saveCurrentImportDraft();
   void enrichImportPreview(preview, { fresh: true });
+  void enrichMaxPortalImport(preview);
   manualReturnSources.forEach((request) => {
     void enrichManualReturnSerial(preview, request, { fresh: true });
   });
@@ -4044,6 +4070,7 @@ async function enrichRequest(request, { render = true, includeUser = true } = {}
     if (render && selectedRequest() === request) {
       renderRequestPcToolkitDetails(request);
       renderQueue();
+      if (request.kind === "user") void maybeMatchMaxPortalForQueue(request);
     }
   }
 }
@@ -5770,6 +5797,7 @@ function restoreImportPreviewState(rawPreview) {
     }
     request.cached_serial_verification = false;
     request.cached_user_verification = false;
+    request.max_portal_loading = false;
     if (request.manual_return_lookup_state === "loading") {
       request.manual_return_lookup_state = "idle";
     }
@@ -5814,6 +5842,7 @@ function resumeImportDraft(id) {
     else void validateImportPreview();
   }
   void enrichImportPreview(state.importPreview);
+  void enrichMaxPortalImport(state.importPreview);
 }
 
 function importFailedFields(request) {
@@ -6851,6 +6880,8 @@ function importReviewMatches(request, query = importReviewSearchQuery()) {
     request.current_status,
     request.deployment_date,
     request.date,
+    request.max_portal?.helix_id,
+    request.max_portal?.reference,
     ...toolkitDevices.flatMap((device) => [
       device.serial,
       device.name,
@@ -6888,6 +6919,9 @@ function renderBacklogPreview(payload) {
   const query = importReviewSearchQuery();
   const visibleRequests = requests.filter((request) => importReviewMatches(request, query));
   const included = requests.filter((request) => request.included !== false);
+  const maxSummary = $("#importMaxSummary");
+  maxSummary.hidden = !included.length;
+  if (included.length) maxSummary.textContent = `${included.filter((request) => request.max_portal?.helix_id).length} of ${included.length} deployments linked to an INC. Review matches before submitting; unmatched deployments can still be added.`;
   $("#importVerificationWarnings").hidden = true;
   $("#importPreviewTitle").textContent = `${included.length} undeployed device${included.length === 1 ? "" : "s"}`;
   const backlogRange = `${payload.start_date} to ${payload.end_date}${payload.include_today ? " · including today" : ""}`;
@@ -6925,7 +6959,7 @@ function renderBacklogPreview(payload) {
         <span>${index + 1}</span>
       </label>
       <div><small class="import-field-title">Deployment serial</small><strong>${escapeHtml(request.serial)}</strong><small class="import-device-allocation">${escapeHtml(request.date)}${request.device_allocation ? ` · ${escapeHtml(request.device_allocation)}` : ""}</small>${pcToolkitImportMarkup(request, { loading: payload.pc_toolkit_loading, backlog: true })}</div>
-      ${importPersonMarkup(request).replace("</div>", `<small class="import-device-allocation">Current: ${escapeHtml(request.current_status)}</small>${occurrenceLabel ? `<small class="import-duplicate-warning">${escapeHtml(occurrenceLabel)}</small>` : ""}${notAttending ? '<small class="import-attendance-warning">Did not attend</small>' : ""}</div>`)}
+      ${importPersonMarkup(request).replace("</div>", `<small class="import-device-allocation">Current: ${escapeHtml(request.current_status)}</small>${occurrenceLabel ? `<small class="import-duplicate-warning">${escapeHtml(occurrenceLabel)}</small>` : ""}${notAttending ? '<small class="import-attendance-warning">Did not attend</small>' : ""}${maxImportMarkup(request)}</div>`)}
       <div>${statusControl}${includedRow ? validation : `<small class="${notAttending ? "import-attendance-warning" : ""}">${escapeHtml(exclusionLabel)}</small>`}<div class="backlog-row-actions"><button class="text-button" type="button" data-backlog-ignore="${escapeHtml(request.id)}">${iconMarkup("eye-off")}<span>Ignore in future</span></button></div></div>
     </div>`;
   }).join("");
@@ -6941,6 +6975,7 @@ function renderBacklogPreview(payload) {
   $("#importPreviewList").innerHTML = rows
     ? `<section class="import-preview-section"><div class="import-group-heading"><div><strong>Undeployed devices</strong><small>${query ? `${visibleRequests.length} shown · ` : ""}${included.length} of ${requests.length} selected</small></div><div class="import-group-actions"><button class="text-button" type="button" data-backlog-toggle>${iconMarkup(allIncluded ? "square-minus" : "list-checks")}<span>${allIncluded ? "Deselect all deployments" : "Select all deployments"}</span></button></div></div>${rows}</section>`
     : `<div class="import-empty">${iconMarkup("search-x")}<strong>${escapeHtml(emptyMessage)}</strong>${query ? "" : "<small>Try a wider date range or include today.</small>"}</div>`;
+  bindMaxImportControls(payload);
   $("#importPreviewList").querySelectorAll("[data-backlog-status]").forEach((select) => select.addEventListener("change", () => {
     const request = requests.find((item) => item.id === select.dataset.backlogStatus);
     if (request && request.status !== select.value) {
@@ -7047,6 +7082,446 @@ function renderBacklogPreview(payload) {
   saveCurrentImportDraft();
 }
 
+function maxPortalAssociation(item) {
+  if (!item?.reference) return null;
+  return {
+    reference: String(item.reference || ""),
+    helix_id: String(item.helixId || ""),
+    request_type: String(item.__typename || ""),
+    status: String(item.status || ""),
+    requested_for: String(item.requestedFor || ""),
+    requested_for_name: String(item.requestedForFullName || ""),
+    requested_by: String(item.requestedBy || ""),
+    requested_by_name: String(item.requestedByFullName || ""),
+    requested_for_location: String(item.requestedForLocation || ""),
+    workflow_instance_id: String(item.workflowInstanceId || ""),
+    created_at: String(item.createdAt || ""),
+    updated_at: String(item.updatedAt || ""),
+    updated_by: String(item.updatedBy || ""),
+    old_serial: String(item.oldSerial || ""),
+    old_model: String(item.oldModel || ""),
+    old_manufacturer: String(item.oldManufacturer || ""),
+    device_type: String(item.newDeviceTypeDetails?.title || item.newDeviceType || ""),
+    comments: String(item.additionalComments || ""),
+    detail_loaded: Boolean(item.detail_loaded),
+    details_expanded: Boolean(item.details_expanded),
+    match_source: String(item.match_source || ""),
+    match_key: String(item.match_key || ""),
+    matched_username: String(item.matched_username || ""),
+  };
+}
+
+function maxPortalStatus(value) {
+  return String(value || "Unknown status").replaceAll("_", " ").toLocaleLowerCase().replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function maxPortalAssociationMarkup(association, id, { importRow = false } = {}) {
+  if (!association?.reference) return "";
+  const person = [association.requested_for_name, association.requested_for].filter(Boolean).join(" · ");
+  const requester = [association.requested_by_name, association.requested_by].filter(Boolean).join(" · ");
+  const oldDevice = [association.old_manufacturer, association.old_model, association.old_serial].filter(Boolean).join(" · ");
+  const facts = [
+    [association.device_type ? `Device: ${association.device_type}` : "", association.created_at ? `Opened ${String(association.created_at).slice(0, 10)}` : ""].filter(Boolean).join(" · "),
+    oldDevice ? `Previous device: ${oldDevice}` : "",
+  ].filter(Boolean);
+  const expandedFacts = [
+    person ? ["Requested for", person] : null,
+    requester ? ["Raised by", requester] : null,
+    association.updated_at ? ["Last updated", association.updated_at] : null,
+    association.updated_by ? ["Updated by", association.updated_by] : null,
+    association.workflow_instance_id ? ["Workflow", association.workflow_instance_id] : null,
+    association.requested_for_location ? ["Requested for location", association.requested_for_location] : null,
+    association.comments ? ["Request details", association.comments] : null,
+  ].filter(Boolean);
+  const action = association.detail_loaded
+    ? `<button class="text-button" type="button" ${importRow ? `data-import-max-detail="${escapeHtml(id)}"` : `data-editor-max-detail="${escapeHtml(id)}"`}>${association.details_expanded ? "Hide details" : "Show request details"}</button>`
+    : `<button class="text-button" type="button" ${importRow ? `data-import-max-detail="${escapeHtml(id)}"` : `data-editor-max-detail="${escapeHtml(id)}"`}>Load request details</button>`;
+  const ticketLabel = [association.helix_id, association.reference].filter(Boolean).join(" · ");
+  return `<div class="max-association-details"><strong>${escapeHtml(ticketLabel)} · ${escapeHtml(maxPortalStatus(association.status))}</strong>
+    ${facts.map((fact) => `<small>${escapeHtml(fact)}</small>`).join("")}
+    ${association.details_expanded && expandedFacts.length ? `<div class="max-association-expanded">${expandedFacts.map(([label, value]) => `<small><b>${escapeHtml(label)}</b> ${escapeHtml(value)}</small>`).join("")}</div>` : ""}
+    ${action}
+  </div>`;
+}
+
+function maxQueueMarkup(request, lookup = state.maxPortalQueueLookups.get(request.id)) {
+  const candidates = lookup?.candidates || [];
+  const selected = request.max_portal?.reference || "";
+  const alternativePicker = candidates.length > 1
+    ? `<select data-editor-max-choice="${escapeHtml(request.id)}" aria-label="Choose a Max portal request">
+        <option value="">${selected ? "Change linked request" : `Choose from ${candidates.length} requests`}</option>
+        ${candidates.map((item) => `<option value="${escapeHtml(item.reference)}" ${selected === item.reference ? "selected" : ""}>${escapeHtml(item.helixId || item.reference)} · ${escapeHtml(maxPortalStatus(item.status))}${item.newDeviceTypeDetails?.title || item.newDeviceType ? ` · ${escapeHtml(item.newDeviceTypeDetails?.title || item.newDeviceType)}` : ""}</option>`).join("")}
+      </select>`
+    : "";
+  const message = lookup?.error
+    ? `<small>Automatic lookup failed: ${escapeHtml(lookup.error)}</small>`
+    : !state.preferences?.pc_toolkit_enabled
+      ? "<small>Enable PC Toolkit in Settings to check for open INCs.</small>"
+      : !["connected", "simulation"].includes(state.pcToolkitStatus?.state) && !selected
+        ? "<small>Connect PC Toolkit to check for an open INC.</small>"
+        : "";
+  const clearLink = request.max_portal?.reference
+    ? `<button class="text-button" type="button" data-editor-max-clear="${escapeHtml(request.id)}">Clear linked request</button>`
+    : "";
+  return `${maxPortalAssociationMarkup(request.max_portal, request.id)}${alternativePicker}${clearLink}${message}`;
+}
+
+function bindMaxQueueControls(request) {
+  const wrapper = $("#maxRequestEditorDetails");
+  wrapper?.querySelectorAll("[data-editor-max-detail]").forEach((button) => button.addEventListener("click", () => {
+    void toggleMaxPortalDetails(request, button);
+  }));
+  wrapper?.querySelectorAll("[data-editor-max-choice]").forEach((select) => select.addEventListener("change", () => {
+    const candidate = (state.maxPortalQueueLookups.get(request.id)?.candidates || [])
+      .find((item) => item.reference === select.value);
+    if (candidate) setMaxPortalAssociation(request, candidate);
+  }));
+  wrapper?.querySelectorAll("[data-editor-max-clear]").forEach((button) => button.addEventListener("click", () => {
+    recordAppEdit();
+    request.max_portal = null;
+    persistQueueSoon();
+    renderAll();
+  }));
+}
+
+function maxPortalQueueKey(request, username) {
+  const today = new Date();
+  const date = [today.getFullYear(), String(today.getMonth() + 1).padStart(2, "0"), String(today.getDate()).padStart(2, "0")].join("-");
+  return JSON.stringify([username.toLocaleLowerCase(), date, pcToolkitModelFor(request).toLocaleLowerCase()]);
+}
+
+function maxPortalQueueDate(key) {
+  try { return JSON.parse(key)[1] || ""; } catch (_) { return ""; }
+}
+
+async function maybeMatchMaxPortalForQueue(request = selectedRequest(), { render = true, force = false } = {}) {
+  if (!request || request.kind !== "user") return;
+  const username = String(request.user || "").trim();
+  const lookupEnabled = state.preferences?.pc_toolkit_enabled === true;
+  const connected = ["connected", "simulation"].includes(state.pcToolkitStatus?.state);
+  if (!lookupEnabled || !connected || request.user_validation !== "valid"
+    || !/^[A-Za-z][A-Za-z0-9._-]*$/.test(username)) return;
+
+  const key = maxPortalQueueKey(request, username);
+  if (request.max_portal?.match_source === "automatic"
+    && request.max_portal.match_key
+    && request.max_portal.match_key !== key) {
+    recordAppEdit();
+    request.max_portal = null;
+    persistQueueSoon();
+  }
+  const associatedUsername = request.max_portal?.matched_username || request.max_portal?.requested_for;
+  if (associatedUsername && associatedUsername.toLocaleLowerCase() !== username.toLocaleLowerCase()) {
+    recordAppEdit();
+    request.max_portal = null;
+    persistQueueSoon();
+  }
+  const previous = state.maxPortalQueueLookups.get(request.id);
+  if (!force && previous?.key === key && (previous.loading || previous.checked)) return;
+  state.maxPortalQueueLookups.set(request.id, { key, loading: true, checked: false, candidates: [] });
+  if (render && selectedRequest() === request) renderInspector();
+  try {
+    const response = await api("/api/max-portal/matches", {
+      method: "POST",
+      body: JSON.stringify({
+        query: username,
+        deployment_date: maxPortalQueueDate(key),
+        device_hint: pcToolkitModelFor(request),
+      }),
+    });
+    if (state.maxPortalQueueLookups.get(request.id)?.key !== key
+      || request.kind !== "user"
+      || String(request.user || "").trim().toLocaleLowerCase() !== username.toLocaleLowerCase()) return;
+    const candidates = response.candidates || [];
+    state.maxPortalQueueLookups.set(request.id, { key, loading: false, checked: true, candidates });
+    const suggested = candidates.find((item) => item.reference === response.suggested_reference);
+    if (!request.max_portal && suggested) {
+      recordAppEdit();
+      request.max_portal = maxPortalAssociation({
+        ...suggested,
+        match_source: "automatic",
+        match_key: key,
+        matched_username: username,
+      });
+      persistQueueSoon();
+    }
+  } catch (error) {
+    if (state.maxPortalQueueLookups.get(request.id)?.key !== key) return;
+    state.maxPortalQueueLookups.set(request.id, { key, loading: false, checked: true, candidates: [], error: error.message || "Max portal could not be reached." });
+  }
+  if (selectedRequest() === request) renderInspector();
+  renderQueue();
+}
+
+async function toggleMaxPortalDetails(request, button, { importRow = false, payload = null } = {}) {
+  const association = request?.max_portal;
+  if (!association?.reference) return;
+  if (association.detail_loaded) {
+    if (importRow) recordImportEdit();
+    else recordAppEdit();
+    association.details_expanded = !association.details_expanded;
+    if (importRow) {
+      renderImportPreview();
+      saveCurrentImportDraft();
+    } else renderAll();
+    return;
+  }
+  button.disabled = true;
+  button.textContent = "Loading details…";
+  try {
+    const detail = await api("/api/max-portal/detail", {
+      method: "POST",
+      body: JSON.stringify({ reference: association.reference, type: association.request_type }),
+    });
+    if (!detail?.reference) throw new Error("Request details were not returned.");
+    if (importRow) recordImportEdit();
+    else recordAppEdit();
+    request.max_portal = {
+      ...maxPortalAssociation(detail),
+      match_source: association.match_source || "",
+      match_key: association.match_key || "",
+      matched_username: association.matched_username || association.requested_for || "",
+      detail_loaded: true,
+      details_expanded: true,
+    };
+    if (importRow) {
+      renderImportPreview();
+      saveCurrentImportDraft();
+    } else {
+      persistQueueSoon();
+      renderAll();
+    }
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = "Retry request details";
+    toast(error.message, "error");
+  }
+}
+
+function maxPortalCandidateMarkup(item, { selected = false } = {}) {
+  const reference = String(item.reference || "");
+  const inc = String(item.helixId || "");
+  const detail = [
+    item.requestedForFullName || item.requestedFor,
+    item.newDeviceTypeDetails?.title || item.newDeviceType,
+    item.oldSerial ? `Old device ${item.oldSerial}` : "",
+    item.createdAt ? new Date(item.createdAt).toLocaleDateString() : "",
+  ].filter(Boolean).join(" · ");
+  return `<div class="max-candidate${selected ? " selected" : ""}">
+    <div><strong>${escapeHtml(inc || reference)}</strong><small>${escapeHtml(reference)} · ${escapeHtml(maxPortalStatus(item.status))}</small>${detail ? `<small>${escapeHtml(detail)}</small>` : ""}
+      ${item.detail_loaded ? `<div class="max-candidate-details">
+        ${[
+          ["Requested for", item.requestedForFullName || item.requestedFor],
+          ["Requested by", item.requestedByFullName || item.requestedBy],
+          ["New device", item.newDeviceTypeDetails?.title || item.newDeviceType],
+          ["Old device", [item.oldManufacturer, item.oldModel, item.oldSerial].filter(Boolean).join(" · ")],
+          ["Created", item.createdAt], ["Updated", item.updatedAt],
+          ["Comments", item.additionalComments],
+        ].filter(([, value]) => value).map(([label, value]) => `<span><b>${escapeHtml(label)}</b> ${escapeHtml(value)}</span>`).join("")}
+      </div>` : ""}
+    </div>
+    <button class="button secondary compact" type="button" data-max-detail="${escapeHtml(reference)}" data-max-type="${escapeHtml(item.__typename || "")}">Details</button>
+    ${state.maxPortalContext ? `<button class="button ${selected ? "primary" : "secondary"} compact" type="button" data-max-choose="${escapeHtml(reference)}">${selected ? "Selected" : "Use this request"}</button>` : ""}
+  </div>`;
+}
+
+function setMaxPortalAssociation(request, item) {
+  if (!request) return;
+  const association = maxPortalAssociation({
+    ...item,
+    match_source: "manual",
+    matched_username: request.user || request.username || item.requestedFor || "",
+  });
+  if (state.importPreview?.requests?.includes(request)) recordImportEdit();
+  else recordAppEdit();
+  request.max_portal = association;
+  if (state.importPreview?.requests?.includes(request)) {
+    renderImportPreview();
+    saveCurrentImportDraft();
+  } else {
+    persistQueueSoon();
+    renderAll();
+  }
+}
+
+async function runMaxPortalSearch({ more = false } = {}) {
+  const query = String($("#maxPortalSearch").value || "").trim();
+  const token = ++state.maxPortalSearchToken;
+  const button = $("#maxPortalSearchButton");
+  button.disabled = true;
+  $("#maxPortalMessage").textContent = "Searching device requests…";
+  try {
+    const response = await api("/api/max-portal/search", { method: "POST", body: JSON.stringify({ query, after: more ? state.maxPortalCursor : "" }) });
+    if (token !== state.maxPortalSearchToken) return;
+    state.maxPortalResults = more ? [...state.maxPortalResults, ...(response.requests || [])] : (response.requests || []);
+    state.maxPortalCursor = response.page_info?.hasNextPage ? String(response.page_info?.endCursor || "") : "";
+    renderMaxPortalResults();
+    $("#maxPortalMessage").textContent = `${response.total || 0} request${response.total === 1 ? "" : "s"} found`;
+  } catch (error) {
+    if (token === state.maxPortalSearchToken) $("#maxPortalMessage").textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function renderMaxPortalResults() {
+  const results = $("#maxPortalResults");
+  results.innerHTML = state.maxPortalResults.length
+    ? state.maxPortalResults.map((item) => maxPortalCandidateMarkup(item, {
+      selected: state.maxPortalContext?.max_portal?.reference === item.reference,
+    })).join("")
+    : '<p class="max-portal-empty">No matching requests.</p>';
+  $("#maxPortalMore").hidden = !state.maxPortalCursor;
+  results.querySelectorAll("[data-max-detail]").forEach((button) => button.addEventListener("click", async () => {
+    const reference = button.dataset.maxDetail;
+    button.disabled = true;
+    button.textContent = "Loading…";
+    try {
+      const item = await api("/api/max-portal/detail", { method: "POST", body: JSON.stringify({ reference, type: button.dataset.maxType }) });
+      const target = state.maxPortalResults.findIndex((candidate) => candidate.reference === reference);
+      if (target >= 0 && item?.reference) state.maxPortalResults[target] = { ...state.maxPortalResults[target], ...item, detail_loaded: true, detail_expanded: true };
+      renderMaxPortalResults();
+    } catch (error) {
+      $("#maxPortalMessage").textContent = error.message;
+      button.disabled = false;
+    }
+  }));
+  results.querySelectorAll("[data-max-choose]").forEach((button) => button.addEventListener("click", () => {
+    const item = state.maxPortalResults.find((candidate) => candidate.reference === button.dataset.maxChoose);
+    const context = state.maxPortalContext;
+    if (!item || !context) return $("#maxPortalDialog").close();
+    button.disabled = true;
+    const detailRequest = item.detail_loaded
+      ? Promise.resolve(item)
+      : api("/api/max-portal/detail", { method: "POST", body: JSON.stringify({ reference: item.reference, type: item.__typename || "" }) }).catch(() => item);
+    void detailRequest
+      .then((detail) => {
+        if (state.maxPortalContext !== context) return;
+        setMaxPortalAssociation(context, { ...item, ...(detail || {}), detail_loaded: Boolean(item.detail_loaded || detail?.reference) });
+        $("#maxPortalDialog").close();
+      });
+  }));
+}
+
+function openMaxPortal({ request = null, query = "" } = {}) {
+  state.maxPortalSearchToken += 1;
+  state.maxPortalContext = request;
+  state.maxPortalResults = [];
+  state.maxPortalCursor = "";
+  $("#maxPortalSearch").value = query || request?.user || request?.username || "";
+  $("#maxPortalMessage").textContent = "Search by username or request reference.";
+  $("#maxPortalResults").innerHTML = "";
+  $("#maxPortalMore").hidden = true;
+  $("#maxPortalConnect").hidden = state.pcToolkitStatus?.state === "connected" || state.pcToolkitStatus?.state === "simulation";
+  $("#maxPortalDialog").showModal();
+  if ($("#maxPortalSearch").value.trim()) void runMaxPortalSearch();
+  else $("#maxPortalSearch").focus();
+}
+
+async function enrichMaxPortalImport(payload = state.importPreview, { requests: subset = null } = {}) {
+  if (!payload || !state.preferences?.pc_toolkit_enabled) return;
+  const deployments = (subset || payload.requests || []).filter((request) =>
+    (payload.mode === "backlog" || request.group === "Deployments")
+      && String(request.user || request.username || "").trim().length >= 2,
+  );
+  if (!deployments.length) return;
+  deployments.forEach((request) => {
+    request.max_portal_epoch = Number(request.max_portal_epoch || 0) + 1;
+    request.max_portal_loading = true;
+    request.max_portal_error = "";
+  });
+  renderImportPreview();
+  const groups = new Map();
+  deployments.forEach((request) => {
+    const username = String(request.user || request.username || "").trim();
+    const date = String(request.deployment_date || request.date || "").slice(0, 10);
+    const key = `${username.toLocaleLowerCase()}|${date}`;
+    if (!groups.has(key)) groups.set(key, { username, date, requests: [] });
+    groups.get(key).requests.push(request);
+  });
+  await forEachWithConcurrency([...groups.values()], 4, async (group) => {
+    const epochs = new Map(group.requests.map((request) => [request.id, request.max_portal_epoch]));
+    let response;
+    let error = "";
+    try {
+      response = await api("/api/max-portal/matches", { method: "POST", body: JSON.stringify({
+        query: group.username, deployment_date: group.date,
+        device_hint: group.requests.map((request) => request.device_allocation || "").find(Boolean) || "",
+        old_serials: group.requests.flatMap((request) => (payload.requests || [])
+          .filter((item) => item.alm_row_number && item.alm_row_number === request.alm_row_number && item.group !== "Deployments")
+          .flatMap((item) => item.serials || [])),
+      }) });
+    } catch (caught) { error = caught.message; }
+    if (state.importPreview !== payload) return;
+    group.requests.forEach((request) => {
+      if (request.max_portal_epoch !== epochs.get(request.id)) return;
+      request.max_portal_loading = false;
+      request.max_portal_error = error;
+      request.max_portal_candidates = response?.candidates || [];
+      const suggested = request.max_portal_candidates.find((item) => item.reference === response?.suggested_reference);
+      if (!request.max_portal?.reference && suggested) {
+        request.max_portal = maxPortalAssociation({
+          ...suggested,
+          match_source: "alm_auto",
+          matched_username: request.user || request.username || "",
+        });
+      }
+    });
+    if (!state.maxPortalImportRenderFrame) state.maxPortalImportRenderFrame = window.requestAnimationFrame(() => {
+      state.maxPortalImportRenderFrame = null;
+      if (state.importPreview === payload) renderImportPreview();
+    });
+    scheduleImportDraftSave();
+  });
+}
+
+function maxImportMarkup(request) {
+  if (request.group && request.group !== "Deployments") return "";
+  const candidates = request.max_portal_candidates || [];
+  const selected = request.max_portal?.reference || "";
+  const inc = request.max_portal?.helix_id || "";
+  const connected = ["connected", "simulation"].includes(state.pcToolkitStatus?.state);
+  return `<div class="import-max-match"><small class="import-field-title">Max request / INC</small>
+    ${request.max_portal_loading ? '<small>Finding requests…</small>' : ""}
+    ${request.max_portal_error && connected ? `<small>Lookup unavailable · ${escapeHtml(request.max_portal_error)}</small>` : ""}
+    ${!connected && !selected ? '<small>Connect PC Toolkit to find requests</small>' : ""}
+    ${connected && !request.max_portal_loading && !request.max_portal_error && !candidates.length && !selected ? '<small>No matching request found</small>' : ""}
+    ${candidates.length ? `<select data-import-max="${escapeHtml(request.id)}" aria-label="Max portal request for ${escapeHtml(request.user || request.username || "user")}">
+      <option value="">Choose request${candidates.length > 1 ? ` (${candidates.length} found)` : ""}</option>
+      ${candidates.map((item) => `<option value="${escapeHtml(item.reference)}" ${selected === item.reference ? "selected" : ""}>${escapeHtml(item.helixId || item.reference)} · ${escapeHtml(maxPortalStatus(item.status))}${item.newDeviceTypeDetails?.title || item.newDeviceType ? ` · ${escapeHtml(item.newDeviceTypeDetails?.title || item.newDeviceType)}` : ""}${item.oldSerial ? ` · old ${escapeHtml(item.oldSerial)}` : ""}${item.createdAt ? ` · ${escapeHtml(String(item.createdAt).slice(0, 10))}` : ""}</option>`).join("")}
+    </select>` : selected ? `<strong>${escapeHtml(inc || selected)}</strong>` : ""}
+    <button class="text-button" type="button" data-import-max-find="${escapeHtml(request.id)}">${!connected ? "Connect" : request.max_portal_error ? "Retry lookup" : "Search requests"}</button>
+    ${maxPortalAssociationMarkup(request.max_portal, request.id, { importRow: true })}
+  </div>`;
+}
+
+function bindMaxImportControls(payload) {
+  $("#importPreviewList").querySelectorAll("[data-import-max]").forEach((select) => select.addEventListener("change", () => {
+    const request = payload.requests.find((item) => item.id === select.dataset.importMax);
+    if (!request) return;
+    recordImportEdit();
+    const candidate = (request.max_portal_candidates || []).find((item) => item.reference === select.value);
+    request.max_portal = maxPortalAssociation(candidate ? {
+      ...candidate,
+      match_source: "manual",
+      matched_username: request.user || request.username || "",
+    } : null);
+    renderImportPreview();
+    saveCurrentImportDraft();
+  }));
+  $("#importPreviewList").querySelectorAll("[data-import-max-find]").forEach((button) => button.addEventListener("click", () => {
+    const request = payload.requests.find((item) => item.id === button.dataset.importMaxFind);
+    if (!request) return;
+    if (!["connected", "simulation"].includes(state.pcToolkitStatus?.state)) void connectPcToolkitFromImportReview();
+    else if (request.max_portal_error) void enrichMaxPortalImport(payload, { requests: [request] });
+    else openMaxPortal({ request });
+  }));
+  $("#importPreviewList").querySelectorAll("[data-import-max-detail]").forEach((button) => button.addEventListener("click", () => {
+    const request = payload.requests.find((item) => item.id === button.dataset.importMaxDetail);
+    if (request) void toggleMaxPortalDetails(request, button, { importRow: true, payload });
+  }));
+}
+
 function renderImportPreview() {
   const payload = state.importPreview;
   if (!payload) return;
@@ -7061,6 +7536,14 @@ function renderImportPreview() {
   const deploymentCount = included.filter((request) => request.group === "Deployments").length;
   const returnedDeviceCount = included.filter((request) => request.group === "Returned devices").length;
   const pendingReturnCount = included.filter((request) => request.group === "Pending returns").length;
+  const maxSummary = $("#importMaxSummary");
+  const deployments = included.filter((request) => request.group === "Deployments");
+  maxSummary.hidden = !deployments.length;
+  if (deployments.length) {
+    const matched = deployments.filter((request) => request.max_portal?.helix_id).length;
+    const looking = deployments.filter((request) => request.max_portal_loading).length;
+    maxSummary.textContent = `${matched} of ${deployments.length} deployments linked to an INC${looking ? ` · checking ${looking}` : ""}. Review matches before submitting; unmatched deployments can still be added.`;
+  }
   $("#importPreviewTitle").textContent = `${included.length} request${included.length === 1 ? "" : "s"} ready to add`;
   const selectedDateLabels = selectedImportDateEntries().map((entry) => entry.label);
   const dateSummary = selectedDateLabels.join(", ");
@@ -7168,7 +7651,7 @@ function renderImportPreview() {
         : "";
       const personColumn = isReturnedDevice
         ? `<div><small class="import-field-title">Destination</small><strong>${escapeHtml(destination)}</strong>${request.returning_user ? importReturningPersonMarkup(request) : ""}</div>`
-        : `${importPersonMarkup(request).replace("</div>", `${missingReturnWarning}</div>`)}`;
+        : `${importPersonMarkup(request).replace("</div>", `${missingReturnWarning}${maxImportMarkup(request)}</div>`)}`;
       return `<div class="import-preview-row ${isIncluded ? "" : "excluded"}${needsStatus ? " needs-status" : ""}" data-import-row-id="${escapeHtml(request.id)}">
         <label class="include-control" title="${isIncluded ? "Included" : "Do not deploy"}">
           <input type="checkbox" data-import-include="${escapeHtml(request.id)}" ${isIncluded ? "checked" : ""}>
@@ -7200,6 +7683,7 @@ function renderImportPreview() {
       ${visibleRequests.length < requests.length ? `<button class="import-show-more" type="button" data-import-expand="${escapeHtml(group.key)}">${iconMarkup("chevron-down")}<span>Show ${requests.length - visibleRequests.length} more</span></button>` : ""}
     </section>`;
   }).join("");
+  bindMaxImportControls(payload);
   const returnedSerialInput = $("#importPreviewList").querySelector("[data-import-returned-serials]");
   returnedSerialInput?.addEventListener("input", () => {
     payload.returned_serials_on_hand = returnedSerialInput.value;
@@ -7235,6 +7719,7 @@ function renderImportPreview() {
     saveCurrentImportDraft();
     void validateImportPreview([request]);
     void enrichImportPreview(payload, { requests: [request] });
+    void enrichMaxPortalImport(payload, { requests: [request] });
   };
   $("#importPreviewList").querySelectorAll("[data-import-missing-user]").forEach((input) => {
     input.addEventListener("input", () => {
@@ -7502,13 +7987,20 @@ function renderImportPreview() {
       if (request.kind === "location") {
         request.returning_user = user.value.trim();
         request.returning_user_info = null;
-      } else request.user = user.value.trim();
+      } else {
+        if (request.user !== user.value.trim()) {
+          request.max_portal = null;
+          request.max_portal_candidates = [];
+        }
+        request.user = user.value.trim();
+      }
     }
     request.cached_serial_verification = false;
     request.cached_user_verification = false;
     request.user_info = null;
     request.returning_user_info = null;
     void validateImportPreview([request]);
+    if (user && request.kind === "user") void enrichMaxPortalImport(payload, { requests: [request] });
   }));
   refreshIcons($("#importPreviewList"));
   saveCurrentImportDraft();
@@ -7936,6 +8428,7 @@ async function prepareImport() {
         first_name: request.first_name || "",
         last_name: request.last_name || "",
         pc_toolkit: request.pc_toolkit || null,
+        max_portal: request.max_portal || null,
         serial_validation: "valid",
         user_validation: "valid",
         user_info: request.user_info || null,
@@ -7976,6 +8469,10 @@ async function prepareImport() {
       cleanRequest.serial_validation = "valid";
       if (cleanRequest.kind === "user") cleanRequest.user_validation = "valid";
       delete cleanRequest.included;
+      delete cleanRequest.max_portal_candidates;
+      delete cleanRequest.max_portal_loading;
+      delete cleanRequest.max_portal_error;
+      delete cleanRequest.max_portal_epoch;
       return cleanRequest;
     });
     if (!requests.length) {
@@ -8026,6 +8523,7 @@ async function prepareImport() {
       saveCurrentImportDraft();
       validateBacklogPreview(payload);
       void enrichImportPreview(payload);
+      void enrichMaxPortalImport(payload);
       return;
     }
     if (!mode) throw new Error("Select at least one type of deployment to import.");
@@ -8073,6 +8571,7 @@ async function prepareImport() {
     saveCurrentImportDraft();
     validateImportPreview();
     void enrichImportPreview(payload);
+    void enrichMaxPortalImport(payload);
   } catch (error) {
     $("#importError").textContent = error.message;
     $("#importError").hidden = false;
@@ -8228,7 +8727,8 @@ function renderProgressEntries(job, progressList) {
 function progressDestinationLine(entry) {
   const destination = entry.destination || "No destination";
   const returner = entry.returning_user ? ` · returned by ${entry.returning_user}` : "";
-  return `${entry.status || "Status not selected"} · ${destination}${returner}`;
+  const incident = entry.max_portal?.helix_id ? ` · ${entry.max_portal.helix_id}` : "";
+  return `${entry.status || "Status not selected"} · ${destination}${returner}${incident}`;
 }
 
 function formatElapsed(seconds) {
@@ -8407,6 +8907,7 @@ function renderProgress(job) {
     ? `${iconMarkup(fullySuccessful ? "circle-check" : "circle-alert")}<span>${escapeHtml(progressHeading)}</span>`
     : `<span>${escapeHtml(progressHeading)}</span>`;
   $("#progressActions").hidden = !finished;
+  $("#exportIncMatchesButton").hidden = !(job.entries || []).some((entry) => entry.max_portal?.helix_id);
   $("#closeProgressButton").title = finished ? "Hide results" : "Continue in the background";
   $("#downloadResultsLink").href = `/api/jobs/${job.job_id}/results.txt`;
   renderSubmissionNotice(job);
@@ -8453,6 +8954,8 @@ function historyEntryMatches(entry, run, query, filter) {
     entry.pc_toolkit?.serial?.primary?.model,
     entry.pc_toolkit?.serial?.primary?.status,
     entry.pc_toolkit?.serial?.primary?.assigned_user?.login,
+    entry.max_portal?.helix_id,
+    entry.max_portal?.reference,
     run.request_for,
   ];
   return values.some((value) => String(value || "").toLocaleLowerCase().includes(query));
@@ -8496,7 +8999,7 @@ function renderHistory(runs) {
       return `<div class="history-entry ${entry.state === "failed" ? "failed" : ""}">
         <div class="history-device"><div class="history-device-serials">${serialMarkup}</div>${pcModel ? `<small class="history-device-model">${escapeHtml(pcModel)}</small>` : ""}${statusMarkup(entry)}</div>
         <div class="history-person"><small>${escapeHtml(person.role)}</small><strong>${escapeHtml(person.name)}</strong>${person.login ? `<button class="history-filter-link" type="button" data-history-filter="${escapeHtml(person.login)}" title="Show requests for ${escapeHtml(person.login)}">${escapeHtml(person.login)}</button>` : ""}</div>
-        <div class="history-result"><span class="history-result-state ${entry.state === "failed" ? "failed" : ""}">${escapeHtml(entry.state === "succeeded" ? "Submitted" : entry.state)}</span>${requestLink}<small>${escapeHtml(entry.message || "")}</small></div>
+        <div class="history-result"><span class="history-result-state ${entry.state === "failed" ? "failed" : ""}">${escapeHtml(entry.state === "succeeded" ? "Submitted" : entry.state)}</span>${requestLink}${entry.max_portal?.helix_id ? `<small class="history-inc">${escapeHtml(entry.max_portal.helix_id)} · ${escapeHtml(entry.max_portal.reference || "")}</small>` : '<small class="history-inc missing">No INC linked</small>'}<small>${escapeHtml(entry.message || "")}</small></div>
         <div class="history-entry-actions"><button class="button secondary compact" type="button" data-history-readd="${escapeHtml(entry.id)}">${iconMarkup("rotate-ccw")}<span>Re-add to queue</span></button></div>
       </div>`;
     }).join("");
@@ -8572,6 +9075,25 @@ async function openHistory() {
   } finally {
     elements.historyButton.disabled = false;
   }
+}
+
+function exportIncMatches(job = state.currentJob) {
+  const entries = job?.entries || [];
+  if (!entries.length) return;
+  const quote = (value) => `"${String(value ?? "").replaceAll('"', '""')}"`;
+  const rows = [["Serial", "Username", "Helix request ID", "Max request", "INC ticket", "Max status", "Submission status"]];
+  entries.forEach((entry) => (entry.serials || [""]).forEach((serial) => rows.push([
+    serial, entry.user || entry.returning_user || "", entry.request_id || "",
+    entry.max_portal?.reference || "", entry.max_portal?.helix_id || "",
+    entry.max_portal?.status || "", entry.state || "",
+  ])));
+  const blob = new Blob(["\uFEFF", rows.map((row) => row.map(quote).join(",")).join("\r\n")], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `deployments-inc-matches-${String(job.job_id || "run").slice(0, 8)}.csv`;
+  link.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function stopJobPolling() {
@@ -9201,6 +9723,19 @@ function bindEvents() {
     updateImportCounts();
   });
   $("#requestSizeInput").addEventListener("change", () => changeRequestSize($("#requestSizeInput").value));
+  $("#maxRequestEditorFind").addEventListener("click", () => openMaxPortal({ request: selectedRequest() }));
+  $("#maxPortalButton").addEventListener("click", () => openMaxPortal());
+  $("#maxPortalSearchButton").addEventListener("click", () => void runMaxPortalSearch());
+  $("#maxPortalSearch").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); void runMaxPortalSearch(); }
+  });
+  $("#maxPortalMore").addEventListener("click", () => void runMaxPortalSearch({ more: true }));
+  $("#maxPortalConnect").addEventListener("click", async () => {
+    await connectPcToolkitFromImportReview();
+    $("#maxPortalConnect").hidden = state.pcToolkitStatus?.state === "connected" || state.pcToolkitStatus?.state === "simulation";
+  });
+  $("#maxPortalClose").addEventListener("click", () => $("#maxPortalDialog").close());
+  $("#maxPortalDismiss").addEventListener("click", () => $("#maxPortalDialog").close());
   $("#removeBulkSerialPrefixesButton").addEventListener("click", removeBulkSerialPrefixes);
   $("#prepareImportButton").addEventListener("click", prepareImport);
   $("#backImportButton").addEventListener("click", backToImportSelection);
@@ -9228,6 +9763,7 @@ function bindEvents() {
   bindSidebarResize(elements.railResizeHandle, "rail");
   bindSidebarResize(elements.inspectorResizeHandle, "inspector");
   elements.historyButton.addEventListener("click", openHistory);
+  $("#exportIncMatchesButton").addEventListener("click", () => exportIncMatches());
   $("#historySearchInput").addEventListener("input", () => renderHistory(state.historyRuns));
   $("#historyStateFilter").addEventListener("change", () => renderHistory(state.historyRuns));
   $("#duplicateButton").addEventListener("click", duplicateSelected);
@@ -9319,6 +9855,12 @@ function bindEvents() {
     if (!request) return;
     recordAppInputEdit(`${request.id}:user`);
     request.user = elements.userInput.value.trim();
+    const associatedUsername = request.max_portal?.matched_username || request.max_portal?.requested_for;
+    if (associatedUsername && associatedUsername.toLocaleLowerCase() !== request.user.toLocaleLowerCase()) {
+      request.max_portal = null;
+      state.maxPortalQueueLookups.delete(request.id);
+      persistQueueSoon();
+    }
     request.user_validation_epoch = Number(request.user_validation_epoch || 0) + 1;
     request.user_selected = false;
     request.user_validation = request.user ? "pending" : "empty";

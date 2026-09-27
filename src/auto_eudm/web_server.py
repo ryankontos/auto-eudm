@@ -532,6 +532,31 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
                 fresh=bool(payload.get("fresh")),
             ))
             return
+        if path == "/api/max-portal/search":
+            query = str(payload.get("query") or "").strip()
+            after = str(payload.get("after") or "").strip()
+            if len(query) > MAX_SEARCH_QUERY or len(after) > 500:
+                raise HTTPInputError("Max portal search was too long.")
+            self._json(self.app.max_portal.search(query, after=after))
+            return
+        if path == "/api/max-portal/detail":
+            self._json(self.app.max_portal.detail(
+                str(payload.get("reference") or ""),
+                str(payload.get("type") or ""),
+            ))
+            return
+        if path == "/api/max-portal/matches":
+            username = self._search_query(payload, minimum=2, message="Enter a username to find Max portal requests.")
+            old_serials = payload.get("old_serials") or []
+            if not isinstance(old_serials, list) or len(old_serials) > 20:
+                raise HTTPInputError("The return serial list was invalid.")
+            self._json(self.app.max_portal.matches(
+                username,
+                deployment_date=str(payload.get("deployment_date") or "")[:10],
+                old_serials=tuple(str(value or "")[:100] for value in old_serials),
+                device_hint=str(payload.get("device_hint") or "")[:200],
+            ))
+            return
         if path == "/api/preferences":
             previous = self.app.preferences_json()
             saved = self.app.save_preferences(payload)

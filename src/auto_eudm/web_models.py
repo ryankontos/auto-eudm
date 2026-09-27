@@ -181,6 +181,7 @@ class RequestSpec:
     first_name: str | None = None
     last_name: str | None = None
     pc_toolkit: dict[str, Any] | None = None
+    max_portal: dict[str, Any] | None = None
 
     @classmethod
     def from_json(cls, raw: Any) -> "RequestSpec":
@@ -218,6 +219,9 @@ class RequestSpec:
         raw_pc_toolkit = raw.get("pc_toolkit")
         if raw_pc_toolkit is not None and not isinstance(raw_pc_toolkit, dict):
             raise eudm.EUDMError("PC Toolkit request details must be an object.")
+        raw_max_portal = raw.get("max_portal")
+        if raw_max_portal is not None and not isinstance(raw_max_portal, dict):
+            raise eudm.EUDMError("Max portal request details must be an object.")
         location = (
             Location.from_json(raw.get("location"))
             if kind in {"location", "bulk_location"}
@@ -240,6 +244,7 @@ class RequestSpec:
             first_name=clean(raw.get("first_name")) or None,
             last_name=clean(raw.get("last_name")) or None,
             pc_toolkit=dict(raw_pc_toolkit) if isinstance(raw_pc_toolkit, dict) else None,
+            max_portal=dict(raw_max_portal) if isinstance(raw_max_portal, dict) else None,
         )
 
     def validate(
@@ -351,6 +356,7 @@ class RequestSpec:
             "first_name": self.first_name or "",
             "last_name": self.last_name or "",
             "pc_toolkit": self.pc_toolkit or None,
+            "max_portal": self.max_portal or None,
             "errors": self.validate(),
             "destination": self.destination(),
             "device_count": self.device_count(),
@@ -1655,6 +1661,7 @@ class WorkbookImport:
                 last_name=action.last_name,
             ).to_json()
             request["new_asset_status"] = action.new_asset_status or ""
+            request["alm_row_number"] = action.row_number
             request["has_returned_device_serial"] = action.has_returned_device_serial
             request["has_pending_return_serial"] = action.has_pending_return_serial
             request["new_joiner"] = action.new_joiner

@@ -21,6 +21,7 @@ from . import eudm_inventory_import as inventory
 from . import eudm_request as eudm
 from . import run_reporting
 from .pc_toolkit import PCToolkitService, normalise_key as normalise_pc_toolkit_key
+from .max_portal import MaxPortalService
 from .workbook_debug import WorkbookLoadLog
 from .eudm_config import AppConfig
 from .web_models import (
@@ -1342,6 +1343,7 @@ class Application:
             verbose=self.config.verbose,
             preferences=lambda: self.preferences,
         )
+        self.max_portal = MaxPortalService(self.pc_toolkit.portal_graphql)
         self.clients.headless_auth_enabled = bool(self.preferences["headless_auth_enabled"])
         self.pc_toolkit.browser_headless = bool(
             self.config.browser_headless or self.preferences["headless_auth_enabled"]
