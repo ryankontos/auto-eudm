@@ -85,10 +85,17 @@ class AppConfig:
         if not raw_concurrency.isdigit() or int(raw_concurrency) < 1 or int(raw_concurrency) > 50:
             raise ValueError("EUDM_CONCURRENCY must be a whole number between 1 and 50")
 
+        instance_id = os.getenv("AUTO_EUDM_INSTANCE_ID", "default").strip() or "default"
+        default_profile = (
+            "~/.auto-eudm-chrome"
+            if instance_id == "default"
+            else f"~/.auto-eudm-chrome-{instance_id}"
+        )
+
         return cls(
             env_file=env_file,
             base=os.getenv("EUDM_BASE", "https://macquarie-dwp.onbmc.com/dwp/rest").strip(),
-            browser_profile=optional("EUDM_BROWSER_PROFILE") or "~/.auto-eudm-chrome",
+            browser_profile=optional("EUDM_BROWSER_PROFILE") or default_profile,
             browser_headless=env_bool("EUDM_BROWSER_HEADLESS"),
             request_for=optional("EUDM_REQUEST_FOR"),
             city=optional("EUDM_CITY"),

@@ -18,6 +18,7 @@ from typing import Any, Iterable, Mapping
 import urllib.parse
 import uuid
 
+from .data_paths import DATA_DIR
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 LOGGER = logging.getLogger("auto_eudm")
@@ -28,7 +29,7 @@ DIAGNOSTIC_WINDOW_SECONDS = 5 * 60
 _SESSION_STAMP = datetime.now()
 _SESSION_ID = uuid.uuid4().hex
 _DIAGNOSTIC_SEQUENCE = 0
-_PC_TOOLKIT_LOG_DIR = PROJECT_DIR / "results" / "pc-toolkit-logs"
+_PC_TOOLKIT_LOG_DIR = DATA_DIR / "pc-toolkit-logs"
 _PC_TOOLKIT_LOG_PATH: Path | None = None
 _PC_TOOLKIT_LOG_PART = 1
 PC_TOOLKIT_LOG_MAX_BYTES = 8 * 1024 * 1024
@@ -253,7 +254,7 @@ def configure_logging(*, enabled: bool, command: str) -> Path | None:
     if not enabled:
         LOGGER.addHandler(logging.NullHandler())
         return None
-    folder = PROJECT_DIR / "logs"
+    folder = DATA_DIR / "logs"
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"{datetime.now():%Y%m%d-%H%M%S-%f}-{command}.log"
     handler = logging.FileHandler(path, encoding="utf-8")
@@ -572,7 +573,7 @@ def pc_toolkit_log_download() -> tuple[bytes, str] | None:
 
 
 def write_result_file(command: str, lines: Iterable[str]) -> Path:
-    folder = PROJECT_DIR / "results"
+    folder = DATA_DIR
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"{datetime.now():%Y%m%d-%H%M%S-%f}-{command}.txt"
     content = [f"Deployments results — {command}", f"Generated: {datetime.now():%Y-%m-%d %H:%M:%S}", ""]

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import ipaddress
 import json
 import mimetypes
 import os
@@ -156,15 +157,26 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
             raise HTTPInputError("The browser request must be a JSON object.")
         return payload
 
-    def _loopback_url_matches_server(self, raw_url: str) -> bool:
+    def _server_url_matches(self, raw_url: str) -> bool:
         try:
             parsed = urllib.parse.urlparse(raw_url)
             port = parsed.port
         except ValueError:
             return False
+        server_host = str(self.server.server_address[0])  # type: ignore[attr-defined]
+        try:
+            server_address = ipaddress.ip_address(server_host)
+        except ValueError:
+            server_address = None
+        allowed_hosts = (
+            LOOPBACK_HOSTS
+            if server_address is not None and server_address.is_loopback
+            else {server_host.casefold()}
+        )
         return bool(
             parsed.scheme == "http"
-            and parsed.hostname in LOOPBACK_HOSTS
+            and parsed.hostname
+            and parsed.hostname.casefold() in allowed_hosts
             and port == self.server.server_port  # type: ignore[attr-defined]
             and not parsed.username
             and not parsed.password
@@ -176,15 +188,36 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
 
     def _allow_host(self) -> bool:
         host = self.headers.get("Host")
-        if not host:
+        if not host or not self._server_url_matches(f"http://{host}"):
             return False
-        return self._loopback_url_matches_server(f"http://{host}")
+        return self._allow_client_network()
+
+    def _allow_client_network(self) -> bool:
+        try:
+            peer = ipaddress.ip_address(self.client_address[0])
+            bind = ipaddress.ip_address(str(self.server.server_address[0]))  # type: ignore[attr-defined]
+        except ValueError:
+            return False
+        if bind.is_loopback:
+            return peer.is_loopback
+        try:
+            allowed_network = ipaddress.ip_network(
+                os.environ.get("AUTO_EUDM_ALLOWED_NETWORK", ""), strict=False
+            )
+        except ValueError:
+            return False
+        return (
+            peer.version == 4
+            and bind.version == 4
+            and peer in allowed_network
+            and bind in allowed_network
+        )
 
     def _allow_origin(self) -> bool:
         origin = self.headers.get("Origin")
         if not origin:
             return True
-        return self._loopback_url_matches_server(origin)
+        return self._server_url_matches(origin)
 
     @staticmethod
     def _search_query(payload: dict[str, Any], *, minimum: int, message: str) -> str:
@@ -212,7 +245,7 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         if not self._allow_host():
-            self._error("Requests are accepted only on this localhost server.", 403)
+            self._error("Requests are accepted only by this local server.", 403)
             return
         try:
             self._do_get()
@@ -238,6 +271,7 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
                     "commit_id": self.server.commit_id,  # type: ignore[attr-defined]
                     "pid": os.getpid(),
                     "background": self.server.service_manager.supervised,  # type: ignore[attr-defined]
+                    "instance_id": getattr(getattr(self.app, "database", None), "instance_id", "default"),
                 }
             )
             return
@@ -414,7 +448,7 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         if not self._allow_host() or not self._allow_origin():
-            self._error("Requests are accepted only from this localhost app.", 403)
+            self._error("Requests are accepted only from this local app.", 403)
             return
         try:
             self._do_post()
@@ -437,7 +471,7 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
 
     def do_DELETE(self) -> None:
         if not self._allow_host() or not self._allow_origin():
-            self._error("Requests are accepted only from this localhost app.", 403)
+            self._error("Requests are accepted only from this local app.", 403)
             return
         try:
             path = urllib.parse.urlparse(self.path).path

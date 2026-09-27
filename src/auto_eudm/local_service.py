@@ -12,10 +12,15 @@ import threading
 import time
 from typing import Any
 
+from .data_paths import DATA_DIR, INSTANCE_ID
 
 ROOT = Path(__file__).resolve().parents[2]
-CONTROL_FILE = ROOT / "results" / "auto-eudm-service-control.json"
-SERVICE_LABEL = "com.ryankontos.auto-eudm"
+CONTROL_FILE = DATA_DIR / "auto-eudm-service-control.json"
+SERVICE_LABEL = (
+    "com.ryankontos.auto-eudm"
+    if INSTANCE_ID == "default"
+    else f"com.ryankontos.deployments.{INSTANCE_ID}"
+)
 UPDATE_INTERVAL_SECONDS = 60
 GIT_TIMEOUT_SECONDS = 30
 UPDATE_NOTES_DIRECTORY = "update-notes"
@@ -59,7 +64,7 @@ def _update_notes_since(base_commit: str, target_ref: str) -> list[dict[str, str
 
 
 def control_file_for_port(port: int) -> Path:
-    return ROOT / "results" / f"auto-eudm-service-control-{int(port)}.json"
+    return DATA_DIR / f"auto-eudm-service-control-{int(port)}.json"
 
 
 def _git(*arguments: str, timeout: int = GIT_TIMEOUT_SECONDS) -> subprocess.CompletedProcess[str]:
@@ -127,8 +132,15 @@ class LocalServiceManager:
     def __init__(self, app: Any, server: Any) -> None:
         self.app = app
         self.server = server
-        self.supervised = bool(os.environ.get("AUTO_EUDM_SERVICE_CONTROL"))
-        self.control_file = Path(os.environ["AUTO_EUDM_SERVICE_CONTROL"]) if self.supervised else CONTROL_FILE
+        self.file_watched = os.environ.get("AUTO_EUDM_FILE_WATCHER", "").casefold() in {
+            "1", "true", "yes", "on"
+        }
+        self.supervised = self.file_watched or bool(os.environ.get("AUTO_EUDM_SERVICE_CONTROL"))
+        self.control_file = (
+            Path(os.environ["AUTO_EUDM_SERVICE_CONTROL"])
+            if os.environ.get("AUTO_EUDM_SERVICE_CONTROL")
+            else CONTROL_FILE
+        )
         self._lock = threading.RLock()
         self._git_lock = threading.Lock()
         self._stop = threading.Event()
@@ -150,7 +162,8 @@ class LocalServiceManager:
             name="auto-eudm-update-monitor",
             daemon=True,
         )
-        self._poll_thread.start()
+        if not self.file_watched:
+            self._poll_thread.start()
 
     def _selected_branch(self) -> str:
         preferences = self.app.preferences_json()
@@ -173,19 +186,23 @@ class LocalServiceManager:
                 host,
                 "--port",
                 port,
+                "--instance-id",
+                INSTANCE_ID,
             ],
             "WorkingDirectory": str(ROOT),
             "RunAtLoad": True,
             "KeepAlive": {"SuccessfulExit": False},
             "ProcessType": "Background",
-            "StandardOutPath": str(ROOT / "results" / "auto-eudm-service.log"),
-            "StandardErrorPath": str(ROOT / "results" / "auto-eudm-service.log"),
+            "StandardOutPath": str(DATA_DIR / "logs" / "auto-eudm-service.log"),
+            "StandardErrorPath": str(DATA_DIR / "logs" / "auto-eudm-service.log"),
         }
 
     def set_start_at_login(self, enabled: bool) -> dict[str, Any]:
+        if self.file_watched:
+            raise RuntimeError("This test server is already managed to start at login.")
         if sys.platform != "darwin":
             raise RuntimeError("Start at login is currently available on macOS.")
-        (ROOT / "results").mkdir(parents=True, exist_ok=True)
+        (DATA_DIR / "logs").mkdir(parents=True, exist_ok=True)
         path = self._login_agent_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         previous_plist = path.read_bytes() if path.exists() else None
@@ -222,6 +239,8 @@ class LocalServiceManager:
             self._stop.wait(UPDATE_INTERVAL_SECONDS)
 
     def request_check(self) -> dict[str, Any]:
+        if self.file_watched:
+            return self.status()
         with self._lock:
             if self._state.get("updating"):
                 return self.status()
@@ -317,6 +336,8 @@ class LocalServiceManager:
                 self._state["manual_check"] = False
 
     def request_update(self) -> dict[str, Any]:
+        if self.file_watched:
+            return self.status()
         with self._lock:
             if self._state.get("updating"):
                 return self.status()
@@ -423,6 +444,8 @@ class LocalServiceManager:
                 self._state["updating"] = False
 
     def request_quit(self) -> dict[str, Any]:
+        if self.file_watched:
+            return {"stopping": False, "managed": True}
         if self.supervised:
             write_control_action("quit", self.control_file)
             self._shutdown_server()
@@ -442,14 +465,23 @@ class LocalServiceManager:
         preferences = self.app.preferences_json()
         channel = str(preferences.get("update_channel") or "stable").strip().casefold()
         branch = branch_for_channel(channel)
-        values["branch"] = branch
+        values["branch"] = "local code" if self.file_watched else branch
         values["update_channel"] = channel
-        values["branches"] = available_branches()
+        values["branches"] = [] if self.file_watched else available_branches()
         values["current_branch"] = current_branch()
         values["current_commit"] = values.get("current_commit") or _git_text("rev-parse", "HEAD")
         values["background"] = self.supervised
+        values["file_watched"] = self.file_watched
+        if self.file_watched:
+            values.update({
+                "checking": False,
+                "updating": False,
+                "update_available": False,
+                "update_error": "",
+                "update_message": "Local code changes restart this test server automatically.",
+            })
         values["start_at_login_supported"] = sys.platform == "darwin"
-        values["start_at_login"] = bool(preferences.get("start_at_login"))
+        values["start_at_login"] = self.file_watched or bool(preferences.get("start_at_login"))
         values["active_submissions"] = self.app.jobs.active_job_count()
         return values
 

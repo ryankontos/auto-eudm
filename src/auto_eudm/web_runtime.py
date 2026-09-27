@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import json
 from pathlib import Path
+import sqlite3
 import threading
 import time
 from typing import Any
@@ -24,6 +25,8 @@ from .pc_toolkit import PCToolkitService, normalise_key as normalise_pc_toolkit_
 from .max_portal import MaxPortalService
 from .workbook_debug import WorkbookLoadLog
 from .eudm_config import AppConfig
+from .data_paths import DATA_DIR, LEGACY_RESULTS_DIR
+from .state_database import AppDatabase
 from .web_models import (
     CITIES,
     LOCATION_STATUSES,
@@ -33,8 +36,6 @@ from .web_models import (
     WorkbookImport,
 )
 
-
-ROOT = Path(__file__).resolve().parents[2]
 
 MAX_IMPORT_JOBS = 12
 MAX_PENDING_IMPORTS = 2
@@ -334,6 +335,7 @@ def verify_helix_api(
 
 def open_existing_server(
     url: str,
+    expected_instance_id: str = "default",
 ) -> bool:
     """Open a live Deployments server when this process cannot bind its port."""
     try:
@@ -342,7 +344,19 @@ def open_existing_server(
             body = response.read(4096).decode("utf-8", errors="ignore")
         if response.status >= 400 or 'id="connectionStatus"' not in body:
             return False
+        runtime_request = urllib.request.Request(
+            url.rstrip("/") + "/api/runtime",
+            headers={"User-Agent": "AutoEUDM launcher"},
+        )
+        with urllib.request.urlopen(runtime_request, timeout=0.8) as runtime_response:
+            runtime = json.loads(runtime_response.read(4096).decode("utf-8", errors="ignore"))
+        if not isinstance(runtime, dict):
+            return False
+        if str(runtime.get("instance_id", "default")) != expected_instance_id:
+            return False
     except (OSError, urllib.error.URLError):
+        return False
+    except (ValueError, TypeError):
         return False
     webbrowser.open(url)
     print(f"Deployments is already running at {url}; opening it in your browser.", flush=True)
@@ -919,19 +933,24 @@ class SubmissionJob:
 
 
 class JobStore:
-    def __init__(self, clients: ClientManager) -> None:
+    def __init__(self, clients: ClientManager, database: AppDatabase | None = None) -> None:
         self.clients = clients
+        self.database = database
         self.jobs: dict[str, SubmissionJob] = {}
         self.lock = threading.Lock()
-        self.history_path = ROOT / "results" / HISTORY_FILENAME
+        legacy_root = LEGACY_RESULTS_DIR or DATA_DIR
+        self.history_path = legacy_root / HISTORY_FILENAME
         self.legacy_history_paths = tuple(
-            ROOT / "results" / filename
+            legacy_root / filename
             for filename in LEGACY_HISTORY_FILENAMES
         )
         self.persisted_history = self._load_history()
 
     def _load_history(self) -> list[dict[str, Any]]:
-        """Load saved runs and migrate the pre-filesystem history location."""
+        """Load saved history from SQLite, with a test-only file fallback."""
+        database = getattr(self, "database", None)
+        if database is not None:
+            return database.load_request_history(limit=100)
         paths = (self.history_path, *getattr(self, "legacy_history_paths", ()))
         for path in paths:
             try:
@@ -952,6 +971,10 @@ class JobStore:
         return []
 
     def _write_history(self, history: list[dict[str, Any]]) -> None:
+        database = getattr(self, "database", None)
+        if database is not None:
+            database.replace_request_history(history[:100])
+            return
         payload = json.dumps(history[:100], ensure_ascii=False, indent=2)
         self.history_path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.history_path.with_suffix(".tmp")
@@ -961,6 +984,15 @@ class JobStore:
     def _persist_history(self, job: SubmissionJob) -> None:
         snapshot = job.to_json()
         with self.lock:
+            database = getattr(self, "database", None)
+            if database is not None:
+                try:
+                    self.persisted_history = database.upsert_request_history(snapshot, limit=100)
+                except (OSError, sqlite3.Error):
+                    # History is a convenience feature; it must never affect
+                    # a completed Helix request.
+                    run_reporting.exception("Could not persist completed request history")
+                return
             self.persisted_history = [
                 existing
                 for existing in self.persisted_history
@@ -999,6 +1031,8 @@ class JobStore:
         self, specs: list[RequestSpec], request_for: str, concurrency: int
     ) -> SubmissionJob:
         request_ids = {spec.client_id for spec in specs}
+        if getattr(self, "database", None) is not None:
+            self.persisted_history = self._load_history()
         job = SubmissionJob(
             uuid.uuid4().hex,
             [JobEntry(spec) for spec in specs],
@@ -1074,6 +1108,8 @@ class JobStore:
         return sorted(active, key=lambda job: str(job.get("created_at", "")), reverse=True)
 
     def history(self, limit: int = 50) -> list[dict[str, Any]]:
+        if getattr(self, "database", None) is not None:
+            self.persisted_history = self._load_history()
         with self.lock:
             live = [job.to_json() for job in self.jobs.values()]
             live_ids = {job["job_id"] for job in live}
@@ -1202,7 +1238,7 @@ class JobStore:
             )
         try:
             run_reporting.write_result_file("eudm-web", lines)
-        except OSError:
+        except (OSError, sqlite3.Error):
             # A result text file is useful but must not prevent the durable
             # history snapshot from being updated.
             pass
@@ -1305,38 +1341,44 @@ class ImportJob:
 
 
 class Application:
-    def __init__(self, config: AppConfig) -> None:
+    def __init__(self, config: AppConfig, database: AppDatabase | None = None) -> None:
         self.config = config
+        self.database = database or AppDatabase.current_instance()
         self.clients = ClientManager(config)
-        self.jobs = JobStore(self.clients)
+        self.jobs = JobStore(self.clients, self.database)
         self.imports: dict[str, WorkbookImport] = {}
         self.pending_imports: dict[str, tuple[str, bytes]] = {}
         self.import_jobs: dict[str, ImportJob] = {}
         self.import_lock = threading.Lock()
-        self.import_drafts_path = ROOT / "results" / "web-alm-import-drafts.json"
+        legacy_root = LEGACY_RESULTS_DIR or DATA_DIR
+        self.import_drafts_path = legacy_root / "web-alm-import-drafts.json"
         self.import_drafts_lock = threading.Lock()
         self.import_drafts = self._load_import_drafts()
-        self.import_payload_path = ROOT / "results" / "web-alm-imports"
+        self.import_payload_path = legacy_root / "web-alm-imports"
         self.import_payload_lock = threading.Lock()
-        self.request_queue_path = ROOT / "results" / "web-request-queue.json"
+        self.request_queue_path = legacy_root / "web-request-queue.json"
         self.request_queue_lock = threading.Lock()
         self.request_queue = self._load_request_queue()
-        self.verification_cache_path = ROOT / "results" / "web-verification-cache.json"
+        self.verification_cache_path = legacy_root / "web-verification-cache.json"
         self.verification_cache_lock = threading.Lock()
         self.verification_cache = self._load_verification_cache()
         self.verification_cache_alias_index: dict[str, dict[str, str]] | None = None
+        self.verification_cache_dirty_entries: dict[str, dict[str, dict[str, Any]]] = {
+            "serials": {}, "usernames": {}
+        }
         self.verification_cache_write_timer: threading.Timer | None = None
         self.verification_cache_write_lock = threading.Lock()
         self.verification_cache_dirty = False
         self.verification_cache_last_write = 0.0
-        self.alm_backlog_ignored_path = ROOT / "results" / "web-alm-backlog-ignored.json"
+        self.alm_backlog_ignored_path = legacy_root / "web-alm-backlog-ignored.json"
         self.alm_backlog_ignored_lock = threading.Lock()
         self.alm_backlog_ignored = self._load_alm_backlog_ignored()
-        self.preferences_path = ROOT / "results" / "web-settings.json"
+        self.preferences_path = legacy_root / "web-settings.json"
         self.preferences_lock = threading.Lock()
         self.preferences = self._load_preferences()
         self.pc_toolkit = PCToolkitService(
-            ROOT / "results" / "pc-toolkit-cache.json",
+            self.database.path,
+            state_store=self.database,
             simulate=self.config.simulate,
             browser_profile=self.config.browser_profile or "",
             browser_headless=self.config.browser_headless,
@@ -1584,6 +1626,13 @@ class Application:
 
     def _load_preferences(self) -> dict[str, Any]:
         defaults = self._preference_defaults()
+        database = getattr(self, "database", None)
+        if database is not None:
+            raw = database.load_preferences(defaults)
+            try:
+                return self._normalise_preferences(raw, base=defaults)
+            except (TypeError, eudm.EUDMError):
+                return defaults
         try:
             raw = json.loads(self.preferences_path.read_text(encoding="utf-8"))
             return self._normalise_preferences(raw, base=defaults)
@@ -1592,18 +1641,58 @@ class Application:
 
     def preferences_json(self) -> dict[str, Any]:
         with self.preferences_lock:
+            database = getattr(self, "database", None)
+            if database is not None:
+                defaults = self._preference_defaults()
+                raw = database.load_preferences(defaults)
+                try:
+                    self.preferences = self._normalise_preferences(
+                        raw, base=defaults
+                    )
+                except (TypeError, eudm.EUDMError):
+                    self.preferences = self._preference_defaults()
+                if hasattr(self, "clients"):
+                    self.clients.headless_auth_enabled = bool(
+                        self.preferences["headless_auth_enabled"]
+                    )
+                if hasattr(self, "pc_toolkit"):
+                    self.pc_toolkit.browser_headless = bool(
+                        self.config.browser_headless
+                        or self.preferences["headless_auth_enabled"]
+                    )
             values = json.loads(json.dumps(self.preferences))
-            values["_saved"] = self.preferences_path.is_file()
+            values["_saved"] = (
+                database.has_preferences()
+                if database is not None
+                else self.preferences_path.is_file()
+            )
             return values
 
     def save_preferences(self, raw: dict[str, Any]) -> dict[str, Any]:
         with self.preferences_lock:
-            saved = self._normalise_preferences(raw, base=self.preferences)
+            database = getattr(self, "database", None)
+            if database is not None:
+                def normalise_against_latest(current: Any) -> dict[str, Any]:
+                    try:
+                        base = self._normalise_preferences(
+                            current, base=self._preference_defaults()
+                        )
+                    except (TypeError, eudm.EUDMError):
+                        base = self._preference_defaults()
+                    return self._normalise_preferences(raw, base=base)
+
+                saved = database.update_preferences(
+                    normalise_against_latest,
+                    self._preference_defaults(),
+                )
+            else:
+                saved = self._normalise_preferences(raw, base=self.preferences)
             payload = json.dumps(saved, ensure_ascii=False, indent=2)
-            self.preferences_path.parent.mkdir(parents=True, exist_ok=True)
-            temporary = self.preferences_path.with_suffix(".tmp")
-            temporary.write_text(payload + "\n", encoding="utf-8")
-            temporary.replace(self.preferences_path)
+            if database is None:
+                self.preferences_path.parent.mkdir(parents=True, exist_ok=True)
+                temporary = self.preferences_path.with_suffix(".tmp")
+                temporary.write_text(payload + "\n", encoding="utf-8")
+                temporary.replace(self.preferences_path)
             self.preferences = saved
             self.clients.headless_auth_enabled = bool(saved["headless_auth_enabled"])
             self.pc_toolkit.browser_headless = bool(
@@ -1699,11 +1788,15 @@ class Application:
             self.pc_toolkit.connect_async(headless=False)
 
     def _load_import_drafts(self) -> list[dict[str, Any]]:
-        """Load resumable ALM import state from the project filesystem."""
-        try:
-            raw = json.loads(self.import_drafts_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, TypeError):
-            return []
+        """Load resumable ALM import state from the instance database."""
+        database = getattr(self, "database", None)
+        if database is not None:
+            raw = database.load_alm_drafts(limit=MAX_ALM_IMPORT_DRAFTS)
+        else:
+            try:
+                raw = json.loads(self.import_drafts_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError):
+                return []
         if not isinstance(raw, list):
             return []
         now = datetime.now()
@@ -1738,6 +1831,10 @@ class Application:
         return current - saved <= ALM_IMPORT_DRAFT_MAX_AGE
 
     def _write_import_drafts(self, drafts: list[dict[str, Any]]) -> None:
+        database = getattr(self, "database", None)
+        if database is not None:
+            database.replace_alm_drafts(drafts[:MAX_ALM_IMPORT_DRAFTS], limit=MAX_ALM_IMPORT_DRAFTS)
+            return
         payload = json.dumps(drafts[:MAX_ALM_IMPORT_DRAFTS], ensure_ascii=False, indent=2)
         self.import_drafts_path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.import_drafts_path.with_suffix(".tmp")
@@ -1746,6 +1843,8 @@ class Application:
 
     def import_drafts_json(self) -> list[dict[str, Any]]:
         with self.import_drafts_lock:
+            if getattr(self, "database", None) is not None:
+                self.import_drafts = self._load_import_drafts()
             return json.loads(json.dumps(self.import_drafts))
 
     def save_import_draft(self, raw: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1766,16 +1865,26 @@ class Application:
         stored["id"] = draft_id
         stored["saved_at"] = str(stored.get("saved_at", "")) or datetime.now().isoformat(timespec="seconds")
         with self.import_drafts_lock:
-            drafts = [draft for draft in self.import_drafts if draft.get("id") != draft_id]
-            drafts.insert(0, stored)
-            self.import_drafts = drafts[:MAX_ALM_IMPORT_DRAFTS]
-            self._write_import_drafts(self.import_drafts)
+            database = getattr(self, "database", None)
+            if database is not None:
+                database.save_alm_draft(stored, limit=MAX_ALM_IMPORT_DRAFTS)
+                self.import_drafts = database.load_alm_drafts(limit=MAX_ALM_IMPORT_DRAFTS)
+            else:
+                drafts = [draft for draft in self.import_drafts if draft.get("id") != draft_id]
+                drafts.insert(0, stored)
+                self.import_drafts = drafts[:MAX_ALM_IMPORT_DRAFTS]
+                self._write_import_drafts(self.import_drafts)
             return json.loads(json.dumps(self.import_drafts))
 
     def delete_import_draft(self, draft_id: str) -> list[dict[str, Any]]:
         with self.import_drafts_lock:
-            self.import_drafts = [draft for draft in self.import_drafts if draft.get("id") != draft_id]
-            self._write_import_drafts(self.import_drafts)
+            database = getattr(self, "database", None)
+            if database is not None:
+                database.delete_alm_draft(draft_id)
+                self.import_drafts = database.load_alm_drafts(limit=MAX_ALM_IMPORT_DRAFTS)
+            else:
+                self.import_drafts = [draft for draft in self.import_drafts if draft.get("id") != draft_id]
+                self._write_import_drafts(self.import_drafts)
             return json.loads(json.dumps(self.import_drafts))
 
     @staticmethod
@@ -1797,6 +1906,14 @@ class Application:
         return json.loads(payload)
 
     def _load_request_queue(self) -> list[dict[str, Any]]:
+        database = getattr(self, "database", None)
+        if database is not None:
+            try:
+                return self._normalise_request_queue(
+                    database.load_request_queue()
+                )
+            except (ValueError, TypeError, eudm.EUDMError):
+                return []
         try:
             raw = json.loads(self.request_queue_path.read_text(encoding="utf-8"))
             return self._normalise_request_queue(raw)
@@ -1804,6 +1921,10 @@ class Application:
             return []
 
     def _write_request_queue(self, requests: list[dict[str, Any]]) -> None:
+        database = getattr(self, "database", None)
+        if database is not None:
+            database.save_request_queue(requests)
+            return
         payload = json.dumps(requests, ensure_ascii=False, indent=2)
         self.request_queue_path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.request_queue_path.with_suffix(".tmp")
@@ -1812,6 +1933,8 @@ class Application:
 
     def request_queue_json(self) -> list[dict[str, Any]]:
         with self.request_queue_lock:
+            if getattr(self, "database", None) is not None:
+                self.request_queue = self._load_request_queue()
             return json.loads(json.dumps(self.request_queue))
 
     def save_request_queue_with_conflicts(
@@ -1819,6 +1942,32 @@ class Application:
     ) -> tuple[list[dict[str, Any]], list[str]]:
         incoming = self._normalise_request_queue(raw)
         with self.request_queue_lock:
+            database = getattr(self, "database", None)
+            if database is not None:
+                duplicates: list[str] = []
+
+                def merge_with_latest(current: Any) -> list[dict[str, Any]]:
+                    nonlocal duplicates
+                    try:
+                        current_queue = self._normalise_request_queue(current)
+                    except eudm.EUDMError:
+                        current_queue = []
+                    if base_raw is None:
+                        requests = incoming
+                        preferred_ids: list[str] = []
+                    else:
+                        base = self._normalise_request_queue(base_raw)
+                        requests = self._normalise_request_queue(
+                            merge_request_queues(base, incoming, current_queue)
+                        )
+                        _, preferred_ids = _queue_items_by_id(current_queue)
+                    requests, duplicates = deduplicate_request_queue(
+                        requests, preferred_ids
+                    )
+                    return self._normalise_request_queue(requests)
+
+                self.request_queue = database.mutate_request_queue(merge_with_latest)
+                return json.loads(json.dumps(self.request_queue)), duplicates
             if base_raw is None:
                 requests = incoming
                 preferred_ids: list[str] = []
@@ -1846,6 +1995,11 @@ class Application:
 
     def _load_verification_cache(self) -> dict[str, dict[str, dict[str, Any]]]:
         empty = {"serials": {}, "usernames": {}}
+        database = getattr(self, "database", None)
+        if database is not None:
+            # SQLite's alias index is the authoritative lookup path. Avoid
+            # copying the entire cache into memory on startup.
+            return empty
         try:
             raw = json.loads(self.verification_cache_path.read_text(encoding="utf-8"))
         except (OSError, ValueError, TypeError):
@@ -1879,12 +2033,18 @@ class Application:
         snapshot: dict[str, dict[str, dict[str, Any]]] | None = None,
     ) -> None:
         source = snapshot if snapshot is not None else self.verification_cache
-        payload = json.dumps(source, ensure_ascii=False, indent=2)
         write_lock = getattr(self, "verification_cache_write_lock", None)
         if write_lock is None:
             write_lock = threading.Lock()
             self.verification_cache_write_lock = write_lock
         with write_lock:
+            database = getattr(self, "database", None)
+            if database is not None:
+                database.merge_verification_cache(
+                    source, limit=VERIFICATION_CACHE_MAX_ENTRIES
+                )
+                return
+            payload = json.dumps(source, ensure_ascii=False, indent=2)
             self.verification_cache_path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self.verification_cache_path.with_suffix(".tmp")
             temporary.write_text(payload + "\n", encoding="utf-8")
@@ -1917,13 +2077,29 @@ class Application:
         if not category or not key:
             return None
         with self.verification_cache_lock:
+            database = getattr(self, "database", None)
+            if database is not None:
+                # Keep newly verified entries visible during the short
+                # coalescing window; all durable aliases are queried through
+                # SQLite's composite primary-key index.
+                for stored_key, candidate in self.verification_cache_dirty_entries[category].items():
+                    aliases = [
+                        stored_key,
+                        candidate.get("value"),
+                        *(candidate.get("columns") or []),
+                    ]
+                    if key in {self._verification_cache_key(str(alias or "")) for alias in aliases}:
+                        return deepcopy(candidate)
+                return database.lookup_verification(category, value)
             values = self.verification_cache[category]
             cached = values.get(key)
             if cached is None:
                 stored_key = self._verification_cache_aliases_locked(category).get(key)
                 if stored_key:
                     cached = values.get(stored_key)
-            return deepcopy(cached) if cached else None
+            if cached:
+                return deepcopy(cached)
+            return None
 
     def record_verified_serial(self, result: dict[str, Any]) -> None:
         self._record_verification("serials", result)
@@ -1950,10 +2126,19 @@ class Application:
             while len(values) > VERIFICATION_CACHE_MAX_ENTRIES:
                 values.pop(next(iter(values)))
             self.verification_cache_alias_index = None
+            if getattr(self, "database", None) is not None:
+                self.verification_cache_dirty_entries[category][key] = stored
             now = time.monotonic()
             last_write = getattr(self, "verification_cache_last_write", 0.0)
             if now - last_write >= VERIFICATION_CACHE_WRITE_COALESCE_SECONDS:
-                snapshot = self._verification_cache_snapshot_locked()
+                if getattr(self, "database", None) is not None:
+                    snapshot = {
+                        category_name: dict(entries)
+                        for category_name, entries in self.verification_cache_dirty_entries.items()
+                    }
+                    self.verification_cache_dirty_entries = {"serials": {}, "usernames": {}}
+                else:
+                    snapshot = self._verification_cache_snapshot_locked()
                 self.verification_cache_dirty = False
                 self.verification_cache_last_write = now
             else:
@@ -1962,9 +2147,11 @@ class Application:
         if snapshot is not None:
             try:
                 self._write_verification_cache(snapshot)
-            except OSError:
+            except (OSError, sqlite3.Error):
                 with self.verification_cache_lock:
                     self.verification_cache_dirty = True
+                    for dirty_category, entries in (snapshot or {}).items():
+                        self.verification_cache_dirty_entries[dirty_category].update(entries)
                     self._schedule_verification_cache_flush_locked()
                 raise
 
@@ -1986,16 +2173,25 @@ class Application:
             self.verification_cache_write_timer = None
             if not getattr(self, "verification_cache_dirty", False):
                 return
-            snapshot = self._verification_cache_snapshot_locked()
+            if getattr(self, "database", None) is not None:
+                snapshot = {
+                    category_name: dict(entries)
+                    for category_name, entries in self.verification_cache_dirty_entries.items()
+                }
+                self.verification_cache_dirty_entries = {"serials": {}, "usernames": {}}
+            else:
+                snapshot = self._verification_cache_snapshot_locked()
             self.verification_cache_dirty = False
             self.verification_cache_last_write = time.monotonic()
         try:
             self._write_verification_cache(snapshot)
-        except OSError:
+        except (OSError, sqlite3.Error):
             # The next verification will retry the deferred write. Cache
             # failures must not make an otherwise successful lookup fail.
             with self.verification_cache_lock:
                 self.verification_cache_dirty = True
+                for dirty_category, entries in (snapshot or {}).items():
+                    self.verification_cache_dirty_entries[dirty_category].update(entries)
             run_reporting.event("Could not persist the verification cache")
 
     def flush_pending_state(self) -> None:
@@ -2018,10 +2214,14 @@ class Application:
             close()
 
     def _load_alm_backlog_ignored(self) -> dict[str, dict[str, str]]:
-        try:
-            raw = json.loads(self.alm_backlog_ignored_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, TypeError):
-            return {}
+        database = getattr(self, "database", None)
+        if database is not None:
+            raw = database.load_backlog_ignores()
+        else:
+            try:
+                raw = json.loads(self.alm_backlog_ignored_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError):
+                return {}
         values = raw.get("ignored", raw) if isinstance(raw, dict) else raw
         if not isinstance(values, dict):
             return {}
@@ -2035,6 +2235,10 @@ class Application:
         }
 
     def _write_alm_backlog_ignored(self) -> None:
+        database = getattr(self, "database", None)
+        if database is not None:
+            database.replace_backlog_ignores(self.alm_backlog_ignored)
+            return
         payload = json.dumps({"ignored": self.alm_backlog_ignored}, ensure_ascii=False, indent=2)
         self.alm_backlog_ignored_path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.alm_backlog_ignored_path.with_suffix(".tmp")
@@ -2043,6 +2247,8 @@ class Application:
 
     def alm_backlog_ignored_keys(self) -> set[str]:
         with self.alm_backlog_ignored_lock:
+            if getattr(self, "database", None) is not None:
+                self.alm_backlog_ignored = self._load_alm_backlog_ignored()
             return set(self.alm_backlog_ignored)
 
     def ignore_alm_backlog(self, serial: str, username: str) -> None:
@@ -2050,25 +2256,42 @@ class Application:
         if not key or "\u0000" not in key:
             raise eudm.EUDMError("The ALM backlog row was missing a serial or username.")
         with self.alm_backlog_ignored_lock:
-            self.alm_backlog_ignored[key] = {
+            entry = {
                 "serial": " ".join(str(serial or "").split()),
                 "username": " ".join(str(username or "").split()),
             }
-            self._write_alm_backlog_ignored()
+            database = getattr(self, "database", None)
+            if database is not None:
+                database.set_backlog_ignore(entry["serial"], entry["username"], True)
+                self.alm_backlog_ignored = self._load_alm_backlog_ignored()
+            else:
+                self.alm_backlog_ignored[key] = entry
+                self._write_alm_backlog_ignored()
 
     def unignore_alm_backlog(self, serial: str, username: str) -> None:
         key = WorkbookImport.backlog_key(serial, username)
         if not key or "\u0000" not in key:
             raise eudm.EUDMError("The ALM backlog row was missing a serial or username.")
         with self.alm_backlog_ignored_lock:
-            if key in self.alm_backlog_ignored:
+            database = getattr(self, "database", None)
+            if database is not None:
+                entry = self.alm_backlog_ignored.get(key, {})
+                database.set_backlog_ignore(
+                    entry.get("serial", serial), entry.get("username", username), False
+                )
+                self.alm_backlog_ignored = self._load_alm_backlog_ignored()
+            elif key in self.alm_backlog_ignored:
                 self.alm_backlog_ignored.pop(key, None)
                 self._write_alm_backlog_ignored()
 
     def clear_alm_backlog_ignored(self) -> None:
         with self.alm_backlog_ignored_lock:
             self.alm_backlog_ignored = {}
-            self._write_alm_backlog_ignored()
+            database = getattr(self, "database", None)
+            if database is not None:
+                database.clear_backlog_ignores()
+            else:
+                self._write_alm_backlog_ignored()
 
     def add_import(self, workbook: WorkbookImport) -> None:
         with self.import_lock:
@@ -2102,10 +2325,10 @@ class Application:
         payload: bytes,
         columns: inventory.ImportColumns | None = None,
     ) -> None:
-        paths = self._import_payload_paths(import_id)
-        if not paths:
+        try:
+            safe_id = uuid.UUID(str(import_id)).hex
+        except (ValueError, AttributeError, TypeError):
             raise eudm.EUDMError("The workbook import identifier was invalid.")
-        payload_path, metadata_path = paths
         metadata = {
             "import_id": str(import_id),
             "filename": filename,
@@ -2125,6 +2348,22 @@ class Application:
             } if columns else None,
             "saved_at": datetime.now().isoformat(timespec="seconds"),
         }
+        database = getattr(self, "database", None)
+        if database is not None:
+            try:
+                database.save_alm_workbook(
+                    str(import_id), filename, payload, metadata["columns"],
+                    saved_at=metadata["saved_at"],
+                )
+            except (OSError, ValueError, TypeError, sqlite3.Error) as exc:
+                raise eudm.EUDMError(
+                    "The workbook could not be saved for import resume."
+                ) from exc
+            return
+        paths = self._import_payload_paths(import_id)
+        if not paths:
+            raise eudm.EUDMError("The workbook import identifier was invalid.")
+        payload_path, metadata_path = paths
         try:
             with self.import_payload_lock:
                 self.import_payload_path.mkdir(parents=True, exist_ok=True)
@@ -2146,6 +2385,24 @@ class Application:
         self,
         import_id: str,
     ) -> tuple[str, bytes, inventory.ImportColumns | None] | None:
+        database = getattr(self, "database", None)
+        if database is not None:
+            try:
+                safe_id = uuid.UUID(str(import_id)).hex
+            except (ValueError, AttributeError, TypeError):
+                return None
+            stored = database.load_alm_workbook(str(import_id))
+            if not stored:
+                return None
+            filename, payload, raw_columns = stored
+            if not payload:
+                return None
+            columns = (
+                inventory.columns_from_mapping(raw_columns)
+                if isinstance(raw_columns, dict) and raw_columns
+                else None
+            )
+            return filename, payload, columns
         paths = self._import_payload_paths(import_id)
         if not paths:
             return None
@@ -2186,7 +2443,7 @@ class Application:
 
     def start_import(self, filename: str, encoded: str) -> ImportJob:
         job = ImportJob(job_id=uuid.uuid4().hex, filename=filename)
-        debug = WorkbookLoadLog.create(ROOT, job.job_id, filename)
+        debug = WorkbookLoadLog.create(DATA_DIR, job.job_id, filename)
         job.debug_log_path = str(debug.path)
         debug.event(
             "created diagnostic for workbook upload attempt",
@@ -2209,7 +2466,7 @@ class Application:
         columns: dict[str, Any],
     ) -> ImportJob:
         attempt_id = uuid.uuid4().hex
-        debug = WorkbookLoadLog.create(ROOT, attempt_id, "ALM Workbook (mapped import)")
+        debug = WorkbookLoadLog.create(DATA_DIR, attempt_id, "ALM Workbook (mapped import)")
         debug.event("starting mapped workbook load attempt", stage="lifecycle", source_import_id=import_id)
         with self.import_lock:
             pending = self.pending_imports.pop(import_id, None)
@@ -2241,7 +2498,7 @@ class Application:
         debug: WorkbookLoadLog | None = None,
     ) -> None:
         if debug is None:
-            debug = WorkbookLoadLog.create(ROOT, job.job_id, job.filename)
+            debug = WorkbookLoadLog.create(DATA_DIR, job.job_id, job.filename)
             job.debug_log_path = str(debug.path)
         job.update(state="reading", message="Reading workbook headings…")
         debug.event("beginning workbook heading inspection", stage="inspect")
@@ -2286,7 +2543,7 @@ class Application:
     ) -> None:
         job.update(state="reading", message="Opening the workbook…")
         if debug is None:
-            debug = WorkbookLoadLog.create(ROOT, job.job_id, job.filename)
+            debug = WorkbookLoadLog.create(DATA_DIR, job.job_id, job.filename)
             job.debug_log_path = str(debug.path)
         debug.event("beginning workbook row parsing", stage="parse", selected_columns=columns.__dict__)
         debug.event(

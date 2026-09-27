@@ -183,7 +183,10 @@ class LocalWebServerTests(unittest.TestCase):
         self.assertEqual(response.status, 200)
         self.assertEqual(
             json.loads(raw),
-            {"commit_id": "test-commit", "pid": mock.ANY, "background": False},
+            {
+                "commit_id": "test-commit", "pid": mock.ANY,
+                "background": False, "instance_id": "default",
+            },
         )
         self.assertEqual(response.getheader("Server"), "AutoEUDM/1.0")
         self.assertEqual(response.getheader("Cache-Control"), "no-store")
@@ -468,7 +471,7 @@ class LocalWebServerTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status, 403)
-        self.assertIn("localhost server", json.loads(raw)["error"])
+        self.assertIn("local server", json.loads(raw)["error"])
 
     def test_oversized_request_is_rejected_without_reading_the_body(self) -> None:
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=2)

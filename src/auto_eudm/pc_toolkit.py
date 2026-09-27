@@ -35,6 +35,7 @@ from .eudm_request import (
     open_helix_auth_page,
 )
 from . import run_reporting
+from .state_database import AppDatabase
 
 
 DEFAULT_DEVICE_URL = (
@@ -69,6 +70,7 @@ PC_TOOLKIT_CLIENT_HINT = (
 ACTIVE_CACHE_SECONDS = 10 * 60
 STALE_CACHE_SECONDS = 30 * 24 * 60 * 60
 MAX_CACHE_ENTRIES = 10_000
+MAX_MEMORY_CACHE_ENTRIES = 512
 MAX_PARALLEL_LOOKUPS = 60
 MAX_LOOKUP_ATTEMPTS = 3
 PC_TOOLKIT_CONNECT_TIMEOUT_SECONDS = 300
@@ -1919,7 +1921,7 @@ class PCToolkitPuppeteerClient:
 
 
 class PCToolkitService:
-    """Optional enrichment service with a stale-while-revalidate file cache."""
+    """Optional enrichment service with a stale-while-revalidate cache."""
 
     def __init__(
         self,
@@ -1930,8 +1932,10 @@ class PCToolkitService:
         browser_headless: bool = False,
         verbose: bool = False,
         preferences: Callable[[], dict[str, Any]] | None = None,
+        state_store: AppDatabase | None = None,
     ) -> None:
         self.cache_path = cache_path
+        self.state_store = state_store
         self.simulate = simulate
         self.browser_profile = browser_profile
         self.browser_headless = browser_headless
@@ -1943,6 +1947,8 @@ class PCToolkitService:
         self._context_logged = False
         self.cache = self._load_cache()
         self.models = self._load_models()
+        self.cache_dirty: dict[str, dict[str, Any]] = {}
+        self.models_dirty: set[str] = set()
         self.cache_write_timer: threading.Timer | None = None
         self.inflight: set[str] = set()
         self.role = os.getenv("PC_TOOLKIT_ROLE", DEFAULT_PC_TOOLKIT_ROLE).strip()
@@ -2016,7 +2022,7 @@ class PCToolkitService:
             cache_file=self.cache_path.name,
             cache_exists=cache_exists,
             cache_bytes=cache_bytes,
-            cached_queries=len(self.cache),
+            cached_queries=self._cached_query_count(),
             known_models=len(self.models),
             python_version=sys.version.split()[0],
             platform=platform.platform(),
@@ -2063,6 +2069,10 @@ class PCToolkitService:
             )
 
     def _load_cache(self) -> dict[str, dict[str, Any]]:
+        if self.state_store is not None:
+            # SQLite is queried by key on demand; loading every potentially
+            # large lookup graph at process start would throw away that benefit.
+            return {}
         try:
             raw = json.loads(self.cache_path.read_text(encoding="utf-8"))
         except (OSError, ValueError, TypeError) as exc:
@@ -2083,11 +2093,52 @@ class PCToolkitService:
             if isinstance(value, dict)
         }
 
+    def _cached_query_count(self) -> int:
+        if self.state_store is not None:
+            return self.state_store.pc_toolkit_cache_count()
+        return len(self.cache)
+
+    def _cache_hot_entry_locked(self, key: str, value: dict[str, Any]) -> None:
+        self.cache.pop(key, None)
+        self.cache[key] = value
+        cache_limit = (
+            MAX_MEMORY_CACHE_ENTRIES
+            if self.state_store is not None
+            else MAX_CACHE_ENTRIES
+        )
+        while len(self.cache) > cache_limit:
+            self.cache.pop(next(iter(self.cache)))
+
+    def _cached_entries(self, keys: list[str]) -> dict[str, dict[str, Any]]:
+        unique = list(dict.fromkeys(keys))
+        with self.lock:
+            entries = {key: self.cache[key] for key in unique if key in self.cache}
+        missing = [key for key in unique if key not in entries]
+        if missing and self.state_store is not None:
+            loaded = self.state_store.load_pc_toolkit_cache_entries(missing)
+            with self.lock:
+                for key in missing:
+                    # Prefer any fresh in-memory result created while SQLite
+                    # was being read.
+                    value = self.cache.get(key) or loaded.get(key)
+                    if value is not None:
+                        entries[key] = value
+                        if key not in self.cache:
+                            self._cache_hot_entry_locked(key, value)
+        with self.lock:
+            return {key: dict(value) for key, value in entries.items()}
+
+    def _cached_entry(self, key: str) -> dict[str, Any] | None:
+        return self._cached_entries([key]).get(key)
+
     def _load_models(self) -> set[str]:
-        try:
-            raw = json.loads(self.cache_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, TypeError):
-            return set()
+        if self.state_store is not None:
+            return set(self.state_store.load_pc_toolkit_models())
+        else:
+            try:
+                raw = json.loads(self.cache_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError):
+                return set()
         if not isinstance(raw, dict):
             return set()
         candidates = list(raw.get("models", [])) if isinstance(raw.get("models"), list) else []
@@ -2115,21 +2166,34 @@ class PCToolkitService:
             key = normalise_key(model)
             if model and key not in existing:
                 self.models.add(model)
+                self.models_dirty.add(model)
                 existing.add(key)
 
     def _write_cache(self, *, reason: str = "update") -> None:
         started = time.monotonic()
         try:
-            self.cache_path.parent.mkdir(parents=True, exist_ok=True)
-            temporary = self.cache_path.with_suffix(".tmp")
-            payload = {
-                "version": 2,
-                "entries": self.cache,
-                "models": sorted(self.models, key=str.casefold),
-            }
-            encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
-            temporary.write_text(encoded, encoding="utf-8")
-            temporary.replace(self.cache_path)
+            if self.state_store is not None:
+                self.state_store.save_pc_toolkit_cache(
+                    {} if reason == "clear_cache" else self.cache_dirty,
+                    self.models_dirty,
+                    max_entries=MAX_CACHE_ENTRIES,
+                    reason=reason,
+                )
+                self.cache_dirty.clear()
+                self.models_dirty.clear()
+                cache_bytes = None
+            else:
+                payload = {
+                    "version": 2,
+                    "entries": self.cache,
+                    "models": sorted(self.models, key=str.casefold),
+                }
+                encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
+                self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+                temporary = self.cache_path.with_suffix(".tmp")
+                temporary.write_text(encoded, encoding="utf-8")
+                temporary.replace(self.cache_path)
+                cache_bytes = len(encoded.encode("utf-8"))
         except Exception as exc:
             run_reporting.pc_toolkit_event(
                 "cache_write_failed",
@@ -2146,8 +2210,8 @@ class PCToolkitService:
             cache_file=self.cache_path.name,
             reason=reason,
             duration_ms=round((time.monotonic() - started) * 1000),
-            cache_bytes=len(encoded.encode("utf-8")),
-            cached_queries=len(self.cache),
+            cache_bytes=cache_bytes,
+            cached_queries=self._cached_query_count(),
             known_models=len(self.models),
         )
 
@@ -2171,7 +2235,7 @@ class PCToolkitService:
                 "message": self.message,
                 "background_auth_stopped": self.background_auth_stopped,
                 "connected_at": self.connected_at,
-                "cached_queries": len(self.cache),
+                "cached_queries": self._cached_query_count(),
                 "models": sorted(self.models, key=str.casefold),
                 "last_error": self.last_error,
                 "transport": self.transport_mode(),
@@ -2210,6 +2274,7 @@ class PCToolkitService:
     def clear_cache(self) -> None:
         with self.lock:
             self.cache = {}
+            self.cache_dirty.clear()
             self._write_cache(reason="clear_cache")
         run_reporting.pc_toolkit_event(
             "cache_cleared", service_id=self.service_id, cache_kind="queries"
@@ -2218,6 +2283,7 @@ class PCToolkitService:
     def clear_models(self) -> None:
         with self.lock:
             self.models = set()
+            self.models_dirty.clear()
             self._write_cache(reason="clear_models")
         run_reporting.pc_toolkit_event(
             "cache_cleared", service_id=self.service_id, cache_kind="models"
@@ -2497,10 +2563,8 @@ class PCToolkitService:
         stored = {"fetched_at": time.time(), "result": result}
         with self.lock:
             self._remember_models_locked(result)
-            self.cache.pop(key, None)
-            self.cache[key] = stored
-            while len(self.cache) > MAX_CACHE_ENTRIES:
-                self.cache.pop(next(iter(self.cache)))
+            self._cache_hot_entry_locked(key, stored)
+            self.cache_dirty[key] = stored
             self._schedule_cache_write_locked()
             previous_state = self.state
             next_state = "simulation" if self.simulate else "connected"
@@ -2560,8 +2624,9 @@ class PCToolkitService:
             )
             with self.lock:
                 self.last_error = str(exc)
-                should_mark_error = not self.cache.get(key)
                 previous_state = self.state
+            should_mark_error = not self._cached_entry(key)
+            with self.lock:
                 if should_mark_error:
                     self.state = "error"
                     self.message = str(exc)
@@ -2625,8 +2690,9 @@ class PCToolkitService:
             )
             raise PCToolkitError("Enter at least two characters for PC Toolkit.")
         now = time.time()
-        with self.lock:
-            cached = deepcopy(self.cache.get(key))
+        cached = self._cached_entry(key)
+        if cached is not None:
+            cached = deepcopy(cached)
         if cached and not fresh:
             try:
                 age = max(0.0, now - float(cached.get("fetched_at", 0)))
@@ -2735,8 +2801,7 @@ class PCToolkitService:
         operation_id: str,
     ) -> tuple[dict[str, Any], dict[str, str]]:
         now = time.time()
-        with self.lock:
-            cached_entries = {key: deepcopy(self.cache.get(key)) for key in unique}
+        cached_entries = self._cached_entries(list(unique))
         results: dict[str, Any] = {}
         pending: dict[str, str] = {}
         for key, value in unique.items():
@@ -2816,10 +2881,9 @@ class PCToolkitService:
             with self.lock:
                 for key, result in fetched.items():
                     self._remember_models_locked(result)
-                    self.cache.pop(key, None)
-                    self.cache[key] = {"fetched_at": fetched_at, "result": result}
-                while len(self.cache) > MAX_CACHE_ENTRIES:
-                    self.cache.pop(next(iter(self.cache)))
+                    stored = {"fetched_at": fetched_at, "result": result}
+                    self._cache_hot_entry_locked(key, stored)
+                    self.cache_dirty[key] = stored
                 self._schedule_cache_write_locked()
                 self.state = "connected"
                 self.message = "PC Toolkit enrichment is ready."

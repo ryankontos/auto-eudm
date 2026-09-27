@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import signal
 import subprocess
@@ -22,7 +23,6 @@ ROOT = Path(__file__).resolve().parent
 SRC = ROOT / "src"
 VENV = Path(os.environ.get("EUDM_VENV_DIR", str(ROOT / ".venv"))).expanduser()
 REQUIREMENTS = ROOT / "requirements"
-SERVICE_LOG = ROOT / "results" / "auto-eudm-service.log"
 
 
 def service_control_module(port: int) -> tuple[Path, Callable[[Path | None], str]]:
@@ -38,6 +38,29 @@ def venv_python() -> Path:
 
 def say(message: str) -> None:
     print(f"Deployments  ·  {message}", flush=True)
+
+
+def requested_instance_id(arguments: list[str]) -> str:
+    value = os.environ.get("AUTO_EUDM_INSTANCE_ID", "default").strip() or "default"
+    for index, argument in enumerate(arguments):
+        if argument == "--instance-id" and index + 1 < len(arguments):
+            value = arguments[index + 1].strip()
+        elif argument.startswith("--instance-id="):
+            value = argument.split("=", 1)[1].strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,48}", value):
+        raise ValueError("--instance-id must contain 1–48 letters, numbers, hyphens, or underscores")
+    return value
+
+
+def instance_data_dir() -> Path:
+    sys.path.insert(0, str(SRC))
+    from auto_eudm.data_paths import DATA_DIR
+
+    return DATA_DIR
+
+
+def service_log_path() -> Path:
+    return instance_data_dir() / "logs" / "auto-eudm-service.log"
 
 
 def fail(message: str) -> int:
@@ -141,6 +164,15 @@ def request_json(url: str, *, method: str = "GET") -> dict[str, object] | None:
         return None
 
 
+def runtime_matches_instance(url: str, expected: str) -> bool:
+    runtime = request_json(f"{url.rstrip('/')}/api/runtime")
+    if runtime is None:
+        # Older Deployments versions predate instance identifiers and always
+        # used the default data store.
+        return expected == "default"
+    return str(runtime.get("instance_id", "default")) == expected
+
+
 def wait_for_web_server_stop(url: str) -> bool:
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
@@ -225,8 +257,15 @@ def open_existing_web_ui(arguments: list[str]) -> bool:
     url = f"http://{host}:{port}/"
     if not web_ui_is_running(url):
         return False
+    expected_instance = requested_instance_id(arguments)
     current = current_commit_id()
     runtime = request_json(f"{url.rstrip('/')}/api/runtime")
+    running_instance = str(runtime.get("instance_id", "default")) if runtime else "default"
+    if running_instance != expected_instance:
+        raise ValueError(
+            f"Port {port} is already used by Deployments instance '{running_instance}'. "
+            "Choose another port or use that instance ID."
+        )
     running = runtime.get("commit_id") if runtime else None
     open_ui = "--no-open" not in arguments
     if current is None:
@@ -291,15 +330,16 @@ def prepare_service_environment() -> tuple[Path, dict[str, str]]:
 
 
 def _service_log() -> TextIO:
-    SERVICE_LOG.parent.mkdir(parents=True, exist_ok=True)
-    if SERVICE_LOG.exists() and SERVICE_LOG.stat().st_size > 2_000_000:
-        previous = SERVICE_LOG.with_suffix(".log.1")
+    service_log = service_log_path()
+    service_log.parent.mkdir(parents=True, exist_ok=True)
+    if service_log.exists() and service_log.stat().st_size > 2_000_000:
+        previous = service_log.with_suffix(".log.1")
         try:
             previous.unlink(missing_ok=True)
-            SERVICE_LOG.replace(previous)
+            service_log.replace(previous)
         except OSError:
             pass
-    return SERVICE_LOG.open("a", encoding="utf-8")
+    return service_log.open("a", encoding="utf-8")
 
 
 def supervise_service(arguments: list[str]) -> int:
@@ -309,8 +349,10 @@ def supervise_service(arguments: list[str]) -> int:
     control_file.unlink(missing_ok=True)
     url = f"http://{host}:{port}/"
     if web_ui_is_running(url):
-        say("The local web workspace is already running.")
-        return 0
+        if runtime_matches_instance(url, requested_instance_id(arguments)):
+            say("The local web workspace is already running.")
+            return 0
+        return fail(f"Port {port} is occupied by another Deployments instance.")
 
     while True:
         python, env = prepare_service_environment()
@@ -354,8 +396,10 @@ def supervise_service(arguments: list[str]) -> int:
                 if return_code == 0:
                     return 0
                 if web_ui_is_running(url):
-                    say("Another Deployments service already owns this local port.")
-                    return 0
+                    if runtime_matches_instance(url, requested_instance_id(arguments)):
+                        say("Another Deployments service already owns this local port.")
+                        return 0
+                    return fail(f"Port {port} is occupied by another Deployments instance.")
                 say(f"The web process stopped with exit code {return_code}; restarting it…")
                 restart = True
                 break
@@ -400,17 +444,23 @@ def start_background_service(arguments: list[str], python: Path, env: dict[str, 
         return 0
     deadline = time.monotonic() + 40
     while time.monotonic() < deadline:
-        if web_ui_is_running(url):
+        if web_ui_is_running(url) and runtime_matches_instance(
+            url, requested_instance_id(arguments)
+        ):
             webbrowser.open(url)
             say("Deployments is running in the background.")
             return 0
         time.sleep(0.25)
-    return fail("The background web service did not become ready. Check results/auto-eudm-service.log.")
+    return fail(
+        "The background web service did not become ready. Check "
+        f"{service_log_path()}."
+    )
 
 
 def main() -> int:
     try:
         is_service, foreground, arguments = service_arguments(sys.argv[1:])
+        os.environ["AUTO_EUDM_INSTANCE_ID"] = requested_instance_id(arguments)
         copy_environment_file()
         if is_service:
             return supervise_service(arguments)

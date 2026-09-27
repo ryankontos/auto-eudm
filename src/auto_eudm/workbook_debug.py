@@ -49,7 +49,7 @@ class WorkbookLoadLog:
 
     @classmethod
     def create(cls, root: Path, attempt_id: str, filename: str) -> "WorkbookLoadLog":
-        directory = root / "results" / "alm-workbook-load-logs"
+        directory = root / "alm-workbook-load-logs"
         directory.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
         safe_id = "".join(character for character in str(attempt_id) if character.isalnum())[-48:]
