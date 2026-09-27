@@ -437,7 +437,7 @@ body.is-resizing-sidebar { cursor: col-resize; user-select: none; }
 }
 .settings-tool-button .tool-icon { color: var(--muted); }
 .import-icon { color: var(--blue); background: transparent; }
-.backlog-icon { color: var(--amber); background: transparent; }
+.backlog-icon { color: var(--blue); background: transparent; }
 .resume-icon { color: var(--amber); background: transparent; }
 .settings-icon { background: transparent; }
 .tool-icon .ui-icon,
