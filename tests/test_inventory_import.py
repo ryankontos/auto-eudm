@@ -168,6 +168,66 @@ class ImportActionTests(unittest.TestCase):
         self.assertTrue(all(action.deployment_date == self.selected_date for action in actions))
         self.assertFalse(ignored)
 
+    def test_return_serials_are_fallback_proof_of_attendance(self) -> None:
+        for field_name, serial in (
+            ("returned_device_serial", "RETURN123"),
+            ("pending_return_serial", "PENDING123"),
+        ):
+            with self.subTest(field=field_name):
+                row = replace(
+                    self.row,
+                    enabled=False,
+                    returned_device_serial=None,
+                    pending_return_serial=None,
+                )
+                row = replace(row, **{field_name: serial})
+
+                self.assertTrue(inventory.row_is_attending(row))
+                self.assertEqual(
+                    [item.deployment_serial for item in inventory.eligible_rows([row])],
+                    ["DEPLOY123"],
+                )
+                actions, ignored = inventory.build_actions(
+                    [row], self.selected_date, "deployments"
+                )
+                self.assertEqual([item.serial for item in actions], ["DEPLOY123"])
+                self.assertNotIn(
+                    "Attendance is unchecked and no return serial is present",
+                    ignored,
+                )
+
+    def test_blank_attendance_value_requires_return_serial_fallback(self) -> None:
+        self.assertFalse(inventory.enabled_column_allows(None))
+        self.assertFalse(inventory.enabled_column_allows("  "))
+        self.assertTrue(inventory.enabled_column_allows(True))
+
+    def test_unchecked_row_without_return_serials_is_not_attending(self) -> None:
+        row = replace(
+            self.row,
+            enabled=False,
+            returned_device_serial=None,
+            pending_return_serial=None,
+        )
+        actions, ignored = inventory.build_actions(
+            [row], self.selected_date, "deployments"
+        )
+        self.assertFalse(inventory.row_is_attending(row))
+        self.assertEqual(actions, [])
+        self.assertEqual(
+            ignored["Attendance is unchecked and no return serial is present"], 1
+        )
+
+    def test_return_serial_fallback_rows_receive_missing_return_warning(self) -> None:
+        row = replace(
+            self.row,
+            enabled=False,
+            returned_device_serial="RETURN123",
+            pending_return_serial=None,
+        )
+        self.assertEqual(
+            inventory.attended_rows_missing_return_serials([row]), [row]
+        )
+
     def test_status_hint_preselects_only_when_a_suffix_is_present(self) -> None:
         hinted = replace(self.row, deployment_status_hint=inventory.EXISTING_STOCK)
         actions, _ = inventory.build_actions(

@@ -510,6 +510,29 @@ class WorkbookUploadTests(unittest.TestCase):
         with self.assertRaisesRegex(eudm.EUDMError, "between 1 and 3650"):
             workbook.prepare_backlog("Sheet", 0, True, set(), today=date(2025, 2, 10))
 
+    def test_backlog_return_serial_counts_as_attendance_proof(self) -> None:
+        row = inventory.SheetRow(
+            row_number=2,
+            deployment_date=date(2025, 2, 9),
+            username="valid.user",
+            deployment_serial="SERIAL123",
+            returned_device_serial=None,
+            pending_return_serial="PENDING123",
+            marked_red=False,
+            enabled=False,
+            new_asset_status="In Inventory",
+        )
+        workbook = WorkbookImport("import-backlog", "tracking.xlsx", {"Sheet": [row]})
+
+        result = workbook.prepare_backlog(
+            "Sheet", 5, True, set(), today=date(2025, 2, 10)
+        )
+
+        self.assertEqual(len(result["candidates"]), 1)
+        self.assertTrue(result["candidates"][0]["attending"])
+        self.assertTrue(result["candidates"][0]["included"])
+        self.assertFalse(result["candidates"][0]["default_excluded"])
+
     def test_workbook_summary_counts_selected_date_and_valid_user_rows(self) -> None:
         selected = inventory.SheetRow(
             row_number=2,

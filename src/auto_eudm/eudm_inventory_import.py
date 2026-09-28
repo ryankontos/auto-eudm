@@ -464,12 +464,13 @@ def returned_device_status_from_font_color(
 
 
 def enabled_column_allows(value: Any) -> bool:
-    """Treat explicit non-attendance markers as excluded rows."""
+    """Treat blank or explicit non-attendance values as an unchecked row."""
     if value is False:
         return False
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return value != 0
-    return str(value).strip().casefold() not in {
+    return str(value if value is not None else "").strip().casefold() not in {
+        "",
         "false",
         "no",
         "n",
@@ -485,6 +486,15 @@ def enabled_column_allows(value: Any) -> bool:
 def looks_like_serial(value: str | None) -> bool:
     """Reject blanks and obvious sheet markers such as 1-5 without overfitting vendors."""
     return is_serial(value)
+
+
+def row_is_attending(row: SheetRow) -> bool:
+    """Use a checked attendance field or either return serial as attendance proof."""
+    return (
+        row.enabled
+        or looks_like_serial(row.returned_device_serial)
+        or looks_like_serial(row.pending_return_serial)
+    )
 
 
 def looks_like_username(value: str | None) -> bool:
@@ -782,7 +792,7 @@ def eligible_rows(
         for row in rows
         if (selected_date is None or row.deployment_date == selected_date)
         and (date_group is None or row.date_group == date_group)
-        and row.enabled
+        and row_is_attending(row)
         and looks_like_username(row.username)
     ]
 
@@ -810,7 +820,7 @@ def attended_rows_missing_return_serials(rows: Iterable[SheetRow]) -> list[Sheet
     return [
         row
         for row in rows
-        if row.enabled
+        if row_is_attending(row)
         and looks_like_username(row.username)
         and (
             (
@@ -852,8 +862,8 @@ def build_actions(
             continue
         if selected_group is not None and row.date_group != selected_group:
             continue
-        if not row.enabled:
-            ignored["TRUE/FALSE column is false"] += 1
+        if not row_is_attending(row):
+            ignored["Attendance is unchecked and no return serial is present"] += 1
             continue
         if not row.username:
             if any(looks_like_serial(value) for value in (row.deployment_serial, row.returned_device_serial, row.pending_return_serial)):

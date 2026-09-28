@@ -1427,7 +1427,7 @@ class WorkbookImport:
                     selected_rows
                 )
                 missing_username_deployment_count = sum(
-                    row.enabled
+                    inventory.row_is_attending(row)
                     and inventory.looks_like_serial(row.deployment_serial)
                     and not str(row.username or "").strip()
                     for row in selected_rows
@@ -1439,7 +1439,7 @@ class WorkbookImport:
                         group_rows
                     )
                     group_missing_username_deployments = sum(
-                        row.enabled
+                        inventory.row_is_attending(row)
                         and inventory.looks_like_serial(row.deployment_serial)
                         and not str(row.username or "").strip()
                         for row in group_rows
@@ -1558,7 +1558,7 @@ class WorkbookImport:
                 for row in selected_rows:
                     if selected_group_number is not None and row.date_group != selected_group_number:
                         continue
-                    if not row.enabled or str(row.username or "").strip():
+                    if not inventory.row_is_attending(row) or str(row.username or "").strip():
                         continue
                     if not inventory.looks_like_serial(row.deployment_serial):
                         continue
@@ -1785,9 +1785,9 @@ class WorkbookImport:
                 "current_status": current_status or "No status",
                 "device_allocation": row.device_allocation or "",
                 "new_joiner": row.new_joiner,
-                "attending": row.enabled,
-                "included": row.enabled,
-                "default_excluded": not row.enabled,
+                "attending": inventory.row_is_attending(row),
+                "included": inventory.row_is_attending(row),
+                "default_excluded": not inventory.row_is_attending(row),
                 "backlog_ignored": False,
                 "status": row.deployment_status_hint or "",
             })
