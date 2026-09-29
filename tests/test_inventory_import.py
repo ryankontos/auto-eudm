@@ -53,7 +53,7 @@ class ImportColumnTests(unittest.TestCase):
         with self.assertRaises(eudm.EUDMError) as raised:
             inventory.find_column_indexes(FakeSheet(), inventory.ImportColumns())
         message = str(raised.exception)
-        self.assertIn("'Username', 'SN', 'OLD Device SN', 'Date'", message)
+        self.assertIn("'Username', 'SN', 'legacy return columns or old serial + return checkbox', 'Date'", message)
         self.assertNotIn("Device(s) Allocation", message)
         self.assertNotIn("Returned Device SN", message)
 
@@ -217,16 +217,26 @@ class ImportActionTests(unittest.TestCase):
             ignored["Attendance is unchecked and no return serial is present"], 1
         )
 
-    def test_return_serial_fallback_rows_receive_missing_return_warning(self) -> None:
+    def test_return_serial_fallback_rows_do_not_receive_missing_return_warning(self) -> None:
         row = replace(
             self.row,
             enabled=False,
             returned_device_serial="RETURN123",
             pending_return_serial=None,
         )
-        self.assertEqual(
-            inventory.attended_rows_missing_return_serials([row]), [row]
-        )
+        self.assertEqual(inventory.attended_rows_missing_return_serials([row]), [])
+
+    def test_new_layout_checkbox_maps_old_serial_to_one_return_type(self) -> None:
+        self.assertEqual(inventory.mapped_return_serials("OLD123 PR", True),
+                         ("OLD123", None, "Pending Rebuild"))
+        self.assertEqual(inventory.mapped_return_serials("OLD456", "FALSE"),
+                         (None, "OLD456", None))
+        self.assertEqual(inventory.mapped_return_serials("", True),
+                         (None, None, None))
+        self.assertFalse(inventory.return_checkbox_checked("maybe"))
+        missing = replace(self.row, returned_device_serial=None, pending_return_serial=None)
+        self.assertEqual(inventory.attended_rows_missing_return_serials([missing]), [missing])
+        self.assertEqual(inventory.attended_rows_missing_return_serials([replace(missing, new_joiner=True)]), [])
 
     def test_status_hint_preselects_only_when_a_suffix_is_present(self) -> None:
         hinted = replace(self.row, deployment_status_hint=inventory.EXISTING_STOCK)

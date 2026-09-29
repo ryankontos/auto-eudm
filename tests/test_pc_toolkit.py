@@ -138,6 +138,8 @@ class PCToolkitCacheTests(unittest.TestCase):
             transport.heartbeat.return_value = True
             self.assertEqual(service.check_connection()["state"], "connected")
             transport.heartbeat.return_value = False
+            self.assertEqual(service.check_connection()["state"], "connected")
+            self.assertEqual(service.check_connection()["state"], "connected")
             self.assertEqual(service.check_connection()["state"], "error")
             transport.heartbeat.assert_called_with(service.role)
 
@@ -284,6 +286,24 @@ class PCToolkitCacheTests(unittest.TestCase):
             with mock.patch.object(service, "_discover_role", return_value="maxrole:personal") as discover:
                 service._connect("pc-visible-retry")
         discover.assert_called_once_with("pc-visible-retry", headless=False)
+
+    def test_pc_health_retries_transient_heartbeat_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            service = PCToolkitService(
+                Path(folder) / "cache.json",
+                preferences=lambda: {"pc_toolkit_enabled": True, "pc_toolkit_transport": "browser"},
+            )
+            service.state = "connected"
+            transport = mock.Mock()
+            transport.heartbeat.side_effect = [False, False, True, False, False, False]
+            service._browser_transport = transport
+            self.assertEqual(service.check_connection()["state"], "connected")
+            self.assertEqual(service.check_connection()["state"], "connected")
+            self.assertEqual(service.check_connection()["state"], "connected")
+            self.assertEqual(service.health_failures, 0)
+            service.check_connection()
+            service.check_connection()
+            self.assertEqual(service.check_connection()["state"], "error")
 
     def test_real_device_api_auth_error_marks_service_unavailable(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

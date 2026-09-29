@@ -1964,6 +1964,7 @@ class PCToolkitService:
         self.last_error = ""
         self.connected_at: str | None = None
         self.background_auth_stopped = False
+        self.health_failures = 0
 
     def enabled(self) -> bool:
         return bool(self.preferences().get("pc_toolkit_enabled", False))
@@ -2055,6 +2056,8 @@ class PCToolkitService:
             self.state = state
             self.message = message
             self.last_error = error
+            if state == "connected":
+                self.health_failures = 0
             if state != "connecting" and self._connect_cancel is not None:
                 self._connect_cancel.set()
         if previous != state or previous_error != error:
@@ -2267,8 +2270,14 @@ class PCToolkitService:
                 return self.status()  # Busy lookups deferred the heartbeat.
             if not healthy:
                 raise PCToolkitError("PC Toolkit's saved session is no longer authenticated.")
+            with self.lock:
+                self.health_failures = 0
         except Exception as exc:
-            self._set_state("error", str(exc), error=str(exc))
+            with self.lock:
+                self.health_failures += 1
+                failures = self.health_failures
+            if failures >= 3:
+                self._set_state("error", str(exc), error=str(exc))
         return self.status()
 
     def clear_cache(self) -> None:
@@ -3774,8 +3783,9 @@ class PCToolkitService:
                     exception=run_reporting.exception_details(exc),
                 )
             role_probe_started = time.monotonic()
-            role_probe_timeout = 20 if use_headless else 120
+            role_probe_timeout = 60 if use_headless else 120
             deadline = role_probe_started + role_probe_timeout
+            role_seen_without_token = False
             role_request_headers = {
                 "Accept": "application/json, text/plain, */*",
                 "Origin": DEFAULT_PORTAL_ORIGIN,
@@ -3897,9 +3907,16 @@ class PCToolkitService:
                             # role/session into a device request.
                             self.access_token = ""
                         if not self.access_token:
-                            raise PCToolkitError(
-                                "PC Toolkit sign-in completed, but its device API token was not provided."
+                            role_seen_without_token = True
+                            run_reporting.pc_toolkit_event(
+                                "role_token_retry_scheduled",
+                                service_id=self.service_id,
+                                operation_id=operation_id,
+                                request_id=request_id,
+                                role=role,
                             )
+                            time.sleep(1.5)
+                            continue
                         run_reporting.pc_toolkit_event(
                             "role_discovered",
                             service_id=self.service_id,
@@ -3973,6 +3990,8 @@ class PCToolkitService:
                 timeout_seconds=role_probe_timeout,
             )
             raise PCToolkitError(
+                "PC Toolkit signed in, but its device API token did not become available. Retry or use visible Chrome sign-in."
+                if role_seen_without_token else
                 "PC Toolkit sign-in did not complete. Open it in Chrome and try again."
             )
         except PCToolkitError:

@@ -669,6 +669,33 @@ class WorkbookUploadTests(unittest.TestCase):
         self.assertEqual({row.date_group for row in rows}, {1})
         self.assertFalse(rows[1].enabled)
 
+    def test_new_layout_csv_uses_mapped_old_serial_and_return_checkbox(self) -> None:
+        payload = (
+            "Date,Username,SN,Device going back,Back on desk,Attend,Notes\r\n"
+            "03/02/2025,one.user,NEW123,OLD123,TRUE,TRUE,\r\n"
+            "03/02/2025,two.user,NEW456,OLD456,FALSE,TRUE,\r\n"
+            "03/02/2025,three.user,NEW789,,FALSE,TRUE,new joiner\r\n"
+            "03/02/2025,four.user,NEW999,,FALSE,TRUE,\r\n"
+        ).encode("utf-8")
+        columns = inventory.columns_from_mapping({
+            "username": "Username", "deployment_serial": "SN",
+            "pending_return": "", "returned_device": "",
+            "old_device_serial": "Device going back",
+            "return_checkbox": "Back on desk",
+        })
+        workbook = WorkbookImport.from_payload("new-layout.csv", payload, columns=columns)
+        rows = workbook.sheets["Inventory"]
+        self.assertEqual([(row.returned_device_serial, row.pending_return_serial) for row in rows],
+                         [("OLD123", None), (None, "OLD456"), (None, None), (None, None)])
+        self.assertEqual(inventory.eligible_counts(rows), (4, 1, 1))
+        self.assertEqual([row.username for row in inventory.attended_rows_missing_return_serials(rows)],
+                         ["four.user"])
+        prepared = workbook.prepare("Inventory", "2025-02-03", "all",
+                                    web_models.Location("Sydney, AU", "Building", "1", "Store"))
+        self.assertEqual(prepared["counts"]["returned_devices"], 1)
+        self.assertEqual(prepared["counts"]["pending_returns"], 1)
+        self.assertEqual(prepared["counts"]["deployments"], 4)
+
     def test_excel_csv_legacy_encoding_is_supported(self) -> None:
         payload = (
             "Date,Username,SN,OLD Device SN,First Name,Last Name\r\n"
@@ -798,6 +825,39 @@ class WorkbookUploadTests(unittest.TestCase):
                 [(item["serials"][0], item["status"]) for item in prepared["requests"]],
                 [("RETURN123", "Pending Rebuild"), ("RETURN456", "Pending Decom")],
             )
+
+    def test_new_layout_workbook_maps_moved_columns_with_both_readers(self) -> None:
+        from openpyxl import Workbook as OpenPyXLWorkbook
+        from openpyxl.styles import Font
+
+        source = OpenPyXLWorkbook()
+        sheet = source.active
+        sheet.title = "New layout"
+        sheet.append(["Notes", "Device going back", "Date", "SN", "Back on desk", "Username", "Attend"])
+        sheet.append(["", "OLD123", date(2025, 2, 3), "NEW123", True, "one.user", True])
+        sheet.append(["", "OLD456", date(2025, 2, 3), "NEW456", False, "two.user", True])
+        sheet["B2"].font = Font(color="FF00B050")
+        buffer = BytesIO()
+        source.save(buffer)
+        columns = inventory.columns_from_mapping({
+            "username": "Username", "deployment_serial": "SN",
+            "returned_device": "", "pending_return": "",
+            "old_device_serial": "Device going back", "return_checkbox": "Back on desk",
+        })
+        for reader in (WorkbookImport._from_fast_payload, WorkbookImport._from_openpyxl_payload):
+            workbook = reader("new-layout.xlsx", buffer.getvalue(), columns=columns)
+            rows = workbook.sheets["New layout"]
+            self.assertEqual(
+                [(row.returned_device_serial, row.pending_return_serial) for row in rows],
+                [("OLD123", None), (None, "OLD456")],
+            )
+            self.assertEqual(rows[0].returned_device_status_hint, "Pending Rebuild")
+            prepared = workbook.prepare(
+                "New layout", "2025-02-03", "all",
+                web_models.Location("Sydney, AU", "Building", "1", "Store"),
+            )
+            self.assertEqual(prepared["counts"]["returned_devices"], 1)
+            self.assertEqual(prepared["counts"]["pending_returns"], 1)
 
 
 if __name__ == "__main__":

@@ -127,6 +127,8 @@ class ImportColumns:
     deployment_serial: str = "SN"
     returned_device: str = "Returned Device SN"
     pending_return: str = "OLD Device SN"
+    old_device_serial: str = ""
+    return_checkbox: str = ""
     enabled: str = ""
     device_allocation: str = "Device(s) Allocation"
     new_asset_status: str = "New Asset Status"
@@ -207,7 +209,9 @@ def columns_from_mapping(raw: dict[str, Any] | None = None) -> ImportColumns:
         username=clean_text(raw.get("username")) or "Username",
         deployment_serial=clean_text(raw.get("deployment_serial")) or "SN",
         returned_device=clean_text(raw.get("returned_device")) or "",
-        pending_return=clean_text(raw.get("pending_return")) or "OLD Device SN",
+        pending_return=(clean_text(raw.get("pending_return")) if "pending_return" in raw else "OLD Device SN") or "",
+        old_device_serial=clean_text(raw.get("old_device_serial")) or "",
+        return_checkbox=clean_text(raw.get("return_checkbox")) or "",
         enabled=clean_text(raw.get("enabled")) or "",
         device_allocation=(
             clean_text(raw.get("device_allocation"))
@@ -239,6 +243,8 @@ def find_column_indexes(sheet: Any, columns: ImportColumns) -> tuple[int, dict[s
         "deployment_serial": columns.deployment_serial,
         "returned_device": columns.returned_device,
         "pending_return": columns.pending_return,
+        "old_device_serial": columns.old_device_serial,
+        "return_checkbox": columns.return_checkbox,
         "enabled": columns.enabled,
         "device_allocation": columns.device_allocation,
         "new_asset_status": columns.new_asset_status,
@@ -251,7 +257,10 @@ def find_column_indexes(sheet: Any, columns: ImportColumns) -> tuple[int, dict[s
     for row in sheet.iter_rows(min_row=1, max_row=min(25, int(sheet.max_row or 25)), max_col=max_column):
         found = {normalized_header(cell.value): cell.column for cell in row if normalized_header(cell.value)}
         indexes = {key: found.get(title) for key, title in targets.items()}
-        if not indexes["username"] or not indexes["deployment_serial"] or not indexes["pending_return"]:
+        if not indexes["username"] or not indexes["deployment_serial"] or not (
+            indexes["pending_return"] or indexes["returned_device"]
+            or (indexes["old_device_serial"] and indexes["return_checkbox"])
+        ):
             continue
         if not indexes["enabled"] and not columns.enabled:
             # The live ALM sheet normally calls this column "Attend". Use it
@@ -276,7 +285,7 @@ def find_column_indexes(sheet: Any, columns: ImportColumns) -> tuple[int, dict[s
     required = (
         columns.username,
         columns.deployment_serial,
-        columns.pending_return,
+        "legacy return columns or old serial + return checkbox",
         "Date",
     )
     missing = ", ".join(f"{name!r}" for name in required)
@@ -483,6 +492,27 @@ def enabled_column_allows(value: Any) -> bool:
     }
 
 
+def return_checkbox_checked(value: Any) -> bool:
+    """Only affirmative checkbox values turn an old serial into a return."""
+    if value is True:
+        return True
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value == 1
+    return str(value if value is not None else "").strip().casefold() in {
+        "true", "yes", "y", "1", "checked", "x", "✓", "✔",
+    }
+
+
+def mapped_return_serials(
+    old_serial: Any, checkbox: Any,
+) -> tuple[str | None, str | None, str | None]:
+    """Convert the new sheet's one old-serial column to the shared model."""
+    serial, status_hint = serial_and_status_hint(old_serial, returned_device=True)
+    if return_checkbox_checked(checkbox):
+        return serial, None, status_hint
+    return None, serial, None
+
+
 def looks_like_serial(value: str | None) -> bool:
     """Reject blanks and obvious sheet markers such as 1-5 without overfitting vendors."""
     return is_serial(value)
@@ -676,6 +706,18 @@ def load_sheet(path: Path, columns: ImportColumns | None = None) -> tuple[str, l
                 else None,
                 returned_device=True,
             )
+            if indexes["old_device_serial"] and indexes["return_checkbox"]:
+                returned_device_serial, pending_return_serial, returned_device_status_hint = mapped_return_serials(
+                    values[indexes["old_device_serial"] - 1].value,
+                    values[indexes["return_checkbox"] - 1].value,
+                )
+                if returned_device_serial and not returned_device_status_hint:
+                    returned_device_status_hint = returned_device_status_from_font_color(
+                        getattr(getattr(values[indexes["old_device_serial"] - 1], "font", None), "color", None),
+                        theme_colors=theme_colors,
+                    )
+            else:
+                pending_return_serial = clean_text(values[indexes["pending_return"] - 1].value) if indexes["pending_return"] else None
             if indexes["returned_device"]:
                 returned_device_status_hint = (
                     returned_device_status_hint
@@ -699,13 +741,13 @@ def load_sheet(path: Path, columns: ImportColumns | None = None) -> tuple[str, l
                     username=username_for(values, indexes["username"]),
                     deployment_serial=deployment_serial,
                     returned_device_serial=returned_device_serial,
-                    pending_return_serial=clean_text(values[indexes["pending_return"] - 1].value) if indexes["pending_return"] else None,
+                    pending_return_serial=pending_return_serial,
                     marked_red=any(cell_is_red(cell) for cell in values),
                     enabled=enabled_column_allows(
                         values[indexes["enabled"] - 1].value
                     ) if indexes["enabled"] else True,
                     date_group=date_group,
-                    returned_device_column_present=bool(indexes["returned_device"]),
+                    returned_device_column_present=bool(indexes["returned_device"] or indexes["old_device_serial"]),
                     device_allocation=clean_text(values[indexes["device_allocation"] - 1].value) if indexes["device_allocation"] else None,
                     new_asset_status=clean_text(values[indexes["new_asset_status"] - 1].value) if indexes["new_asset_status"] else None,
                     new_joiner=row_contains_new_joiner(values),
@@ -816,19 +858,15 @@ def eligible_counts(
 
 
 def attended_rows_missing_return_serials(rows: Iterable[SheetRow]) -> list[SheetRow]:
-    """Find TRUE/FALSE-enabled rows missing either return serial."""
+    """Warn only when an attending, non-new-joiner has no old serial."""
     return [
         row
         for row in rows
         if row_is_attending(row)
         and looks_like_username(row.username)
-        and (
-            (
-                row.returned_device_column_present
-                and not looks_like_serial(row.returned_device_serial)
-            )
-            or not looks_like_serial(row.pending_return_serial)
-        )
+        and not row.new_joiner
+        and not looks_like_serial(row.returned_device_serial)
+        and not looks_like_serial(row.pending_return_serial)
     ]
 
 

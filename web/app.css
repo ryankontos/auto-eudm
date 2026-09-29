@@ -1624,6 +1624,7 @@ input:hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var
 .column-map label em { color: var(--blue); }
 .column-map select { width: 100%; margin-top: 6px; font-size: 14px; }
 .column-map-sheet { grid-column: 1 / -1; }
+.column-map-note { grid-column: 1 / -1; margin: 2px 0; color: var(--muted); font-size: 13px; }
 .alm-returned-serials {
   display: grid;
   gap: 8px;
@@ -1822,6 +1823,9 @@ input:hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var
 .import-preview-row small { color: var(--muted); font-size: 12px; }
 .import-preview-row .import-field-title { margin-bottom: 4px; color: var(--subtle); font-size: 11px; font-weight: 750; letter-spacing: .055em; text-transform: uppercase; }
 .import-preview-row .import-device-allocation { margin-top: 3px; color: var(--muted); font-weight: 500; }
+.import-return-controls { display: grid; grid-template-columns: minmax(0, 1fr); gap: 5px; min-width: 0; }
+.import-return-controls input { width: 100%; min-width: 0; height: var(--control-height-compact); min-height: var(--control-height-compact); font-size: 13px; }
+.import-preview-row .import-return-controls select { min-height: var(--control-height-compact); height: var(--control-height-compact); }
 .import-preview-row .import-person-name { font-size: 15px; font-weight: 700; }
 .import-preview-row .import-person-username { margin-top: 1px; color: var(--muted); font-size: 13px; font-weight: 500; }
 .import-returning-person { margin-top: 9px; padding-top: 8px; border-top: 1px solid var(--line); }

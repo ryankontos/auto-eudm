@@ -722,6 +722,8 @@ class WorkbookImport:
             "deployment_serial": columns.deployment_serial,
             "returned_device": columns.returned_device,
             "pending_return": columns.pending_return,
+            "old_device_serial": columns.old_device_serial,
+            "return_checkbox": columns.return_checkbox,
             "enabled": columns.enabled,
             "device_allocation": columns.device_allocation,
             "new_asset_status": columns.new_asset_status,
@@ -742,7 +744,10 @@ class WorkbookImport:
                 if title:
                     found[title] = column
             indexes = {key: found.get(title) for key, title in targets.items()}
-            if not indexes["username"] or not indexes["deployment_serial"] or not indexes["pending_return"]:
+            if not indexes["username"] or not indexes["deployment_serial"] or not (
+                indexes["pending_return"] or indexes["returned_device"]
+                or (indexes["old_device_serial"] and indexes["return_checkbox"])
+            ):
                 continue
             if not indexes["enabled"] and not columns.enabled:
                 for title in (
@@ -768,7 +773,7 @@ class WorkbookImport:
         required = (
             columns.username,
             columns.deployment_serial,
-            columns.pending_return,
+            "legacy return columns or old serial + return checkbox",
             "Date",
         )
         missing = ", ".join(f"{name!r}" for name in required)
@@ -965,6 +970,8 @@ class WorkbookImport:
             "deployment_serial": selected_columns.deployment_serial,
             "returned_device": selected_columns.returned_device,
             "pending_return": selected_columns.pending_return,
+            "old_device_serial": selected_columns.old_device_serial,
+            "return_checkbox": selected_columns.return_checkbox,
             "enabled": selected_columns.enabled,
             "device_allocation": selected_columns.device_allocation,
             "new_asset_status": selected_columns.new_asset_status,
@@ -1003,7 +1010,12 @@ class WorkbookImport:
                 if (
                     candidate_indexes["username"] is None
                     or candidate_indexes["deployment_serial"] is None
-                    or candidate_indexes["pending_return"] is None
+                    or not (
+                        candidate_indexes["pending_return"] is not None
+                        or candidate_indexes["returned_device"] is not None
+                        or (candidate_indexes["old_device_serial"] is not None
+                            and candidate_indexes["return_checkbox"] is not None)
+                    )
                 ):
                     continue
                 if candidate_indexes["enabled"] is None and not selected_columns.enabled:
@@ -1045,6 +1057,13 @@ class WorkbookImport:
                 value_at(values, indexes.get("returned_device")),
                 returned_device=True,
             )
+            if indexes.get("old_device_serial") is not None and indexes.get("return_checkbox") is not None:
+                returned_device_serial, pending_return_serial, returned_device_status_hint = inventory.mapped_return_serials(
+                    value_at(values, indexes["old_device_serial"]),
+                    value_at(values, indexes["return_checkbox"]),
+                )
+            else:
+                pending_return_serial = value_at(values, indexes.get("pending_return"))
             rows.append(
                 inventory.SheetRow(
                     row_number=record_number,
@@ -1052,7 +1071,7 @@ class WorkbookImport:
                     username=value_at(values, indexes.get("username")),
                     deployment_serial=deployment_serial,
                     returned_device_serial=returned_device_serial,
-                    pending_return_serial=value_at(values, indexes.get("pending_return")),
+                    pending_return_serial=pending_return_serial,
                     marked_red=False,
                     enabled=inventory.enabled_column_allows(
                         value_at(values, indexes.get("enabled"))
@@ -1060,7 +1079,7 @@ class WorkbookImport:
                     # CSV contains values only. Every date has one logical
                     # section and no colour-derived status hints.
                     date_group=1,
-                    returned_device_column_present=indexes.get("returned_device") is not None,
+                    returned_device_column_present=(indexes.get("returned_device") is not None or indexes.get("old_device_serial") is not None),
                     device_allocation=value_at(values, indexes.get("device_allocation")),
                     new_asset_status=value_at(values, indexes.get("new_asset_status")),
                     new_joiner=inventory.row_contains_new_joiner(values),
@@ -1174,6 +1193,22 @@ class WorkbookImport:
                         else None,
                         returned_device=True,
                     )
+                    if indexes["old_device_serial"] and indexes["return_checkbox"]:
+                        returned_device_serial, pending_return_serial, returned_device_status_hint = inventory.mapped_return_serials(
+                            cls._fast_cell_value(row, indexes["old_device_serial"]),
+                            cls._fast_cell_value(row, indexes["return_checkbox"]),
+                        )
+                        if returned_device_serial and not returned_device_status_hint:
+                            returned_device_status_hint = inventory.returned_device_status_from_font_color(
+                                workbook.font_color_key(
+                                    row.cells.get(indexes["old_device_serial"], (None, 0))[1]
+                                ),
+                                theme_colors=workbook.theme_colors,
+                            )
+                    else:
+                        pending_return_serial = inventory.clean_text(
+                            cls._fast_cell_value(row, indexes["pending_return"])
+                        ) if indexes["pending_return"] else None
                     if indexes["returned_device"]:
                         returned_device_status_hint = (
                             returned_device_status_hint
@@ -1193,9 +1228,7 @@ class WorkbookImport:
                             ),
                             deployment_serial=deployment_serial,
                             returned_device_serial=returned_device_serial,
-                            pending_return_serial=inventory.clean_text(
-                                cls._fast_cell_value(row, indexes["pending_return"])
-                            ) if indexes["pending_return"] else None,
+                            pending_return_serial=pending_return_serial,
                             # Font colour is not an eligibility marker. Eligibility
                             # is controlled by the configured TRUE/FALSE column;
                             # the returned-device colour is only a status hint.
@@ -1205,7 +1238,7 @@ class WorkbookImport:
                             ) if indexes["enabled"] else True,
                             date_group=date_group,
                             returned_device_column_present=bool(
-                                indexes["returned_device"]
+                                indexes["returned_device"] or indexes["old_device_serial"]
                             ),
                             device_allocation=inventory.clean_text(
                                 cls._fast_cell_value(row, indexes["device_allocation"])
@@ -1347,6 +1380,18 @@ class WorkbookImport:
                         else None,
                         returned_device=True,
                     )
+                    if indexes["old_device_serial"] and indexes["return_checkbox"]:
+                        returned_device_serial, pending_return_serial, returned_device_status_hint = inventory.mapped_return_serials(
+                            values[indexes["old_device_serial"] - 1].value,
+                            values[indexes["return_checkbox"] - 1].value,
+                        )
+                        if returned_device_serial and not returned_device_status_hint:
+                            returned_device_status_hint = inventory.returned_device_status_from_font_color(
+                                getattr(getattr(values[indexes["old_device_serial"] - 1], "font", None), "color", None),
+                                theme_colors=theme_colors,
+                            )
+                    else:
+                        pending_return_serial = inventory.clean_text(values[indexes["pending_return"] - 1].value) if indexes["pending_return"] else None
                     if indexes["returned_device"]:
                         returned_device_status_hint = (
                             returned_device_status_hint
@@ -1370,7 +1415,7 @@ class WorkbookImport:
                             username=inventory.username_for(values, indexes["username"]),
                             deployment_serial=deployment_serial,
                             returned_device_serial=returned_device_serial,
-                            pending_return_serial=inventory.clean_text(values[indexes["pending_return"] - 1].value) if indexes["pending_return"] else None,
+                            pending_return_serial=pending_return_serial,
                             # Font colour is not an eligibility marker. Eligibility
                             # is controlled by the configured TRUE/FALSE column;
                             # the returned-device colour is only a status hint.
@@ -1379,7 +1424,7 @@ class WorkbookImport:
                                 values[indexes["enabled"] - 1].value
                             ) if indexes["enabled"] else True,
                             date_group=date_group,
-                            returned_device_column_present=bool(indexes["returned_device"]),
+                            returned_device_column_present=bool(indexes["returned_device"] or indexes["old_device_serial"]),
                             device_allocation=inventory.clean_text(values[indexes["device_allocation"] - 1].value) if indexes["device_allocation"] else None,
                             new_asset_status=inventory.clean_text(values[indexes["new_asset_status"] - 1].value) if indexes["new_asset_status"] else None,
                             new_joiner=inventory.row_contains_new_joiner(values),

@@ -50,6 +50,8 @@ _IMPORT_COLUMN_NAMES = (
     "deployment_serial",
     "returned_device",
     "pending_return",
+    "old_device_serial",
+    "return_checkbox",
     "enabled",
     "device_allocation",
     "new_asset_status",
@@ -2936,7 +2938,7 @@ class AppDatabase:
             concurrency = 10
         import_defaults = {
             "username": "Username", "deployment_serial": "SN", "returned_device": "",
-            "pending_return": "OLD Device SN", "enabled": "",
+            "pending_return": "OLD Device SN", "old_device_serial": "", "return_checkbox": "", "enabled": "",
             "device_allocation": "Device(s) Allocation", "new_asset_status": "New Asset Status",
             "first_name": "First Name", "last_name": "Last Name",
         }

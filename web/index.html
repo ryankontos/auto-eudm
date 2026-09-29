@@ -450,8 +450,11 @@
                 </label>
                 <label>Username <em>Required</em><select id="importMapUsername"></select></label>
                 <label>Deployment serial <em>Required</em><select id="importMapDeployment"></select></label>
-                <label>Returned-device serial <small>Optional</small><select id="importMapReturned"></select></label>
-                <label>Pending-return serial <em>Required</em><select id="importMapPending"></select></label>
+                <p class="column-map-note">Choose either separate return columns, or an old-device serial and its return checkbox.</p>
+                <label>Returned-device serial <small>Original layout</small><select id="importMapReturned"></select></label>
+                <label>Pending-return serial <small>Original layout</small><select id="importMapPending"></select></label>
+                <label>Old-device serial <small>New layout</small><select id="importMapOldDevice"></select></label>
+                <label>Return checkbox <small>New layout</small><select id="importMapReturnCheckbox"></select></label>
                 <label>TRUE/FALSE <small>Optional</small><select id="importMapEnabled"></select></label>
                 <label>Device allocation <small>Optional</small><select id="importMapDeviceAllocation"></select></label>
                 <label>New asset status <small>Optional for normal imports</small><select id="importMapNewAssetStatus"></select></label>
@@ -640,6 +643,8 @@
           <label>Deployment serial column<input id="spreadsheetDeploymentColumnInput" type="text" placeholder="SN"></label>
           <label>Returned device column<input id="spreadsheetReturnedColumnInput" type="text" placeholder="Optional"></label>
           <label>Pending return column<input id="spreadsheetPendingColumnInput" type="text" placeholder="OLD Device SN"></label>
+          <label>Old-device serial column (new layout)<input id="spreadsheetOldDeviceColumnInput" type="text" placeholder="Choose any heading"></label>
+          <label>Return checkbox column (new layout)<input id="spreadsheetReturnCheckboxColumnInput" type="text" placeholder="Choose any heading"></label>
           <label>TRUE/FALSE column<input id="spreadsheetEnabledColumnInput" type="text" placeholder="Optional"></label>
           <label>Device allocation column<input id="spreadsheetDeviceAllocationColumnInput" type="text" placeholder="Device(s) Allocation"></label>
           <label>New asset status column<input id="spreadsheetNewAssetStatusColumnInput" type="text" placeholder="New Asset Status"></label>

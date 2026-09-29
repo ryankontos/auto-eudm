@@ -955,6 +955,35 @@ class SubmissionHistoryTests(unittest.TestCase):
 
 
 class BackgroundAuthenticationTests(unittest.TestCase):
+    def test_helix_health_tolerates_two_transient_failures_then_fails_closed(self) -> None:
+        manager = ClientManager(SimpleNamespace(
+            simulate=False, request_for=None, browser_headless=False,
+        ))
+        client = mock.Mock()
+        client.request.side_effect = [
+            eudm.EUDMError("Temporary network error"),
+            eudm.EUDMError("Temporary network error"),
+            eudm.EUDMError("Temporary network error"),
+        ]
+        manager.client = client
+        manager.state = "connected"
+        self.assertEqual(manager.check_connection()["state"], "connected")
+        self.assertEqual(manager.check_connection()["state"], "connected")
+        self.assertEqual(manager.check_connection()["state"], "error")
+        self.assertIsNone(manager.client)
+
+    def test_helix_health_success_clears_transient_failure_count(self) -> None:
+        manager = ClientManager(SimpleNamespace(
+            simulate=False, request_for=None, browser_headless=False,
+        ))
+        client = mock.Mock()
+        client.request.side_effect = [eudm.EUDMError("Temporary network error"), {}]
+        manager.client = client
+        manager.state = "connected"
+        manager.check_connection()
+        manager.check_connection()
+        self.assertEqual(manager.health_failures, 0)
+
     def test_visible_helix_retry_overrides_headless_default(self) -> None:
         manager = ClientManager(SimpleNamespace(
             simulate=False, request_for=None, browser_headless=True,

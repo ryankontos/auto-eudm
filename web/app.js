@@ -4280,7 +4280,9 @@ function openSettings({ tab = "", model = "" } = {}) {
   $("#spreadsheetUsernameColumnInput").value = columns.username || "Username";
   $("#spreadsheetDeploymentColumnInput").value = columns.deployment_serial || "SN";
   $("#spreadsheetReturnedColumnInput").value = columns.returned_device || "";
-  $("#spreadsheetPendingColumnInput").value = columns.pending_return || "OLD Device SN";
+  $("#spreadsheetPendingColumnInput").value = columns.pending_return ?? "OLD Device SN";
+  $("#spreadsheetOldDeviceColumnInput").value = columns.old_device_serial || "";
+  $("#spreadsheetReturnCheckboxColumnInput").value = columns.return_checkbox || "";
   $("#spreadsheetEnabledColumnInput").value = columns.enabled || "";
   $("#spreadsheetDeviceAllocationColumnInput").value = columns.device_allocation || "Device(s) Allocation";
   $("#spreadsheetNewAssetStatusColumnInput").value = columns.new_asset_status || "New Asset Status";
@@ -5309,17 +5311,22 @@ async function waitForWorkbookImport(jobId, token) {
   return null;
 }
 
+function importReturnMappingValid(columns) {
+  return Boolean(columns.pending_return || columns.returned_device
+    || (columns.old_device_serial && columns.return_checkbox));
+}
+
 function workbookMappingMatches(workbook, saved) {
-  if (!saved?.username || !saved?.deployment_serial || !saved?.pending_return) return false;
+  if (!saved?.username || !saved?.deployment_serial || !importReturnMappingValid(saved)) return false;
   const sheet = workbook.sheets.find((item) => item.name === workbook.default_sheet);
   const headings = new Set(
     (sheet?.headings || []).map((heading) => String(heading).trim().toLowerCase()),
   );
-  return [
-    saved.username,
-    saved.deployment_serial,
-    saved.pending_return,
-  ].filter(Boolean).every((heading) => headings.has(String(heading).trim().toLowerCase()));
+  const present = (heading) => headings.has(String(heading).trim().toLowerCase());
+  const newLayout = saved.old_device_serial && saved.return_checkbox
+    && present(saved.old_device_serial) && present(saved.return_checkbox);
+  const originalLayout = [saved.returned_device, saved.pending_return].filter(Boolean).some(present);
+  return present(saved.username) && present(saved.deployment_serial) && Boolean(newLayout || originalLayout);
 }
 
 function openImportColumnMapping() {
@@ -5396,6 +5403,8 @@ function renderImportColumnMap() {
   select($("#importMapDeployment"), saved.deployment_serial || "SN");
   select($("#importMapReturned"), saved.returned_device || "Returned Device SN");
   select($("#importMapPending"), saved.pending_return || "OLD Device SN");
+  select($("#importMapOldDevice"), saved.old_device_serial || "");
+  select($("#importMapReturnCheckbox"), saved.return_checkbox || "");
   select($("#importMapEnabled"), saved.enabled || "");
   select($("#importMapDeviceAllocation"), saved.device_allocation || "Device(s) Allocation");
   select($("#importMapNewAssetStatus"), saved.new_asset_status || "New Asset Status");
@@ -5410,6 +5419,8 @@ function selectedImportColumns() {
     deployment_serial: $("#importMapDeployment").value,
     returned_device: $("#importMapReturned").value,
     pending_return: $("#importMapPending").value,
+    old_device_serial: $("#importMapOldDevice").value,
+    return_checkbox: $("#importMapReturnCheckbox").value,
     enabled: $("#importMapEnabled").value,
     device_allocation: $("#importMapDeviceAllocation").value,
     new_asset_status: $("#importMapNewAssetStatus").value,
@@ -5419,8 +5430,11 @@ function selectedImportColumns() {
 }
 
 function importColumnMapError(columns = selectedImportColumns()) {
-  if (!columns.username || !columns.deployment_serial || !columns.pending_return) {
-    return "Choose username, deployment serial, and pending-return columns.";
+  if (!columns.username || !columns.deployment_serial || !importReturnMappingValid(columns)) {
+    return "Choose username and deployment serial, then separate return columns or old serial and return checkbox.";
+  }
+  if (Boolean(columns.old_device_serial) !== Boolean(columns.return_checkbox)) {
+    return "Choose both old-device serial and return checkbox for the new layout.";
   }
   const selected = Object.values(columns).filter(Boolean);
   if (new Set(selected).size !== selected.length) {
@@ -5752,6 +5766,8 @@ function restoreImportDraftMapping(settings = {}) {
     deployment_serial: "#importMapDeployment",
     returned_device: "#importMapReturned",
     pending_return: "#importMapPending",
+    old_device_serial: "#importMapOldDevice",
+    return_checkbox: "#importMapReturnCheckbox",
     enabled: "#importMapEnabled",
     device_allocation: "#importMapDeviceAllocation",
     new_asset_status: "#importMapNewAssetStatus",
@@ -6608,6 +6624,9 @@ function manualReturnEditorMarkup(source, payload) {
 }
 
 const IMPORT_HISTORY_FIELDS = [
+  "kind",
+  "group",
+  "location",
   "status",
   "included",
   "default_excluded",
@@ -7752,7 +7771,9 @@ function renderImportPreview() {
           <input type="checkbox" data-import-include="${escapeHtml(request.id)}" ${isIncluded ? "checked" : ""}>
           <span>${index + 1}</span>
         </label>
-        <div><small class="import-field-title">${isDeployment ? "Deployment serial" : isReturnedDevice ? "Returned device" : "Pending return"}</small><strong>${escapeHtml(request.serials[0])}</strong>${request.device_allocation ? `<small class="import-device-allocation">${escapeHtml(request.device_allocation)}</small>` : ""}${isDeployment && request.new_asset_status ? `<small class="import-device-status">${escapeHtml(request.new_asset_status)}</small>` : ""}${pcToolkitImportMarkup(request, { loading: payload.pc_toolkit_loading })}</div>
+        <div><small class="import-field-title">${isDeployment ? "Deployment serial" : "Old device serial"}</small>${isDeployment
+          ? `<strong>${escapeHtml(request.serials[0])}</strong>`
+          : `<div class="import-return-controls"><input data-import-return-serial="${escapeHtml(request.id)}" value="${escapeHtml(request.serials[0])}" aria-label="Old device serial" spellcheck="false"><select data-import-return-kind="${escapeHtml(request.id)}" aria-label="Return type"><option value="returned_devices" ${isReturnedDevice ? "selected" : ""}>Returned</option><option value="pending_returns" ${!isReturnedDevice ? "selected" : ""}>Pending return</option></select></div>`}${request.device_allocation ? `<small class="import-device-allocation">${escapeHtml(request.device_allocation)}</small>` : ""}${isDeployment && request.new_asset_status ? `<small class="import-device-status">${escapeHtml(request.new_asset_status)}</small>` : ""}${pcToolkitImportMarkup(request, { loading: payload.pc_toolkit_loading })}</div>
         ${personColumn}
         <div class="import-review-status-column">${statusControl}${isIncluded ? validation : "<small>Do not deploy</small>"}${editable}</div>
       </div>`;
@@ -7878,6 +7899,75 @@ function renderImportPreview() {
       saveCurrentImportDraft();
     });
   });
+  $("#importPreviewList").querySelectorAll("[data-import-return-serial]").forEach((input) => input.addEventListener("change", () => {
+    const request = payload.requests.find((item) => item.id === input.dataset.importReturnSerial);
+    if (!request) return;
+    const serial = input.value.trim();
+    if (!serial || payload.requests.some((item) => item !== request
+      && (item.serials || []).some((value) => pcToolkitKey(value) === pcToolkitKey(serial)))) {
+      toast("Enter a serial that is not already in this review.", "error");
+      renderImportPreview();
+      return;
+    }
+    if (serial === request.serials?.[0]) return;
+    recordImportEdit();
+    request.serials = [serial];
+    request.serial_selected = false;
+    request.serial_info = null;
+    request.serial_validation = "pending";
+    request.serial_validation_error = "";
+    request.import_validation = "pending";
+    request.import_error = "";
+    request.import_failed_fields = [];
+    request.import_validation_epoch = Number(request.import_validation_epoch || 0) + 1;
+    request.cached_serial_verification = false;
+    request.pc_toolkit = null;
+    renderImportPreview();
+    updateImportPrepareButton(payload);
+    saveCurrentImportDraft();
+    if (request.included !== false) void validateImportPreview([request]);
+  }));
+  $("#importPreviewList").querySelectorAll("[data-import-return-kind]").forEach((select) => select.addEventListener("change", () => {
+    const request = payload.requests.find((item) => item.id === select.dataset.importReturnKind);
+    if (!request) return;
+    const returned = select.value === "returned_devices";
+    if (returned === (request.group === "Returned devices")) return;
+    recordImportEdit();
+    const username = returned ? request.user : request.returning_user;
+    const person = returned ? request.user_info : request.returning_user_info;
+    if (returned) {
+      request.group = "Returned devices";
+      request.kind = "location";
+      request.status = "";
+      request.location = structuredClone(state.importLocation || preferredImportLocation());
+      request.user = "";
+      request.user_info = null;
+      request.returning = true;
+      request.returning_user = username || "";
+      request.returning_user_info = person || null;
+      request.returning_user_selected = Boolean(person);
+    } else {
+      request.group = "Pending returns";
+      request.kind = "user";
+      request.status = "Pending Return";
+      request.location = null;
+      request.user = username || "";
+      request.user_info = person || null;
+      request.returning = false;
+      request.returning_user = "";
+      request.returning_user_info = null;
+      request.returning_user_selected = false;
+    }
+    request.import_validation = "pending";
+    request.import_error = "";
+    request.import_failed_fields = [];
+    request.import_validation_epoch = Number(request.import_validation_epoch || 0) + 1;
+    request.cached_user_verification = false;
+    renderImportPreview();
+    updateImportPrepareButton(payload);
+    saveCurrentImportDraft();
+    if (request.included !== false) void validateImportPreview([request]);
+  }));
   $("#importPreviewList").querySelectorAll("[data-import-pc-use]").forEach((button) => button.addEventListener("click", () => {
     const request = payload.requests.find((item) => item.id === button.dataset.importPcUse);
     if (!request) return;
@@ -9574,14 +9664,17 @@ function bindEvents() {
       deployment_serial: $("#spreadsheetDeploymentColumnInput").value.trim(),
       returned_device: $("#spreadsheetReturnedColumnInput").value.trim(),
       pending_return: $("#spreadsheetPendingColumnInput").value.trim(),
+      old_device_serial: $("#spreadsheetOldDeviceColumnInput").value.trim(),
+      return_checkbox: $("#spreadsheetReturnCheckboxColumnInput").value.trim(),
       enabled: $("#spreadsheetEnabledColumnInput").value.trim(),
       device_allocation: $("#spreadsheetDeviceAllocationColumnInput").value.trim(),
       new_asset_status: $("#spreadsheetNewAssetStatusColumnInput").value.trim(),
       first_name: $("#spreadsheetFirstNameColumnInput").value.trim(),
       last_name: $("#spreadsheetLastNameColumnInput").value.trim(),
     };
-    if (!columns.username || !columns.deployment_serial || !columns.pending_return) {
-      toast("Set the username, deployment serial, and pending return columns.", "error");
+    if (!columns.username || !columns.deployment_serial || !importReturnMappingValid(columns)
+      || Boolean(columns.old_device_serial) !== Boolean(columns.return_checkbox)) {
+      toast("Set username and deployment serial, then separate return columns or old serial and return checkbox.", "error");
       return;
     }
     const requestStatuses = readRequestStatusSettings();
@@ -9774,6 +9867,8 @@ function bindEvents() {
     "#importMapDeployment",
     "#importMapReturned",
     "#importMapPending",
+    "#importMapOldDevice",
+    "#importMapReturnCheckbox",
     "#importMapEnabled",
     "#importMapDeviceAllocation",
     "#importMapNewAssetStatus",

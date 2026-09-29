@@ -558,6 +558,7 @@ class ClientManager:
         self.connected_at: str | None = None
         self.last_checked_at: str | None = None
         self.health_lock = threading.Lock()
+        self.health_failures = 0
         self.request_for = (
             config.request_for
             or ("simulated.user" if config.simulate else "")
@@ -643,9 +644,7 @@ class ClientManager:
                     if headless
                     else "Complete SSO in the Chrome window; Deployments is waiting…"
                 )
-            deadline = time.monotonic() + (
-                15 if headless else 120
-            )
+            deadline = time.monotonic() + (45 if headless else 120)
             last_error: Exception | None = None
             request_for = ""
             while time.monotonic() < deadline:
@@ -720,6 +719,7 @@ class ClientManager:
             self.fresh_probes = []
             self.fresh_probe_cursor = 0
             self.state = "connected"
+            self.health_failures = 0
             self.connected_at = datetime.now().isoformat(timespec="seconds")
             self.last_checked_at = self.connected_at
             self.request_for = request_for
@@ -749,11 +749,17 @@ class ClientManager:
                 else:
                     with self.lock:
                         if self.client is client:
-                            self.state = "error"
-                            self.message = "Could not verify the Helix connection. Refresh it before continuing."
+                            self.health_failures += 1
+                            if self.health_failures >= 3:
+                                self.client = None
+                                self.probe = None
+                                self.fresh_probes = []
+                                self.state = "error"
+                                self.message = "Could not verify the Helix connection after three checks. Reconnect to continue."
                 return self.status()
             with self.lock:
                 if self.client is client and self.state == "connected":
+                    self.health_failures = 0
                     self.last_checked_at = datetime.now().isoformat(timespec="seconds")
                     self.message = "Connected to Helix."
             return self.status()
@@ -1478,6 +1484,8 @@ class Application:
                 "deployment_serial": "SN",
                 "returned_device": "",
                 "pending_return": "OLD Device SN",
+                "old_device_serial": "",
+                "return_checkbox": "",
                 "enabled": "",
                 "device_allocation": "Device(s) Allocation",
                 "new_asset_status": "New Asset Status",
@@ -1619,6 +1627,8 @@ class Application:
                     "deployment_serial",
                     "returned_device",
                     "pending_return",
+                    "old_device_serial",
+                    "return_checkbox",
                     "enabled",
                     "device_allocation",
                     "new_asset_status",
@@ -1637,9 +1647,12 @@ class Application:
             ):
                 if key not in columns:
                     normalised[key] = default
-            if not all(normalised[key] for key in ("username", "deployment_serial", "pending_return")):
+            if not all(normalised[key] for key in ("username", "deployment_serial")) or not (
+                normalised["pending_return"] or normalised["returned_device"]
+                or (normalised["old_device_serial"] and normalised["return_checkbox"])
+            ):
                 raise eudm.EUDMError(
-                    "Set the username, deployment serial, and pending return columns."
+                    "Set username and deployment serial, then legacy return columns or old serial and return checkbox."
                 )
             values["import_columns"] = normalised
         return values
@@ -2359,6 +2372,8 @@ class Application:
                     "deployment_serial",
                     "returned_device",
                     "pending_return",
+                    "old_device_serial",
+                    "return_checkbox",
                     "enabled",
                     "device_allocation",
                     "new_asset_status",
