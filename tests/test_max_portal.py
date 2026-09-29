@@ -51,7 +51,7 @@ class MaxPortalTests(unittest.TestCase):
                "max_portal": {"reference": "DR-9", "helix_id": "INC9", "status": "USER_NOTIFIED"}}
         self.assertEqual(RequestSpec.from_json(raw).to_json()["max_portal"]["helix_id"], "INC9")
 
-    def test_inc_search_uses_helix_id_and_loads_details(self):
+    def test_inc_search_uses_captured_list_query_and_loads_details(self):
         row = {"reference": "DR-42", "helixId": "INC1234567", "requestedFor": "rkontos",
                "__typename": "AdditionalDeviceRequest", "status": "USER_NOTIFIED"}
 
@@ -60,11 +60,10 @@ class MaxPortalTests(unittest.TestCase):
                 return {"data": {"allAdditionalDeviceRequests": {"nodes": [
                     {"reference": "DR-42", "additionalComments": "Replacement requested"}
                 ]}}}
-            if "helixId: {contains: $value}" in query:
-                self.assertEqual(variables["value"], "INC1234567")
-                edges = [{"node": row}]
-            else:
-                edges = []  # The captured list search does not search INC IDs.
+            self.assertEqual(operation, "getDeviceRequests")
+            self.assertEqual(variables["search"], "")
+            self.assertNotIn("helixId: {contains:", query)
+            edges = [{"node": row}]
             return {"data": {"allDeviceRequests": {"edges": edges,
                     "totalCount": len(edges), "pageInfo": {"hasNextPage": False}}}}
 
@@ -72,15 +71,15 @@ class MaxPortalTests(unittest.TestCase):
         self.assertEqual(result["total"], 1)
         self.assertEqual(result["requests"][0]["additionalComments"], "Replacement requested")
 
-    def test_inc_search_falls_back_when_filter_is_not_in_schema(self):
+    def test_bulk_incs_never_uses_unsupported_filters(self):
         row = {"reference": "DR-42", "helixId": "INC1234567", "requestedFor": "rkontos",
                "__typename": "AdditionalDeviceRequest"}
 
         def graphql(operation, query, variables):
-            if "helixId: {contains: $value}" in query:
-                return {"errors": [{"message": "The field `helixId` is not defined by type DeviceRequestFilterInput."}]}
             if operation == "GetAdditionalDeviceRequest":
                 return {"data": {"allAdditionalDeviceRequests": {"nodes": [row]}}}
+            self.assertEqual(variables.get("search"), "")
+            self.assertNotIn("helixId: {contains:", query)
             edges = [{"node": row}] if variables.get("search") == "" else []
             return {"data": {"allDeviceRequests": {"edges": edges,
                     "totalCount": len(edges), "pageInfo": {"hasNextPage": False}}}}
@@ -97,12 +96,11 @@ class MaxPortalTests(unittest.TestCase):
                "__typename": "AdditionalDeviceRequest", "status": "USER_NOTIFIED"}
 
         def graphql(operation, query, variables):
-            if "requestedForFullName: {contains: $value}" in query:
-                return {"errors": [{"message": "Unknown field requestedForFullName in DeviceRequestFilterInput"}]}
             if operation == "GetAdditionalDeviceRequest":
                 return {"data": {"allAdditionalDeviceRequests": {"nodes": [
                     {**row, "requestedForFullName": "Jane Smith"}
                 ]}}}
+            self.assertNotIn("requestedForFullName: {contains:", query)
             edges = [{"node": row}] if variables.get("search") == "anotherlogin" else []
             return {"data": {"allDeviceRequests": {"edges": edges,
                     "totalCount": len(edges), "pageInfo": {"hasNextPage": False}}}}
@@ -112,6 +110,36 @@ class MaxPortalTests(unittest.TestCase):
         result = service.matches("differentlogin", name_hint="Jane Smith")
         self.assertEqual(result["candidates"][0]["reference"], "DR-22")
         self.assertEqual(result["suggested_reference"], "")
+
+    def test_unexpected_execution_error_on_login_query_uses_catalogue(self):
+        row = {"reference": "DR-33", "requestedFor": "rkontos", "helixId": "INC33",
+               "__typename": "AdditionalDeviceRequest", "status": "USER_NOTIFIED"}
+
+        def graphql(operation, query, variables):
+            if operation == "GetAdditionalDeviceRequest":
+                return {"data": {"allAdditionalDeviceRequests": {"nodes": [row]}}}
+            if variables.get("search") == "rkontos":
+                return {"errors": [{"message": "Unexpected Execution Error"}]}
+            self.assertEqual(variables.get("search"), "")
+            return {"data": {"allDeviceRequests": {"edges": [{"node": row}],
+                    "totalCount": 1, "pageInfo": {"hasNextPage": False}}}}
+
+        service = MaxPortalService(graphql)
+        self.assertEqual(service.search("rkontos")["requests"][0]["reference"], "DR-33")
+        self.assertEqual(service.matches("rkontos")["candidates"][0]["reference"], "DR-33")
+
+    def test_catalogue_keeps_partial_page_if_max_later_fails(self):
+        row = {"reference": "DR-44", "requestedFor": "rkontos", "helixId": "INC44"}
+
+        def graphql(operation, query, variables):
+            if variables.get("after") == "next":
+                return {"errors": [{"message": "Unexpected Execution Error"}]}
+            return {"data": {"allDeviceRequests": {"edges": [{"node": row}],
+                    "totalCount": 2, "pageInfo": {"hasNextPage": True, "endCursor": "next"}}}}
+
+        result = MaxPortalService(graphql).bulk_incs(["INC44", "INC45"])
+        self.assertTrue(result["truncated"])
+        self.assertEqual(result["results"][0]["requests"][0]["reference"], "DR-44")
 
     def test_auth_rejection_is_not_reported_as_no_match(self):
         def graphql(operation, query, variables):

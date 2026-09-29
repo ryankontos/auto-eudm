@@ -56,9 +56,6 @@ GENERIC_DETAIL_QUERY = """query getDeviceRequests($ref: String) {
   }
 }"""
 
-LIST_FIELDS = """pageInfo { startCursor endCursor hasNextPage }
-  edges { node { __typename reference requestedFor requestedForLocation newDeviceType requestedBy helixId workflowInstanceId status } }
-  totalCount"""
 INC_PATTERN = re.compile(r"INC[0-9]+", re.IGNORECASE)
 CATALOGUE_TTL_SECONDS = 90
 CATALOGUE_MAX_PAGES = 40
@@ -152,7 +149,12 @@ class MaxPortalService:
         cursor = ""
         seen_cursors: set[str] = set()
         for _ in range(max_pages):
-            page = self._list_page(query, after=cursor)
+            try:
+                page = self._list_page(query, after=cursor)
+            except EUDMError as exc:
+                if rows and "unexpected execution error" in str(exc).casefold():
+                    return rows, True
+                raise
             rows.extend(page["requests"])
             info = page["page_info"]
             if not info.get("hasNextPage"):
@@ -174,45 +176,15 @@ class MaxPortalService:
             self._catalogue_at = time.monotonic()
             return list(rows), truncated
 
-    def _field_search(self, field: str, value: str) -> list[dict[str, Any]] | None:
-        # These are fixed field names, never interpolated from a user's input.
-        if field not in {"helixId", "requestedForFullName"}:
-            raise ValueError("Unsupported Max portal search field")
-        query = f"""query getDeviceRequests($value: String!, $first: Int, $after: String) {{
-          allDeviceRequests(first: $first, after: $after, where: {{{field}: {{contains: $value}}}}) {{
-            {LIST_FIELDS}
-          }}
-        }}"""
+    def _username_rows(self, username: str) -> tuple[list[dict[str, Any]], bool]:
         try:
-            data = self._query("getDeviceRequests", query, {
-                "value": value, "first": 50, "after": None,
-            })
+            rows, incomplete = self._all_pages(username, max_pages=4)
         except EUDMError as exc:
-            message = str(exc).casefold()
-            if field.casefold() in message and any(marker in message for marker in (
-                "not defined by type", "unknown field", "field is not defined",
-                "does not exist", "is not defined", "unknown input field",
-            )):
-                return None
-            raise
-        connection = data.get("allDeviceRequests") or {}
-        rows = [edge["node"] for edge in connection.get("edges") or []
-                if isinstance(edge, dict) and isinstance(edge.get("node"), dict)]
-        cursor = _clean((connection.get("pageInfo") or {}).get("endCursor"))
-        for _ in range(9):
-            if not (connection.get("pageInfo") or {}).get("hasNextPage") or not cursor:
-                break
-            data = self._query("getDeviceRequests", query, {
-                "value": value, "first": 50, "after": cursor,
-            })
-            connection = data.get("allDeviceRequests") or {}
-            rows.extend(edge["node"] for edge in connection.get("edges") or []
-                        if isinstance(edge, dict) and isinstance(edge.get("node"), dict))
-            next_cursor = _clean((connection.get("pageInfo") or {}).get("endCursor"))
-            if next_cursor == cursor:
-                break
-            cursor = next_cursor
-        return rows
+            if "unexpected execution error" not in str(exc).casefold():
+                raise
+            rows, incomplete = self._catalogue()
+        return ([row for row in rows if _clean(row.get("requestedFor")).casefold() == username.casefold()],
+                incomplete)
 
     @staticmethod
     def _unique(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -227,30 +199,33 @@ class MaxPortalService:
         query = _clean(query)
         if len(query) > 120:
             raise EUDMError("Search text is too long.")
-        page = self._list_page(query, after=after, first=first)
-        if after or not query:
-            return page
+        if not query or after:
+            return self._list_page(query, after=after, first=first)
         wanted = query.casefold()
         if INC_PATTERN.fullmatch(query):
-            direct = self._field_search("helixId", query)
-            if direct is None:
-                catalogue, incomplete = self._catalogue()
-                direct = catalogue
-            else:
-                incomplete = False
-            rows = [row for row in self._unique(page["requests"] + direct)
+            catalogue, incomplete = self._catalogue()
+            rows = [row for row in self._unique(catalogue)
                     if _clean(row.get("helixId")).casefold() == wanted
                     or _clean(row.get("reference")).casefold() == wanted]
             return {"requests": [self._with_detail(row) for row in rows],
                     "total": len(rows), "page_info": {}, "truncated": incomplete}
+        if " " in query:
+            page = {"requests": [], "total": 0, "page_info": {}}
+        else:
+            try:
+                page = self._list_page(query, first=first)
+            except EUDMError as exc:
+                if "unexpected execution error" not in str(exc).casefold():
+                    raise
+                catalogue, incomplete = self._catalogue()
+                rows = [row for row in catalogue if any(wanted in _clean(row.get(field)).casefold()
+                        for field in ("reference", "requestedFor"))]
+                return {"requests": rows, "total": len(rows), "page_info": {}, "truncated": incomplete}
         if page["requests"] and " " not in query:
             return page
 
-        direct = self._field_search("requestedForFullName", query)
         rows = list(page["requests"])
-        name_match_refs = {_clean(row.get("reference")) for row in direct or []}
-        if direct is not None:
-            rows.extend(direct)
+        name_match_refs: set[str] = set()
         aliases: list[str] = []
         if self.name_logins is not None:
             try:
@@ -259,9 +234,7 @@ class MaxPortalService:
                 pass  # Helix is optional for a Max portal name lookup.
         incomplete = False
         for username in aliases:
-            found, alias_incomplete = self._all_pages(username, max_pages=4)
-            matched_aliases = [row for row in found
-                               if _clean(row.get("requestedFor")).casefold() == username.casefold()]
+            matched_aliases, alias_incomplete = self._username_rows(username)
             name_match_refs.update(_clean(row.get("reference")) for row in matched_aliases)
             rows.extend(matched_aliases)
             incomplete = incomplete or alias_incomplete
@@ -270,6 +243,7 @@ class MaxPortalService:
             rows = catalogue[:NAME_DETAIL_SCAN_LIMIT]
             incomplete = incomplete or catalogue_incomplete or len(catalogue) > NAME_DETAIL_SCAN_LIMIT
         detailed = [self._with_detail(row) for row in self._unique(rows)]
+        incomplete = incomplete or any(row.get("detail_error") for row in detailed)
         for row in detailed:
             row["name_matched"] = _clean(row.get("reference")) in name_match_refs or (
                 _clean(row.get("requestedForFullName")).casefold() == wanted
@@ -310,8 +284,6 @@ class MaxPortalService:
         results = []
         for inc in unique:
             rows = [row for row in catalogue if _clean(row.get("helixId")).upper() == inc]
-            if not rows and incomplete:
-                rows = self._field_search("helixId", inc) or []
             results.append({"inc": inc, "requests": [self._with_detail(row) for row in self._unique(rows)]})
         return {"results": results, "truncated": incomplete}
 
@@ -340,17 +312,7 @@ class MaxPortalService:
         username = _clean(username)
         if len(username) < 2:
             return {"candidates": [], "suggested_reference": ""}
-        page = self._list_page(username)
-        rows = list(page["requests"])
-        after = (page.get("page_info") or {}).get("endCursor")
-        while (page.get("page_info") or {}).get("hasNextPage") and after and len(rows) < 200:
-            page = self._list_page(username, after=after)
-            rows.extend(page["requests"])
-            next_after = (page.get("page_info") or {}).get("endCursor")
-            if next_after == after:
-                break
-            after = next_after
-        exact = [row for row in rows if _clean(row.get("requestedFor")).casefold() == username.casefold()]
+        exact, incomplete = self._username_rows(username)
         exact = exact[:200]
         if not exact and _clean(name_hint):
             name = _clean(name_hint).casefold()
@@ -383,4 +345,5 @@ class MaxPortalService:
             if len(exact) <= 50 and (len(active) == 1 or clear_lead)
             else ""
         )
-        return {"candidates": detailed, "suggested_reference": suggested, "truncated": len(exact) > 50}
+        return {"candidates": detailed, "suggested_reference": suggested,
+                "truncated": len(exact) > 50 or incomplete}
