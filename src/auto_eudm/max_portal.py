@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from datetime import date
+import re
+import threading
+import time
 from typing import Any, Callable
 
 from .eudm_request import EUDMError
@@ -53,6 +56,14 @@ GENERIC_DETAIL_QUERY = """query getDeviceRequests($ref: String) {
   }
 }"""
 
+LIST_FIELDS = """pageInfo { startCursor endCursor hasNextPage }
+  edges { node { __typename reference requestedFor requestedForLocation newDeviceType requestedBy helixId workflowInstanceId status } }
+  totalCount"""
+INC_PATTERN = re.compile(r"INC[0-9]+", re.IGNORECASE)
+CATALOGUE_TTL_SECONDS = 90
+CATALOGUE_MAX_PAGES = 40
+NAME_DETAIL_SCAN_LIMIT = 150
+
 
 def _clean(value: Any) -> str:
     return " ".join(str(value or "").split())
@@ -96,8 +107,19 @@ def rank_request(
 
 
 class MaxPortalService:
-    def __init__(self, graphql: Callable[[str, str, dict[str, Any]], dict[str, Any]]) -> None:
+    def __init__(
+        self,
+        graphql: Callable[[str, str, dict[str, Any]], dict[str, Any]],
+        name_logins: Callable[[str], list[str]] | None = None,
+    ) -> None:
         self.graphql = graphql
+        self.name_logins = name_logins
+        self._catalogue_lock = threading.Lock()
+        self._catalogue_rows: list[dict[str, Any]] = []
+        self._catalogue_at = 0.0
+        self._catalogue_truncated = False
+        self._detail_lock = threading.Lock()
+        self._detail_cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
 
     def _query(self, operation: str, query: str, variables: dict[str, Any]) -> dict[str, Any]:
         response = self.graphql(operation, query, variables)
@@ -112,10 +134,7 @@ class MaxPortalService:
             raise EUDMError("Max portal did not return request data.")
         return data
 
-    def search(self, query: str = "", *, after: str = "", first: int = 50) -> dict[str, Any]:
-        query = _clean(query)
-        if len(query) > 120:
-            raise EUDMError("Search text is too long.")
+    def _list_page(self, query: str, *, after: str = "", first: int = 50) -> dict[str, Any]:
         data = self._query("getDeviceRequests", LIST_QUERY, {
             "types": [], "first": min(50, max(1, int(first))), "last": None,
             "before": None, "after": after or None, "search": query, "filter": [],
@@ -127,6 +146,174 @@ class MaxPortalService:
             "total": int(connection.get("totalCount") or 0),
             "page_info": connection.get("pageInfo") or {},
         }
+
+    def _all_pages(self, query: str, *, max_pages: int = CATALOGUE_MAX_PAGES) -> tuple[list[dict[str, Any]], bool]:
+        rows: list[dict[str, Any]] = []
+        cursor = ""
+        seen_cursors: set[str] = set()
+        for _ in range(max_pages):
+            page = self._list_page(query, after=cursor)
+            rows.extend(page["requests"])
+            info = page["page_info"]
+            if not info.get("hasNextPage"):
+                return rows, False
+            next_cursor = _clean(info.get("endCursor"))
+            if not next_cursor or next_cursor in seen_cursors:
+                return rows, True
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
+        return rows, True
+
+    def _catalogue(self) -> tuple[list[dict[str, Any]], bool]:
+        with self._catalogue_lock:
+            if self._catalogue_at and time.monotonic() - self._catalogue_at < CATALOGUE_TTL_SECONDS:
+                return list(self._catalogue_rows), self._catalogue_truncated
+            rows, truncated = self._all_pages("")
+            self._catalogue_rows = rows
+            self._catalogue_truncated = truncated
+            self._catalogue_at = time.monotonic()
+            return list(rows), truncated
+
+    def _field_search(self, field: str, value: str) -> list[dict[str, Any]] | None:
+        # These are fixed field names, never interpolated from a user's input.
+        if field not in {"helixId", "requestedForFullName"}:
+            raise ValueError("Unsupported Max portal search field")
+        query = f"""query getDeviceRequests($value: String!, $first: Int, $after: String) {{
+          allDeviceRequests(first: $first, after: $after, where: {{{field}: {{contains: $value}}}}) {{
+            {LIST_FIELDS}
+          }}
+        }}"""
+        try:
+            data = self._query("getDeviceRequests", query, {
+                "value": value, "first": 50, "after": None,
+            })
+        except EUDMError as exc:
+            message = str(exc).casefold()
+            if field.casefold() in message and any(marker in message for marker in (
+                "not defined by type", "unknown field", "field is not defined",
+                "does not exist", "is not defined", "unknown input field",
+            )):
+                return None
+            raise
+        connection = data.get("allDeviceRequests") or {}
+        rows = [edge["node"] for edge in connection.get("edges") or []
+                if isinstance(edge, dict) and isinstance(edge.get("node"), dict)]
+        cursor = _clean((connection.get("pageInfo") or {}).get("endCursor"))
+        for _ in range(9):
+            if not (connection.get("pageInfo") or {}).get("hasNextPage") or not cursor:
+                break
+            data = self._query("getDeviceRequests", query, {
+                "value": value, "first": 50, "after": cursor,
+            })
+            connection = data.get("allDeviceRequests") or {}
+            rows.extend(edge["node"] for edge in connection.get("edges") or []
+                        if isinstance(edge, dict) and isinstance(edge.get("node"), dict))
+            next_cursor = _clean((connection.get("pageInfo") or {}).get("endCursor"))
+            if next_cursor == cursor:
+                break
+            cursor = next_cursor
+        return rows
+
+    @staticmethod
+    def _unique(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        found: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            reference = _clean(row.get("reference"))
+            if reference:
+                found[reference] = {**found.get(reference, {}), **row}
+        return list(found.values())
+
+    def search(self, query: str = "", *, after: str = "", first: int = 50) -> dict[str, Any]:
+        query = _clean(query)
+        if len(query) > 120:
+            raise EUDMError("Search text is too long.")
+        page = self._list_page(query, after=after, first=first)
+        if after or not query:
+            return page
+        wanted = query.casefold()
+        if INC_PATTERN.fullmatch(query):
+            direct = self._field_search("helixId", query)
+            if direct is None:
+                catalogue, incomplete = self._catalogue()
+                direct = catalogue
+            else:
+                incomplete = False
+            rows = [row for row in self._unique(page["requests"] + direct)
+                    if _clean(row.get("helixId")).casefold() == wanted
+                    or _clean(row.get("reference")).casefold() == wanted]
+            return {"requests": [self._with_detail(row) for row in rows],
+                    "total": len(rows), "page_info": {}, "truncated": incomplete}
+        if page["requests"] and " " not in query:
+            return page
+
+        direct = self._field_search("requestedForFullName", query)
+        rows = list(page["requests"])
+        name_match_refs = {_clean(row.get("reference")) for row in direct or []}
+        if direct is not None:
+            rows.extend(direct)
+        aliases: list[str] = []
+        if self.name_logins is not None:
+            try:
+                aliases = self.name_logins(query)[:10]
+            except EUDMError:
+                pass  # Helix is optional for a Max portal name lookup.
+        incomplete = False
+        for username in aliases:
+            found, alias_incomplete = self._all_pages(username, max_pages=4)
+            matched_aliases = [row for row in found
+                               if _clean(row.get("requestedFor")).casefold() == username.casefold()]
+            name_match_refs.update(_clean(row.get("reference")) for row in matched_aliases)
+            rows.extend(matched_aliases)
+            incomplete = incomplete or alias_incomplete
+        if not rows:
+            catalogue, catalogue_incomplete = self._catalogue()
+            rows = catalogue[:NAME_DETAIL_SCAN_LIMIT]
+            incomplete = incomplete or catalogue_incomplete or len(catalogue) > NAME_DETAIL_SCAN_LIMIT
+        detailed = [self._with_detail(row) for row in self._unique(rows)]
+        for row in detailed:
+            row["name_matched"] = _clean(row.get("reference")) in name_match_refs or (
+                _clean(row.get("requestedForFullName")).casefold() == wanted
+            )
+        matched = [row for row in detailed if any(
+            wanted in _clean(row.get(field)).casefold()
+            for field in ("requestedForFullName", "requestedFor", "requestedByFullName", "requestedBy", "reference", "helixId")
+        ) or row["name_matched"]]
+        return {"requests": matched, "total": len(matched), "page_info": {}, "truncated": incomplete}
+
+    def _with_detail(self, row: dict[str, Any]) -> dict[str, Any]:
+        reference = _clean(row.get("reference"))
+        if not reference:
+            return row
+        request_type = _clean(row.get("__typename"))
+        key = (reference, request_type)
+        with self._detail_lock:
+            cached = self._detail_cache.get(key)
+            if cached and time.monotonic() - cached[0] < CATALOGUE_TTL_SECONDS:
+                return {**row, **cached[1], "detail_loaded": bool(cached[1])}
+        try:
+            detail = self.detail(reference, request_type)
+        except EUDMError as exc:
+            if "reconnect" in str(exc).casefold() or "rejected the session" in str(exc).casefold():
+                raise
+            return {**row, "detail_error": str(exc)}
+        with self._detail_lock:
+            self._detail_cache[key] = (time.monotonic(), detail)
+        return {**row, **detail, "detail_loaded": bool(detail)}
+
+    def bulk_incs(self, incs: list[str]) -> dict[str, Any]:
+        if len(incs) > 200 or any(not INC_PATTERN.fullmatch(_clean(inc)) for inc in incs):
+            raise EUDMError("Enter up to 200 valid INC numbers.")
+        unique = list(dict.fromkeys(_clean(inc).upper() for inc in incs))
+        if not unique:
+            raise EUDMError("Enter at least one INC number.")
+        catalogue, incomplete = self._catalogue()
+        results = []
+        for inc in unique:
+            rows = [row for row in catalogue if _clean(row.get("helixId")).upper() == inc]
+            if not rows and incomplete:
+                rows = self._field_search("helixId", inc) or []
+            results.append({"inc": inc, "requests": [self._with_detail(row) for row in self._unique(rows)]})
+        return {"results": results, "truncated": incomplete}
 
     def detail(self, reference: str, request_type: str) -> dict[str, Any]:
         reference = _clean(reference)
@@ -148,15 +335,16 @@ class MaxPortalService:
     def matches(
         self, username: str, *, deployment_date: str = "",
         old_serials: tuple[str, ...] = (), device_hint: str = "",
+        name_hint: str = "",
     ) -> dict[str, Any]:
         username = _clean(username)
         if len(username) < 2:
             return {"candidates": [], "suggested_reference": ""}
-        page = self.search(username)
+        page = self._list_page(username)
         rows = list(page["requests"])
         after = (page.get("page_info") or {}).get("endCursor")
         while (page.get("page_info") or {}).get("hasNextPage") and after and len(rows) < 200:
-            page = self.search(username, after=after)
+            page = self._list_page(username, after=after)
             rows.extend(page["requests"])
             next_after = (page.get("page_info") or {}).get("endCursor")
             if next_after == after:
@@ -164,6 +352,13 @@ class MaxPortalService:
             after = next_after
         exact = [row for row in rows if _clean(row.get("requestedFor")).casefold() == username.casefold()]
         exact = exact[:200]
+        if not exact and _clean(name_hint):
+            name = _clean(name_hint).casefold()
+            by_name = self.search(name_hint)
+            candidates = [row for row in by_name["requests"]
+                          if row.get("name_matched") or _clean(row.get("requestedForFullName")).casefold() == name]
+            return {"candidates": candidates, "suggested_reference": "",
+                    "truncated": bool(by_name.get("truncated"))}
         ordered = sorted(exact, key=lambda row: (
             _clean(row.get("status")).upper() not in INACTIVE_STATUSES,
             _clean(row.get("helixId")).upper().startswith("INC"),
@@ -171,11 +366,7 @@ class MaxPortalService:
         enrich_refs = {_clean(row.get("reference")) for row in ordered[:6]}
         detailed = []
         for row in exact[:50]:
-            try:
-                detail = self.detail(_clean(row.get("reference")), _clean(row.get("__typename"))) if _clean(row.get("reference")) in enrich_refs else {}
-                detailed.append({**row, **detail, "detail_loaded": bool(detail)})
-            except EUDMError:
-                detailed.append(row)
+            detailed.append(self._with_detail(row) if _clean(row.get("reference")) in enrich_refs else row)
         detailed.sort(key=lambda item: (rank_request(
             item, username, deployment_date=deployment_date, old_serials=old_serials,
             device_hint=device_hint,

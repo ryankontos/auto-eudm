@@ -579,6 +579,12 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
                 str(payload.get("type") or ""),
             ))
             return
+        if path == "/api/max-portal/bulk":
+            incs = payload.get("incs")
+            if not isinstance(incs, list) or len(incs) > 200:
+                raise HTTPInputError("Enter up to 200 INC numbers.")
+            self._json(self.app.max_portal.bulk_incs([str(inc or "") for inc in incs]))
+            return
         if path == "/api/max-portal/matches":
             username = self._search_query(payload, minimum=2, message="Enter a username to find Max portal requests.")
             old_serials = payload.get("old_serials") or []
@@ -589,6 +595,7 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
                 deployment_date=str(payload.get("deployment_date") or "")[:10],
                 old_serials=tuple(str(value or "")[:100] for value in old_serials),
                 device_hint=str(payload.get("device_hint") or "")[:200],
+                name_hint=str(payload.get("name_hint") or "")[:200],
             ))
             return
         if path == "/api/preferences":

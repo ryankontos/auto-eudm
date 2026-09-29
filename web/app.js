@@ -77,6 +77,8 @@ const state = {
   pcToolkitEnrichmentEpoch: 0,
   pcToolkitImportRenderFrame: null,
   maxPortalResults: [],
+  maxPortalBulkResults: [],
+  maxPortalMode: "single",
   maxPortalCursor: "",
   maxPortalSearchToken: 0,
   maxPortalContext: null,
@@ -7227,6 +7229,7 @@ async function maybeMatchMaxPortalForQueue(request = selectedRequest(), { render
         query: username,
         deployment_date: maxPortalQueueDate(key),
         device_hint: pcToolkitModelFor(request),
+        name_hint: (request.user_info?.columns || []).find((value) => String(value || "").includes(" ")) || "",
       }),
     });
     if (state.maxPortalQueueLookups.get(request.id)?.key !== key
@@ -7311,16 +7314,21 @@ function maxPortalCandidateMarkup(item, { selected = false } = {}) {
     <div><strong>${escapeHtml(inc || reference)}</strong><small>${escapeHtml(reference)} · ${escapeHtml(maxPortalStatus(item.status))}</small>${detail ? `<small>${escapeHtml(detail)}</small>` : ""}
       ${item.detail_loaded ? `<div class="max-candidate-details">
         ${[
-          ["Requested for", item.requestedForFullName || item.requestedFor],
-          ["Requested by", item.requestedByFullName || item.requestedBy],
-          ["New device", item.newDeviceTypeDetails?.title || item.newDeviceType],
+          ["Request type", String(item.__typename || "").replaceAll(/([a-z])([A-Z])/g, "$1 $2")],
+          ["Requested for", [item.requestedForFullName, item.requestedFor].filter(Boolean).join(" · ")],
+          ["Requested by", [item.requestedByFullName, item.requestedBy].filter(Boolean).join(" · ")],
+          ["Requested for location", item.requestedForLocation],
+          ["New device", [item.newDeviceTypeDetails?.title, item.newDeviceType].filter(Boolean).join(" · ")],
           ["Old device", [item.oldManufacturer, item.oldModel, item.oldSerial].filter(Boolean).join(" · ")],
-          ["Created", item.createdAt], ["Updated", item.updatedAt],
+          ["Old device type", item.oldDeviceTypeDetails?.title || item.oldDeviceType],
+          ["Workflow", item.workflowInstanceId],
+          ["Created", item.createdAt], ["Updated", item.updatedAt], ["Updated by", item.updatedBy],
           ["Comments", item.additionalComments],
         ].filter(([, value]) => value).map(([label, value]) => `<span><b>${escapeHtml(label)}</b> ${escapeHtml(value)}</span>`).join("")}
       </div>` : ""}
+      ${item.detail_error ? `<small>More details unavailable · ${escapeHtml(item.detail_error)}</small>` : ""}
     </div>
-    <button class="button secondary compact" type="button" data-max-detail="${escapeHtml(reference)}" data-max-type="${escapeHtml(item.__typename || "")}">Details</button>
+    <button class="button secondary compact" type="button" data-max-detail="${escapeHtml(reference)}" data-max-type="${escapeHtml(item.__typename || "")}">${item.detail_loaded ? "Refresh details" : "Details"}</button>
     ${state.maxPortalContext ? `<button class="button ${selected ? "primary" : "secondary"} compact" type="button" data-max-choose="${escapeHtml(reference)}">${selected ? "Selected" : "Use this request"}</button>` : ""}
   </div>`;
 }
@@ -7356,30 +7364,108 @@ async function runMaxPortalSearch({ more = false } = {}) {
     state.maxPortalResults = more ? [...state.maxPortalResults, ...(response.requests || [])] : (response.requests || []);
     state.maxPortalCursor = response.page_info?.hasNextPage ? String(response.page_info?.endCursor || "") : "";
     renderMaxPortalResults();
-    $("#maxPortalMessage").textContent = `${response.total || 0} request${response.total === 1 ? "" : "s"} found`;
+    $("#maxPortalMessage").textContent = `${response.total || 0} request${response.total === 1 ? "" : "s"} found${response.truncated ? " · search may be incomplete; try a username or request reference" : ""}`;
   } catch (error) {
-    if (token === state.maxPortalSearchToken) $("#maxPortalMessage").textContent = error.message;
+    if (token === state.maxPortalSearchToken) {
+      $("#maxPortalMessage").textContent = error.message;
+      await refreshPcToolkitStatus().catch(() => {});
+      $("#maxPortalConnect").hidden = ["connected", "simulation"].includes(state.pcToolkitStatus?.state);
+    }
   } finally {
     button.disabled = false;
   }
 }
 
+function setMaxPortalMode(mode) {
+  state.maxPortalSearchToken += 1;
+  state.maxPortalMode = mode;
+  state.maxPortalResults = [];
+  state.maxPortalBulkResults = [];
+  state.maxPortalCursor = "";
+  const bulk = mode === "bulk";
+  $("#maxPortalSearch").hidden = bulk;
+  $("#maxPortalSearchButton").hidden = bulk;
+  $("#maxPortalBulkPanel").hidden = !bulk;
+  $("#maxPortalBulkToggle").textContent = bulk ? "Single search" : "Bulk INCs";
+  $("#maxPortalBulkToggle").setAttribute("aria-expanded", String(bulk));
+  $("#maxPortalMore").hidden = true;
+  $("#maxPortalResults").innerHTML = "";
+  $("#maxPortalMessage").textContent = bulk
+    ? "Look up several INCs together."
+    : "Search by name, username, INC or request reference.";
+  (bulk ? $("#maxPortalBulkInput") : $("#maxPortalSearch")).focus();
+}
+
+async function runMaxPortalBulkSearch() {
+  const incs = [...new Set([...$("#maxPortalBulkInput").value.matchAll(/\bINC[\s-]*\d+\b/gi)]
+    .map(([value]) => value.replace(/[\s-]/g, "").toUpperCase()))];
+  if (!incs.length) {
+    $("#maxPortalMessage").textContent = "Enter at least one INC number.";
+    return;
+  }
+  if (incs.length > 200) {
+    $("#maxPortalMessage").textContent = "Look up up to 200 INCs at a time.";
+    return;
+  }
+  const token = ++state.maxPortalSearchToken;
+  const button = $("#maxPortalBulkSearchButton");
+  button.disabled = true;
+  state.maxPortalBulkResults = [];
+  $("#maxPortalResults").innerHTML = "";
+  $("#maxPortalMessage").textContent = `Looking up ${incs.length} INC${incs.length === 1 ? "" : "s"}…`;
+  try {
+    const response = await api("/api/max-portal/bulk", {
+      method: "POST", body: JSON.stringify({ incs }),
+    });
+    if (token !== state.maxPortalSearchToken) return;
+    state.maxPortalBulkResults = response.results || [];
+    renderMaxPortalResults();
+    const found = state.maxPortalBulkResults.filter((item) => item.requests?.length).length;
+    $("#maxPortalMessage").textContent = `${found} of ${incs.length} INC${incs.length === 1 ? "" : "s"} found${response.truncated ? " · search may be incomplete" : ""}`;
+  } catch (error) {
+    if (token === state.maxPortalSearchToken) {
+      $("#maxPortalMessage").textContent = error.message;
+      await refreshPcToolkitStatus().catch(() => {});
+      $("#maxPortalConnect").hidden = ["connected", "simulation"].includes(state.pcToolkitStatus?.state);
+    }
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function maxPortalVisibleItems() {
+  return state.maxPortalMode === "bulk"
+    ? state.maxPortalBulkResults.flatMap((item) => item.requests || [])
+    : state.maxPortalResults;
+}
+
 function renderMaxPortalResults() {
   const results = $("#maxPortalResults");
-  results.innerHTML = state.maxPortalResults.length
-    ? state.maxPortalResults.map((item) => maxPortalCandidateMarkup(item, {
-      selected: state.maxPortalContext?.max_portal?.reference === item.reference,
-    })).join("")
-    : '<p class="max-portal-empty">No matching requests.</p>';
-  $("#maxPortalMore").hidden = !state.maxPortalCursor;
+  if (state.maxPortalMode === "bulk") {
+    results.innerHTML = state.maxPortalBulkResults.map((entry) => `<section class="max-bulk-item">
+      <h3>${escapeHtml(entry.inc)}</h3>
+      ${entry.requests?.length
+        ? entry.requests.map((item) => maxPortalCandidateMarkup(item, {
+          selected: state.maxPortalContext?.max_portal?.reference === item.reference,
+        })).join("")
+        : '<small>No matching Max request found.</small>'}
+    </section>`).join("");
+  } else {
+    results.innerHTML = state.maxPortalResults.length
+      ? state.maxPortalResults.map((item) => maxPortalCandidateMarkup(item, {
+        selected: state.maxPortalContext?.max_portal?.reference === item.reference,
+      })).join("")
+      : '<p class="max-portal-empty">No matching requests.</p>';
+  }
+  $("#maxPortalMore").hidden = state.maxPortalMode === "bulk" || !state.maxPortalCursor;
   results.querySelectorAll("[data-max-detail]").forEach((button) => button.addEventListener("click", async () => {
     const reference = button.dataset.maxDetail;
     button.disabled = true;
     button.textContent = "Loading…";
     try {
       const item = await api("/api/max-portal/detail", { method: "POST", body: JSON.stringify({ reference, type: button.dataset.maxType }) });
-      const target = state.maxPortalResults.findIndex((candidate) => candidate.reference === reference);
-      if (target >= 0 && item?.reference) state.maxPortalResults[target] = { ...state.maxPortalResults[target], ...item, detail_loaded: true, detail_expanded: true };
+      const target = maxPortalVisibleItems().find((candidate) => candidate.reference === reference);
+      if (target && item?.reference) Object.assign(target, item, { detail_loaded: true, detail_expanded: true });
       renderMaxPortalResults();
     } catch (error) {
       $("#maxPortalMessage").textContent = error.message;
@@ -7387,7 +7473,7 @@ function renderMaxPortalResults() {
     }
   }));
   results.querySelectorAll("[data-max-choose]").forEach((button) => button.addEventListener("click", () => {
-    const item = state.maxPortalResults.find((candidate) => candidate.reference === button.dataset.maxChoose);
+    const item = maxPortalVisibleItems().find((candidate) => candidate.reference === button.dataset.maxChoose);
     const context = state.maxPortalContext;
     if (!item || !context) return $("#maxPortalDialog").close();
     button.disabled = true;
@@ -7407,9 +7493,16 @@ function openMaxPortal({ request = null, query = "" } = {}) {
   state.maxPortalSearchToken += 1;
   state.maxPortalContext = request;
   state.maxPortalResults = [];
+  state.maxPortalBulkResults = [];
   state.maxPortalCursor = "";
+  state.maxPortalMode = "single";
+  $("#maxPortalSearch").hidden = false;
+  $("#maxPortalSearchButton").hidden = false;
+  $("#maxPortalBulkPanel").hidden = true;
+  $("#maxPortalBulkToggle").textContent = "Bulk INCs";
+  $("#maxPortalBulkToggle").setAttribute("aria-expanded", "false");
   $("#maxPortalSearch").value = query || request?.user || request?.username || "";
-  $("#maxPortalMessage").textContent = "Search by username or request reference.";
+  $("#maxPortalMessage").textContent = "Search by name, username, INC or request reference.";
   $("#maxPortalResults").innerHTML = "";
   $("#maxPortalMore").hidden = true;
   $("#maxPortalConnect").hidden = state.pcToolkitStatus?.state === "connected" || state.pcToolkitStatus?.state === "simulation";
@@ -7446,6 +7539,7 @@ async function enrichMaxPortalImport(payload = state.importPreview, { requests: 
     try {
       response = await api("/api/max-portal/matches", { method: "POST", body: JSON.stringify({
         query: group.username, deployment_date: group.date,
+        name_hint: group.requests.map((request) => [request.first_name, request.last_name].filter(Boolean).join(" ").trim()).find(Boolean) || "",
         device_hint: group.requests.map((request) => request.device_allocation || "").find(Boolean) || "",
         old_serials: group.requests.flatMap((request) => (payload.requests || [])
           .filter((item) => item.alm_row_number && item.alm_row_number === request.alm_row_number && item.group !== "Deployments")
@@ -7458,6 +7552,7 @@ async function enrichMaxPortalImport(payload = state.importPreview, { requests: 
       request.max_portal_loading = false;
       request.max_portal_error = error;
       request.max_portal_candidates = response?.candidates || [];
+      request.max_portal_truncated = Boolean(response?.truncated);
       const suggested = request.max_portal_candidates.find((item) => item.reference === response?.suggested_reference);
       if (!request.max_portal?.reference && suggested) {
         request.max_portal = maxPortalAssociation({
@@ -7485,7 +7580,7 @@ function maxImportMarkup(request) {
     ${request.max_portal_loading ? '<small>Finding requests…</small>' : ""}
     ${request.max_portal_error && connected ? `<small>Lookup unavailable · ${escapeHtml(request.max_portal_error)}</small>` : ""}
     ${!connected && !selected ? '<small>Connect PC Toolkit to find requests</small>' : ""}
-    ${connected && !request.max_portal_loading && !request.max_portal_error && !candidates.length && !selected ? '<small>No matching request found</small>' : ""}
+    ${connected && !request.max_portal_loading && !request.max_portal_error && !candidates.length && !selected ? `<small>${request.max_portal_truncated ? "Search incomplete · try the name or INC directly" : "No matching request found"}</small>` : ""}
     ${candidates.length ? `<select data-import-max="${escapeHtml(request.id)}" aria-label="Max portal request for ${escapeHtml(request.user || request.username || "user")}">
       <option value="">Choose request${candidates.length > 1 ? ` (${candidates.length} found)` : ""}</option>
       ${candidates.map((item) => `<option value="${escapeHtml(item.reference)}" ${selected === item.reference ? "selected" : ""}>${escapeHtml(item.helixId || item.reference)} · ${escapeHtml(maxPortalStatus(item.status))}${item.newDeviceTypeDetails?.title || item.newDeviceType ? ` · ${escapeHtml(item.newDeviceTypeDetails?.title || item.newDeviceType)}` : ""}${item.oldSerial ? ` · old ${escapeHtml(item.oldSerial)}` : ""}${item.createdAt ? ` · ${escapeHtml(String(item.createdAt).slice(0, 10))}` : ""}</option>`).join("")}
@@ -9726,6 +9821,8 @@ function bindEvents() {
   $("#maxRequestEditorFind").addEventListener("click", () => openMaxPortal({ request: selectedRequest() }));
   $("#maxPortalButton").addEventListener("click", () => openMaxPortal());
   $("#maxPortalSearchButton").addEventListener("click", () => void runMaxPortalSearch());
+  $("#maxPortalBulkToggle").addEventListener("click", () => setMaxPortalMode(state.maxPortalMode === "bulk" ? "single" : "bulk"));
+  $("#maxPortalBulkSearchButton").addEventListener("click", () => void runMaxPortalBulkSearch());
   $("#maxPortalSearch").addEventListener("keydown", (event) => {
     if (event.key === "Enter") { event.preventDefault(); void runMaxPortalSearch(); }
   });

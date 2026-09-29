@@ -780,9 +780,15 @@
     <div class="modal-card wide">
       <div class="modal-header"><h2>Max requests</h2><button id="maxPortalClose" class="icon-button" type="button" aria-label="Close"><i data-lucide="x"></i></button></div>
       <div class="max-portal-toolbar">
-        <input id="maxPortalSearch" type="search" placeholder="Search username or request reference" aria-label="Search Max portal device requests" autocomplete="off">
+        <input id="maxPortalSearch" type="search" placeholder="Search name, username, INC or request reference" aria-label="Search Max portal device requests" autocomplete="off">
         <button id="maxPortalSearchButton" class="button primary" type="button">Search</button>
+        <button id="maxPortalBulkToggle" class="button secondary" type="button" aria-expanded="false" aria-controls="maxPortalBulkPanel">Bulk INCs</button>
         <button id="maxPortalConnect" class="button secondary" type="button" hidden>Connect</button>
+      </div>
+      <div id="maxPortalBulkPanel" class="max-portal-bulk-panel" hidden>
+        <label for="maxPortalBulkInput">INC numbers <small>Paste one per line, or separate them with commas or spaces.</small></label>
+        <textarea id="maxPortalBulkInput" rows="4" placeholder="INC1234567&#10;INC1234568" spellcheck="false"></textarea>
+        <button id="maxPortalBulkSearchButton" class="button primary" type="button">Look up INCs</button>
       </div>
       <p id="maxPortalMessage" class="max-portal-message" role="status"></p>
       <div id="maxPortalResults" class="max-portal-results"></div>

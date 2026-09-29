@@ -2430,9 +2430,13 @@ class PCToolkitService:
         body = {"operationName": operation, "query": query, "variables": variables}
         started = time.monotonic()
         try:
-            if mode == "browser" and browser is not None:
+            if mode == "browser":
+                if browser is None:
+                    raise PCToolkitError("The portal browser session closed. Reconnect PC Toolkit.")
                 response = browser.graphql(MAX_GRAPHQL_URL, role, body)
-            elif mode == "puppeteer" and puppeteer is not None:
+            elif mode == "puppeteer":
+                if puppeteer is None:
+                    raise PCToolkitError("The portal browser session closed. Reconnect PC Toolkit.")
                 response = puppeteer.graphql(body)
             else:
                 headers = pc_toolkit_request_headers(role)
@@ -2470,7 +2474,9 @@ class PCToolkitService:
             request_headers={"Content-Type": "application/json", "X-Max-Elevated-Role": role},
         )
         if status in (401, 403):
-            raise PCToolkitError("Max portal rejected the session. Reconnect PC Toolkit and try again.")
+            message = "Max portal rejected the session. Reconnect PC Toolkit and try again."
+            self._set_state("error", message, error=message)
+            raise PCToolkitError(message)
         if status != 200:
             raise PCToolkitError(f"Max portal returned HTTP {status or 'unknown'}.")
         try:
@@ -2479,6 +2485,15 @@ class PCToolkitService:
             raise PCToolkitError("Max portal returned unreadable request data.") from exc
         if not isinstance(payload, dict):
             raise PCToolkitError("Max portal returned an invalid request result.")
+        errors = payload.get("errors")
+        if isinstance(errors, list) and any(
+            isinstance(item, dict) and any(marker in str(item.get("message", "")).casefold()
+                                            for marker in ("unauthorized", "unauthorised", "forbidden", "not authenticated"))
+            for item in errors
+        ):
+            message = "Max portal rejected the session. Reconnect PC Toolkit and try again."
+            self._set_state("error", message, error=message)
+            raise PCToolkitError(message)
         run_reporting.pc_toolkit_event("max_portal_query", operation=operation, status=status)
         return payload
 

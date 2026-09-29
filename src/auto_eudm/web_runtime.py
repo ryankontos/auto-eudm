@@ -23,6 +23,7 @@ from . import eudm_request as eudm
 from . import run_reporting
 from .pc_toolkit import PCToolkitService, normalise_key as normalise_pc_toolkit_key
 from .max_portal import MaxPortalService
+from .identifiers import is_login_id
 from .workbook_debug import WorkbookLoadLog
 from .eudm_config import AppConfig
 from .data_paths import DATA_DIR, LEGACY_RESULTS_DIR
@@ -1385,7 +1386,9 @@ class Application:
             verbose=self.config.verbose,
             preferences=lambda: self.preferences,
         )
-        self.max_portal = MaxPortalService(self.pc_toolkit.portal_graphql)
+        self.max_portal = MaxPortalService(
+            self.pc_toolkit.portal_graphql, name_logins=self._max_name_logins
+        )
         self.clients.headless_auth_enabled = bool(self.preferences["headless_auth_enabled"])
         self.pc_toolkit.browser_headless = bool(
             self.config.browser_headless or self.preferences["headless_auth_enabled"]
@@ -1403,6 +1406,23 @@ class Application:
         self.allowed_location_statuses = {
             value for _, value in LOCATION_STATUSES
         }
+
+    def _max_name_logins(self, name: str) -> list[str]:
+        """Resolve an exact display name through Helix when it is available."""
+        if self.clients.status().get("state") not in {"connected", "simulation"}:
+            return []
+        wanted = " ".join(name.split()).casefold()
+        found: list[str] = []
+        for row in self.clients.search().users(name):
+            columns = [str(value).strip() for value in row.get("columns") or []]
+            displayed = {" ".join(value.split()).casefold() for value in columns}
+            displayed.add(" ".join(" ".join(columns[1:]).split()).casefold())
+            if wanted not in displayed:
+                continue
+            for value in [row.get("value"), *columns]:
+                if is_login_id(value) and value.casefold() not in {item.casefold() for item in found}:
+                    found.append(value)
+        return found
 
     def config_json(self) -> dict[str, Any]:
         default_location = {
