@@ -1766,6 +1766,12 @@ function syncQueueSorting() {
 }
 
 function renderQueue() {
+  // Submission polling updates request state frequently. Keep the queue DOM
+  // still behind its modal; the latest state is rendered when it closes.
+  if ($("#progressDialog").open) {
+    persistQueueSoon();
+    return;
+  }
   const validations = queueValidation();
   const requestCount = state.queue.length;
   const invalidCount = [...validations.values()].filter((errors) => errors.length).length;
@@ -2217,6 +2223,10 @@ function refreshBulkValidationButton(request = selectedRequest()) {
 }
 
 function renderAll() {
+  if ($("#progressDialog").open) {
+    persistQueueSoon();
+    return;
+  }
   renderQueue();
   renderInspector();
   renderLatestImportDraft();
@@ -9057,6 +9067,7 @@ function launchProgressConfetti() {
 
 function renderSubmissionNotice(job = state.currentJob) {
   if (!elements.submissionNotice) return;
+  if ($("#progressDialog").open) return;
   const visible = state.submissionStarting || Boolean(job);
   elements.submissionNotice.hidden = !visible;
   if (!visible) return;
@@ -9359,6 +9370,8 @@ function stopJobPolling() {
   state.pollTimer = null;
 }
 
+let finishSubmissionOnClose = false;
+
 function scheduleJobPoll(jobId, delay) {
   stopJobPolling();
   state.pollTimer = window.setTimeout(() => { void pollJob(jobId); }, delay);
@@ -9498,7 +9511,6 @@ async function submitQueue() {
   state.pollFailures = 0;
   state.pollStatusMessage = "";
   resetProgressView();
-  renderQueue();
   $("#reviewDialog").close();
   $("#progressDialog").showModal();
   let job;
@@ -10279,13 +10291,18 @@ function bindEvents() {
     if (!event.target.closest(".search-control, .search-results")) hideSearchResults();
   });
   $("#doneButton").addEventListener("click", () => {
+    finishSubmissionOnClose = true;
     $("#progressDialog").close();
-    finalizeCurrentSubmission();
   });
   $("#closeProgressButton").addEventListener("click", () => $("#progressDialog").close());
   $("#viewSubmissionButton").addEventListener("click", showProgressDialog);
   $("#progressDialog").addEventListener("close", () => {
-    renderSubmissionNotice();
+    if (finishSubmissionOnClose) {
+      finishSubmissionOnClose = false;
+      finalizeCurrentSubmission();
+    } else {
+      renderAll();
+    }
   });
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) return;
