@@ -184,12 +184,13 @@ class LocalWebServerTests(unittest.TestCase):
         self.assertEqual(
             json.loads(raw),
             {
-                "commit_id": "test-commit", "pid": mock.ANY,
+                "commit_id": "test-commit", "runtime_id": self.server.runtime_id, "pid": mock.ANY,
                 "background": False, "instance_id": "default",
             },
         )
         self.assertEqual(response.getheader("Server"), "AutoEUDM/1.0")
         self.assertEqual(response.getheader("Cache-Control"), "no-store")
+        self.assertEqual(len(self.server.runtime_id), 32)
         self.assertEqual(response.getheader("X-Frame-Options"), "DENY")
         self.assertEqual(
             response.getheader("Cross-Origin-Resource-Policy"), "same-origin"

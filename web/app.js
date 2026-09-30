@@ -3445,30 +3445,82 @@ async function checkForUpdates() {
   toast("The update check is taking longer than expected. Its result will appear in Settings.", "info");
 }
 
-function waitForUpdatedServer(previousCommit, expectedBranch) {
-  const deadline = Date.now() + 120_000;
+let updateWaitToken = 0;
+let updateWaitContext = null;
+
+function showUpdateProgress(detail, stage = "updating", actions = false) {
+  const dialog = $("#updateProgressDialog");
+  dialog.dataset.state = stage;
+  $("#updateProgressTitle").textContent = stage === "error" ? "Update stopped"
+    : stage === "waiting" ? "Still updating Deployments" : "Updating Deployments";
+  $("#updateProgressDetail").textContent = detail;
+  $("#updateProgressActions").hidden = !actions;
+  $("#keepWaitingForUpdateButton").hidden = stage === "error";
+  if (!dialog.open) dialog.showModal();
+}
+
+function closeUpdateProgress() {
+  updateWaitToken += 1;
+  updateWaitContext = null;
+  const dialog = $("#updateProgressDialog");
+  if (dialog.open) dialog.close();
+  void refreshServiceStatus();
+}
+
+async function updateProbe(path) {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 5000);
+  try {
+    return await api(path, { signal: controller.signal, cache: "no-store" });
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+function waitForUpdatedServer(context) {
+  updateWaitContext = context;
+  const token = ++updateWaitToken;
+  const deadline = Date.now() + 180_000;
   const poll = async () => {
+    if (token !== updateWaitToken) return;
     if (Date.now() >= deadline) {
-      toast("The update is taking longer than expected. Reload this tab in a moment.", "error");
+      showUpdateProgress("The server is taking longer than expected to return. You can keep waiting or close this screen and try again later.", "waiting", true);
       return;
     }
     try {
-      const runtime = await api("/api/runtime");
-      if (runtime.commit_id && runtime.commit_id !== previousCommit) {
+      const runtime = await updateProbe("/api/runtime");
+      if (token !== updateWaitToken) return;
+      const newCommit = runtime.commit_id && runtime.commit_id !== "unknown"
+        && context.previousCommit && runtime.commit_id !== context.previousCommit;
+      const newRuntime = context.previousRuntimeId && runtime.runtime_id
+        && runtime.runtime_id !== context.previousRuntimeId;
+      const newProcess = context.previousPid && runtime.pid && runtime.pid !== context.previousPid;
+      if (newCommit || newRuntime || newProcess) {
+        showUpdateProgress("The new version is ready. Refreshing…");
         window.location.reload();
         return;
       }
-      const service = await api("/api/service");
-      if (!service.updating && service.current_branch === expectedBranch) {
-        toast(`Switched to the ${expectedBranch} update channel.`, "success");
+      const service = await updateProbe("/api/service");
+      if (token !== updateWaitToken) return;
+      if (service.update_error && !service.updating) {
+        showUpdateProgress(service.update_error, "error", true);
         return;
       }
+      if (!service.updating && !service.update_available
+        && service.current_branch === context.expectedBranch
+        && /^(Deployments is up to date|Switched to the)/.test(service.update_message || "")) {
+        closeUpdateProgress();
+        toast(`Deployments is up to date on ${context.expectedBranch}.`, "success");
+        return;
+      }
+      showUpdateProgress(service.update_message || "Waiting for the local server to restart…");
     } catch (_) {
-      // The web process briefly goes away while its updated version starts.
+      if (token !== updateWaitToken) return;
+      showUpdateProgress("Restarting the local server…");
     }
     window.setTimeout(poll, 1200);
   };
-  window.setTimeout(poll, 800);
+  window.setTimeout(poll, 700);
 }
 
 async function applyServiceUpdate() {
@@ -3482,14 +3534,35 @@ async function applyServiceUpdate() {
     toast("Commit or move local project changes before updating Deployments.", "error");
     return;
   }
+  let context = {
+    previousCommit: status.current_commit || "",
+    previousRuntimeId: null,
+    previousPid: null,
+    expectedBranch: status.branch || "stable",
+  };
   try {
     $("#updateNotesDialog").close();
+    showUpdateProgress("Preparing the update…");
+    const runtime = await updateProbe("/api/runtime").catch(() => null);
+    context = {
+      previousCommit: runtime?.commit_id && runtime.commit_id !== "unknown"
+        ? runtime.commit_id : status.current_commit || "",
+      previousRuntimeId: runtime?.runtime_id || null,
+      previousPid: runtime?.pid || null,
+      expectedBranch: status.branch || "stable",
+    };
     const response = await api("/api/service/update", { method: "POST", body: "{}" });
     renderServiceStatus(response);
-    waitForUpdatedServer(status.current_commit || "", status.branch || "stable");
+    waitForUpdatedServer(context);
   } catch (error) {
-    toast(error.message, "error");
-    void refreshServiceStatus();
+    if (error.payload) {
+      showUpdateProgress(error.message, "error", true);
+      void refreshServiceStatus();
+    } else {
+      // A shutdown can interrupt the acceptance response after the update
+      // begins. Keep waiting for the new process instead of losing the UI.
+      waitForUpdatedServer(context);
+    }
   }
 }
 
@@ -9603,6 +9676,14 @@ function bindEvents() {
   $("#applyUpdateButton").addEventListener("click", openUpdateReview);
   $("#updateAvailableButton").addEventListener("click", openUpdateReview);
   $("#confirmUpdateButton").addEventListener("click", applyServiceUpdate);
+  $("#updateProgressDialog").addEventListener("cancel", (event) => event.preventDefault());
+  $("#keepWaitingForUpdateButton").addEventListener("click", () => {
+    if (updateWaitContext) {
+      showUpdateProgress("Waiting for the local server to restart…");
+      waitForUpdatedServer(updateWaitContext);
+    }
+  });
+  $("#closeUpdateProgressButton").addEventListener("click", closeUpdateProgress);
   $("#closeUpdateNotesButton").addEventListener("click", () => $("#updateNotesDialog").close());
   $("#laterUpdateButton").addEventListener("click", () => $("#updateNotesDialog").close());
   $("#quitApplicationButton").addEventListener("click", quitApplication);

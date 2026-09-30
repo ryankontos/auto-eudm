@@ -14,6 +14,7 @@ import socket
 import subprocess
 from typing import Any
 import urllib.parse
+import uuid
 
 from . import eudm_request as eudm
 from . import run_reporting
@@ -269,6 +270,7 @@ class AutoEUDMHandler(BaseHTTPRequestHandler):
             self._json(
                 {
                     "commit_id": self.server.commit_id,  # type: ignore[attr-defined]
+                    "runtime_id": self.server.runtime_id,  # type: ignore[attr-defined]
                     "pid": os.getpid(),
                     "background": self.server.service_manager.supervised,  # type: ignore[attr-defined]
                     "instance_id": getattr(getattr(self.app, "database", None), "instance_id", "default"),
@@ -790,5 +792,6 @@ class AutoEUDMServer(ThreadingHTTPServer):
         super().__init__(address, AutoEUDMHandler)
         self.app = app
         self.commit_id = repository_commit_id()
+        self.runtime_id = uuid.uuid4().hex
         self.restart_requested = False
         self.service_manager = LocalServiceManager(app, self)

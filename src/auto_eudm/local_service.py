@@ -377,44 +377,47 @@ class LocalServiceManager:
                 checked_out_branch = current_branch()
                 ahead_of_remote = int(_git_text("rev-list", "--count", f"HEAD..{remote_ref}") or "0")
                 if branch == checked_out_branch and ahead_of_remote == 0:
-                    with self._lock:
-                        self._state.update({
-                            "update_available": False,
-                            "remote_commit": remote_commit,
-                            "current_commit": head,
-                            "update_notes": [],
-                            "update_message": f"Deployments is up to date on {branch}.",
-                        })
-                    return
-                local_branch = _git("show-ref", "--verify", "--quiet", f"refs/heads/{branch}")
-                if local_branch.returncode == 0:
-                    switched = _git("switch", branch)
+                    new_commit = head
+                    if getattr(self.server, "commit_id", head) == head:
+                        with self._lock:
+                            self._state.update({
+                                "update_available": False,
+                                "remote_commit": remote_commit,
+                                "current_commit": head,
+                                "update_notes": [],
+                                "update_message": f"Deployments is up to date on {branch}.",
+                            })
+                        return
                 else:
-                    switched = _git("switch", "--track", "-c", branch, f"origin/{branch}")
-                if switched.returncode != 0:
-                    raise RuntimeError("Could not switch to the selected branch. Check for local Git changes.")
-                with self._lock:
-                    self._state["update_message"] = "Installing the latest version…"
-                pulled = _git("pull", "--ff-only", "origin", branch, timeout=120)
-                if pulled.returncode != 0:
-                    raise RuntimeError("The update could not be applied as a fast-forward. Check the selected branch.")
-                new_commit = _git_text("rev-parse", "HEAD")
-                if not new_commit:
-                    raise RuntimeError("Git updated the files, but Deployments could not confirm the new version.")
-                if new_commit == head:
+                    local_branch = _git("show-ref", "--verify", "--quiet", f"refs/heads/{branch}")
+                    if local_branch.returncode == 0:
+                        switched = _git("switch", branch)
+                    else:
+                        switched = _git("switch", "--track", "-c", branch, f"origin/{branch}")
+                    if switched.returncode != 0:
+                        raise RuntimeError("Could not switch to the selected branch. Check for local Git changes.")
                     with self._lock:
-                        self._state.update({
-                            "branch": branch,
-                            "current_branch": branch,
-                            "current_commit": new_commit,
-                            "remote_commit": remote_commit,
-                            "behind_count": 0,
-                            "update_available": False,
-                            "update_notes": [],
-                            "update_message": f"Switched to the {branch} update channel.",
-                            "update_error": "",
-                        })
-                    return
+                        self._state["update_message"] = "Installing the latest version…"
+                    pulled = _git("pull", "--ff-only", "origin", branch, timeout=120)
+                    if pulled.returncode != 0:
+                        raise RuntimeError("The update could not be applied as a fast-forward. Check the selected branch.")
+                    new_commit = _git_text("rev-parse", "HEAD")
+                    if not new_commit:
+                        raise RuntimeError("Git updated the files, but Deployments could not confirm the new version.")
+                    if new_commit == head and getattr(self.server, "commit_id", head) == new_commit:
+                        with self._lock:
+                            self._state.update({
+                                "branch": branch,
+                                "current_branch": branch,
+                                "current_commit": new_commit,
+                                "remote_commit": remote_commit,
+                                "behind_count": 0,
+                                "update_available": False,
+                                "update_notes": [],
+                                "update_message": f"Switched to the {branch} update channel.",
+                                "update_error": "",
+                            })
+                        return
             with self._lock:
                 self._state.update({
                     "branch": branch,

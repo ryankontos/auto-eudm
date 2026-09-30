@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import subprocess
 import tempfile
+import threading
 from types import SimpleNamespace
 import unittest
 from unittest import mock
@@ -12,6 +13,64 @@ from auto_eudm.web_runtime import Application
 
 
 class UpdateChannelTests(unittest.TestCase):
+    def test_update_restarts_a_server_running_an_older_checkout(self) -> None:
+        manager = local_service.LocalServiceManager.__new__(local_service.LocalServiceManager)
+        manager._lock = threading.RLock()
+        manager._git_lock = threading.Lock()
+        manager._state = {"updating": True}
+        manager.supervised = False
+        manager.server = SimpleNamespace(commit_id="old-commit", restart_requested=False)
+        manager._selected_branch = lambda: "main"
+        manager._shutdown_server = mock.Mock()
+
+        def git_text(*arguments: str) -> str:
+            if arguments[:2] == ("status", "--porcelain"):
+                return ""
+            if arguments[:2] == ("rev-parse", "--verify"):
+                return "new-commit"
+            if arguments[:2] == ("rev-parse", "HEAD"):
+                return "new-commit"
+            if arguments[:2] == ("rev-list", "--count"):
+                return "0"
+            raise AssertionError(arguments)
+
+        with mock.patch.object(local_service, "_git_text", side_effect=git_text), \
+             mock.patch.object(local_service, "_git", return_value=SimpleNamespace(returncode=0)), \
+             mock.patch.object(local_service, "current_branch", return_value="main"):
+            manager._apply_update()
+
+        self.assertTrue(manager.server.restart_requested)
+        manager._shutdown_server.assert_called_once()
+        self.assertEqual(manager._state["update_message"], "Restarting with the latest version…")
+
+    def test_update_does_not_restart_an_already_current_server(self) -> None:
+        manager = local_service.LocalServiceManager.__new__(local_service.LocalServiceManager)
+        manager._lock = threading.RLock()
+        manager._git_lock = threading.Lock()
+        manager._state = {"updating": True}
+        manager.supervised = False
+        manager.server = SimpleNamespace(commit_id="new-commit", restart_requested=False)
+        manager._selected_branch = lambda: "main"
+        manager._shutdown_server = mock.Mock()
+
+        def git_text(*arguments: str) -> str:
+            if arguments[:2] == ("status", "--porcelain"):
+                return ""
+            if arguments[:2] in {("rev-parse", "--verify"), ("rev-parse", "HEAD")}:
+                return "new-commit"
+            if arguments[:2] == ("rev-list", "--count"):
+                return "0"
+            raise AssertionError(arguments)
+
+        with mock.patch.object(local_service, "_git_text", side_effect=git_text), \
+             mock.patch.object(local_service, "_git", return_value=SimpleNamespace(returncode=0)), \
+             mock.patch.object(local_service, "current_branch", return_value="main"):
+            manager._apply_update()
+
+        self.assertFalse(manager.server.restart_requested)
+        manager._shutdown_server.assert_not_called()
+        self.assertEqual(manager._state["update_message"], "Deployments is up to date on main.")
+
     def test_channel_names_map_to_stable_and_development_branches(self) -> None:
         self.assertEqual(local_service.branch_for_channel("stable"), "stable")
         self.assertEqual(local_service.branch_for_channel("development"), "main")

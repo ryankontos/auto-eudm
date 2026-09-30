@@ -2206,6 +2206,28 @@ input:hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var
 
 #settingsDialog { width: min(980px, calc(100vw - 32px)); }
 .update-notes-dialog { width: min(590px, calc(100vw - 28px)); }
+.update-progress-dialog {
+  position: fixed;
+  margin: auto;
+  width: min(440px, calc(100vw - 32px));
+  max-width: none;
+  max-height: calc(100vh - 32px);
+  padding: 0;
+  border: 1px solid var(--line);
+  outline: none;
+  border-radius: var(--radius-lg);
+  color: var(--ink);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-float);
+}
+.update-progress-dialog::backdrop { background: rgba(10, 13, 16, .72); }
+.update-progress-card { display: grid; justify-items: center; gap: 12px; padding: 34px 28px 30px; text-align: center; }
+.update-progress-icon { width: 58px; height: 58px; object-fit: contain; }
+.update-progress-spinner { width: 22px; height: 22px; border: 2px solid var(--line-strong); border-top-color: var(--header-accent); border-radius: 50%; animation: boot-splash-spin .8s linear infinite; }
+.update-progress-dialog[data-state="error"] .update-progress-spinner { visibility: hidden; }
+.update-progress-card h2 { margin: 2px 0 0; font-size: 20px; line-height: 1.2; }
+.update-progress-card p { max-width: 34ch; min-height: 2.8em; margin: 0; color: var(--muted); line-height: 1.45; }
+.update-progress-actions { display: flex; justify-content: center; gap: 8px; margin-top: 6px; }
 .update-notes-card { width: 100%; }
 .update-notes-summary { margin: -3px 0 13px; color: var(--muted); font-size: 13px; }
 .update-notes-content { max-height: min(440px, 52vh); overflow-y: auto; border-top: 1px solid var(--line); }
@@ -2613,6 +2635,7 @@ input:hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var
 @media (prefers-reduced-motion: reduce) {
   .boot-splash { transition: none; }
   .boot-splash-spinner { animation: none; border-right-color: var(--header-accent); }
+  .update-progress-spinner { animation: none; border-right-color: var(--header-accent); }
   .workspace,
   .inspector,
   .inspector-shell,

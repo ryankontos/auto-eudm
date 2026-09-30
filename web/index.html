@@ -350,6 +350,19 @@
     </section>
   </dialog>
 
+  <dialog id="updateProgressDialog" class="update-progress-dialog" aria-labelledby="updateProgressTitle" aria-describedby="updateProgressDetail">
+    <div class="update-progress-card">
+      <img src="/icons/icon-192.png?v=6" alt="" class="update-progress-icon">
+      <span class="update-progress-spinner" aria-hidden="true"></span>
+      <h2 id="updateProgressTitle">Updating Deployments</h2>
+      <p id="updateProgressDetail" role="status" aria-live="polite">Preparing the update…</p>
+      <div id="updateProgressActions" class="update-progress-actions" hidden>
+        <button id="keepWaitingForUpdateButton" class="button primary" type="button">Keep waiting</button>
+        <button id="closeUpdateProgressButton" class="button secondary" type="button">Close</button>
+      </div>
+    </div>
+  </dialog>
+
   <dialog id="pasteDialog" class="modal">
     <form method="dialog" class="modal-card">
       <div class="modal-header">
