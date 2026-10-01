@@ -1,0 +1,43 @@
+/* Match the prebuilt pickers to the app, including dialog top-layer popups. */
+.ts-wrapper { width: 100%; min-width: 0; font-size: inherit; }
+.ts-wrapper.single .ts-control {
+  min-height: var(--control-height);
+  padding: 6px 30px 6px 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--control-radius);
+  color: var(--ink);
+  background: var(--surface-raised);
+  box-shadow: none;
+  align-items: center;
+  gap: 4px;
+}
+.ts-wrapper.focus .ts-control { border-color: var(--blue); box-shadow: 0 0 0 2px var(--blue-soft); }
+.ts-wrapper.single .ts-control::after { border-top-color: var(--muted); }
+.ts-wrapper .ts-control > input {
+  height: auto;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  color: var(--ink);
+  background: transparent;
+  box-shadow: none;
+}
+.ts-wrapper .ts-control > .item { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ts-dropdown {
+  z-index: 100;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--control-radius);
+  color: var(--ink);
+  background: var(--surface);
+  box-shadow: 0 8px 24px #0002;
+  font-size: 13px;
+}
+.ts-dropdown .option { padding: 9px 10px; overflow-wrap: anywhere; }
+.ts-dropdown .active { color: var(--ink); background: var(--blue-soft); }
+.ts-dropdown .no-results { padding: 10px; color: var(--muted); }
+.ts-dropdown-content { max-height: 220px; overscroll-behavior: contain; }
+.ts-hidden-accessible { height: 1px !important; min-height: 0 !important; padding: 0 !important; }
+.search-control .ts-wrapper.single .ts-control { border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.search-control .ts-wrapper { flex: 1; }
+.column-map .ts-wrapper { margin-top: 6px; }

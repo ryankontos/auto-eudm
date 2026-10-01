@@ -1183,6 +1183,36 @@ input:hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var
 #importDialog #importPreview:not([hidden]) {
   min-height: 0;
 }
+/* Give review one scroll area, keeping its actions visible on short screens. */
+#importDialog:has(#importPreview:not([hidden])) .modal-card {
+  display: flex;
+  flex-direction: column;
+  height: min(880px, calc(100dvh - 24px));
+  overflow: hidden;
+}
+#importDialog:has(#importPreview:not([hidden])) .modal-header,
+#importDialog:has(#importPreview:not([hidden])) .wizard-steps,
+#importDialog:has(#importPreview:not([hidden])) .modal-actions { flex-shrink: 0; }
+#importDialog:has(#importPreview:not([hidden])) .import-stage,
+#importDialog:has(#importPreview:not([hidden])) .import-stage-content,
+#importDialog #importPreview:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+#importDialog:has(#importPreview:not([hidden])) .import-preview-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+  grid-auto-rows: max-content;
+}
+#importDialog:has(#importPreview:not([hidden])) #importVerificationWarnings,
+#importDialog:has(#importPreview:not([hidden])) #importError {
+  flex-shrink: 0;
+  max-height: 20dvh;
+  overflow-y: auto;
+}
 .modal-header { position: sticky; top: -24px; z-index: 4; display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: -24px -24px 17px; padding: 17px 24px 13px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--surface-raised) 95%, var(--blue-soft)); }
 .modal-header h2 { margin: 0; font-size: 21px; letter-spacing: -.02em; }
 .modal-card > p { margin: 0 0 10px; color: var(--muted); }

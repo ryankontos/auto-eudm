@@ -28,6 +28,9 @@ AutoEUDM is a local web UI I developed to speed up device-management work in EUD
 - `src/auto_eudm/eudm_inventory_import.py`: shared ALM workbook parsing and row rules.
 - `src/auto_eudm/pc_toolkit.py`: optional read-only PC Toolkit enrichment, ranking, authentication handoff, and filesystem cache.
 - `web/`: markup, styling, and browser-side interaction.
+- `web/components.js` / `components.css`: adapters for locally bundled Idiomorph, Tom Select and Tippy/Popper. State-driven queue/ALM rendering preserves nodes and focus; use `DeploymentComponents.listen` when rebinding retained nodes, and `selectOptions` when changing searchable picker options.
+- `scripts/vendor_web.mjs`: refresh tracked browser bundles/licenses with `npm ci` then `npm run vendor:web` on the development machine. The deployed browser UI needs no CDN or Node runtime.
+- `scripts/check_alm_ui.py`: optional Chrome/Playwright ALM workflow checks. Run only against an isolated simulator: it resets that instance's queue, drafts and backlog ignores. Covers mapping, Excel/CSV, corrections, resume, enrichment retries and queue-save recovery.
 - `launchers/`: double-clickable web startup files for macOS, Windows, and PowerShell.
 - `requirements/`: optional spreadsheet and browser dependencies installed at startup.
 - `results/`: legacy runtime-state source used for a one-time migration; do not add new durable app state here.

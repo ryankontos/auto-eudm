@@ -3,12 +3,15 @@
   "private": true,
   "version": "1.0.0",
   "description": "The AutoEUDM browser interface",
+  "scripts": { "vendor:web": "node scripts/vendor_web.mjs" },
   "dependencies": {
     "@formkit/auto-animate": "^0.10.0",
     "canvas-confetti": "^1.9.4",
+    "idiomorph": "0.8.0",
     "lucide": "^1.40.0",
     "puppeteer-core": "^24.31.0",
     "sortablejs": "^1.15.7",
-    "tippy.js": "^6.3.7"
+    "tippy.js": "^6.3.7",
+    "tom-select": "2.6.2"
   }
 }

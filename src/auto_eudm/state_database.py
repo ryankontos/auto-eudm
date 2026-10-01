@@ -2239,6 +2239,7 @@ class AppDatabase:
         workbook["sheets"] = sheet_values
         if row["has_inspection"]:
             inspection = {
+                "import_id": import_id,
                 "filename": workbook["filename"],
                 "format": workbook["format"],
                 "has_sheets": workbook["has_sheets"],

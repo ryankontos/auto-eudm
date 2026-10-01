@@ -158,7 +158,7 @@ function pcToolkitHasModel(result) {
 }
 
 function pcToolkitImportSerials(request) {
-  if (request?.group === "Pending returns" || request?.has_pending_return_serial) return [];
+  if (request?.group === "Pending returns") return [];
   return [...new Map([
     ...(Array.isArray(request?.serials) ? request.serials : []),
     request?.serial,
@@ -213,14 +213,17 @@ function refreshTooltips(root = document) {
     duration: [130, 100],
     placement: "top",
     maxWidth: 250,
-    appendTo: () => document.body,
+    // A tooltip outside an open dialog is hidden behind its top layer.
+    appendTo: (target) => target.closest("dialog[open]") || document.body,
+    onShow: (instance) => !instance.reference.disabled,
   };
   targets.forEach((target) => {
-    const title = target.getAttribute("title") || target.dataset.tooltip || target.getAttribute("aria-label");
+    const title = target.getAttribute("title") || target.getAttribute("aria-label") || target.dataset.tooltip;
     if (!title) return;
     // Keep a copy because Tippy removes the native title after enhancement.
     // This also lets dynamic disabled/error labels stay accurate on rerender.
     target.dataset.tooltip = title;
+    target.removeAttribute("title");
     if (target._tippy) {
       target._tippy.setContent(title);
       return;
@@ -906,16 +909,32 @@ async function syncSharedPreferences() {
   }
 }
 
+let queueSavePromise = null;
+
 function persistQueueSoon() {
   if (!state.queueLoaded) return;
   const snapshot = queueSnapshot();
   if (!snapshot || snapshot === state.persistedQueueSnapshot) return;
   if (state.queuePersistTimer) window.clearTimeout(state.queuePersistTimer);
-  state.queuePersistTimer = window.setTimeout(async () => {
+  state.queuePersistTimer = window.setTimeout(() => {
     state.queuePersistTimer = null;
+    void persistQueueNow();
+  }, 250);
+}
+
+async function persistQueueNow({ throwOnError = false } = {}) {
+  if (!state.queueLoaded) return;
+  if (state.queuePersistTimer) window.clearTimeout(state.queuePersistTimer);
+  state.queuePersistTimer = null;
+  if (queueSavePromise) {
+    await queueSavePromise.catch(() => {});
+    return persistQueueNow({ throwOnError });
+  }
+  if (queueSnapshot() === state.persistedQueueSnapshot) return;
+  queueSavePromise = (async () => {
     const queuedSnapshot = queueSnapshot();
     if (!queuedSnapshot || queuedSnapshot === state.persistedQueueSnapshot) return;
-    if (state.queuePersistInFlight) return;
+
     state.queuePersistInFlight = true;
     let saveSucceeded = false;
     try {
@@ -949,11 +968,14 @@ function persistQueueSoon() {
       saveSucceeded = true;
     } catch (error) {
       toast(`Could not save the request queue: ${error.message}`, "error");
+      if (throwOnError) throw error;
     } finally {
       state.queuePersistInFlight = false;
+      queueSavePromise = null;
       if (saveSucceeded && queueSnapshot() !== state.persistedQueueSnapshot) persistQueueSoon();
     }
-  }, 250);
+  })();
+  return queueSavePromise;
 }
 
 function verifyCachedValueInBackground(kind, query, returning, onResult, onError = null) {
@@ -1812,7 +1834,7 @@ function renderQueue() {
       ? "Connect to Helix before submitting."
       : "Review every request before submitting.";
 
-  elements.queueBody.innerHTML = visibleRequests.map((request) => {
+  DeploymentComponents.render(elements.queueBody, visibleRequests.map((request) => {
     const index = state.queue.indexOf(request);
     const errors = validations.get(request.id) || [];
     const errorText = validationErrorTexts(request, errors).join(" ");
@@ -1849,12 +1871,12 @@ function renderQueue() {
         <td class="state-column" title="${escapeHtml(stateTitle)}">${readinessMarkup}</td>
         <td><button class="row-menu" data-remove="${escapeHtml(request.id)}" aria-label="Remove request" title="${submitting ? "This request is being submitted" : "Remove request"}" ${submitting ? "disabled" : ""}>${iconMarkup("trash-2")}</button></td>
       </tr>`;
-  }).join("");
+  }).join(""));
   refreshIcons(elements.queueBody);
   syncQueueSorting();
 
   elements.queueBody.querySelectorAll("tr").forEach((row) => {
-    row.addEventListener("click", (event) => {
+    DeploymentComponents.listen(row, "click", (event) => {
       if (event.target.closest("[data-remove], [data-copy-request-id], .queue-drag-handle")) return;
       // Selecting text in a row also produces a click. Re-rendering here would
       // replace the row and clear the selection before it can be copied.
@@ -1863,8 +1885,8 @@ function renderQueue() {
       state.selectedId = state.selectedId === row.dataset.id ? null : row.dataset.id;
       renderAll();
     });
-    row.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") {
+    DeploymentComponents.listen(row, "keydown", (event) => {
+      if (event.target === row && (event.key === "Enter" || event.key === " ")) {
         event.preventDefault();
         state.selectedId = state.selectedId === row.dataset.id ? null : row.dataset.id;
         renderAll();
@@ -1872,7 +1894,7 @@ function renderQueue() {
     });
   });
   elements.queueBody.querySelectorAll("[data-remove]").forEach((button) => {
-    button.addEventListener("click", () => removeRequest(button.dataset.remove));
+    DeploymentComponents.listen(button, "click", () => removeRequest(button.dataset.remove));
   });
   refreshSelectedValidation();
   renderSubmissionNotice();
@@ -1894,10 +1916,10 @@ function refreshSelectedValidation() {
 }
 
 function fillSelect(select, options, selected, placeholder = null) {
-  select.innerHTML = [
+  DeploymentComponents.selectOptions(select, [
     ...(placeholder !== null ? [{ label: placeholder, value: "" }] : []),
     ...options,
-  ].map((option) => `<option value="${escapeHtml(option.value)}" ${option.value === selected ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("");
+  ].map((option) => `<option value="${escapeHtml(option.value)}" ${option.value === selected ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join(""));
 }
 
 function bulkSerialMode(request) {
@@ -2148,8 +2170,10 @@ function renderInspector() {
   bulkValidateButton.disabled = !request.serials.length || request.bulk_validation === "checking";
   setButtonLabel(bulkValidateButton, request.bulk_validation === "checking" ? "Verifying…" : "Verify");
   elements.serialLabel.textContent = bulk ? "Serial numbers" : "Serial number";
-  elements.serialInput.value = bulk ? "" : (request.serials[0] || "");
-  elements.serialsInput.value = bulk ? request.serials.join("\n") : "";
+  if (document.activeElement !== elements.serialInput) elements.serialInput.value = bulk ? "" : (request.serials[0] || "");
+  // Background validation must not normalize spacing or move the caret while
+  // the user is still composing a bulk list.
+  if (document.activeElement !== elements.serialsInput) elements.serialsInput.value = bulk ? request.serials.join("\n") : "";
   elements.serialHint.textContent = bulk ? `${request.serials.length} serial${request.serials.length === 1 ? "" : "s"}` : "";
   renderBulkSerialEditor(request);
   refreshBulkValidationButton(request);
@@ -2171,7 +2195,7 @@ function renderInspector() {
   // Set it on every render so it cannot remain hidden after switching the
   // request between deployment destinations.
   elements.returningUserFields.hidden = request.kind !== "location";
-  elements.userInput.value = request.user || "";
+  if (document.activeElement !== elements.userInput) elements.userInput.value = request.user || "";
   renderLookupConfirmations(request, { bulk, user });
 
   if (!user) {
@@ -2183,7 +2207,7 @@ function renderInspector() {
     elements.locationDetail.textContent = hasExact ? "" : "Choose a location.";
     elements.returningToggle.checked = Boolean(request.returning);
     elements.returningSearch.hidden = !request.returning;
-    elements.returningUserInput.value = request.returning_user || "";
+    if (document.activeElement !== elements.returningUserInput) elements.returningUserInput.value = request.returning_user || "";
     elements.returnConfirmation.hidden = !(
       request.returning
       && request.returning_user
@@ -2500,16 +2524,16 @@ function populateLocationPicker(input, location, results, emptyText) {
       && cabinet === (location?.cabinet || "");
   });
   if (results.length) {
-    input.innerHTML = [
+    DeploymentComponents.selectOptions(input, [
       '<option value="">Choose a location</option>',
       ...results.map((result, index) => `<option value="${index}" ${index === selectedIndex ? "selected" : ""}>${escapeHtml(result.columns.filter(Boolean).join(" → "))}</option>`),
-    ].join("");
+    ].join(""));
     input.dataset.results = JSON.stringify(results);
   } else if (exact) {
-    input.innerHTML = `<option value="current">${escapeHtml(locationDisplay(location))}</option>`;
+    DeploymentComponents.selectOptions(input, `<option value="current">${escapeHtml(locationDisplay(location))}</option>`);
     input.dataset.results = "";
   } else {
-    input.innerHTML = `<option value="">${escapeHtml(emptyText)}</option>`;
+    DeploymentComponents.selectOptions(input, `<option value="">${escapeHtml(emptyText)}</option>`);
     input.dataset.results = "";
   }
 }
@@ -3050,7 +3074,7 @@ async function loadLocations({ city: requestedCity, force = false, quiet = false
     return;
   }
   $("#loadLocationsButton").disabled = true;
-  elements.locationInput.innerHTML = '<option>Loading locations…</option>';
+  DeploymentComponents.selectOptions(elements.locationInput, '<option value="">Loading locations…</option>');
   try {
     const results = await fetchLocationResults(city, { force });
     const current = selectedRequest();
@@ -3059,8 +3083,8 @@ async function loadLocations({ city: requestedCity, force = false, quiet = false
       renderQueue();
     }
   } catch (error) {
-    if (selectedRequest()?.id === requestId) {
-      elements.locationInput.innerHTML = '<option value="">Could not load locations</option>';
+    if (selectedRequest()?.id === requestId && selectedRequest()?.location?.city === city) {
+      populateLocationPicker(elements.locationInput, request.location, locationResults(city), "Could not load locations");
     }
     if (!quiet) toast(error.message, "error");
   } finally {
@@ -4220,7 +4244,7 @@ function applyPcToolkitImportResults(payload, requests, results) {
 }
 
 function pcToolkitImportQueries(request) {
-  if (request?.group === "Pending returns" || request?.has_pending_return_serial) return [];
+  if (request?.group === "Pending returns") return [];
   return [...new Map([
     ...pcToolkitImportSerials(request),
     String(request?.username || request?.user || request?.returning_user || "").trim(),
@@ -4272,8 +4296,16 @@ function schedulePcToolkitImportRender(payload) {
 
 async function enrichImportPreview(payload = state.importPreview, { requests: requested = null, fresh = false } = {}) {
   if (!payload || !state.preferences.pc_toolkit_enabled) return;
-  const epoch = ++state.pcToolkitEnrichmentEpoch;
+  const fullRun = !requested;
+  const epoch = fullRun ? ++state.pcToolkitEnrichmentEpoch : state.pcToolkitEnrichmentEpoch;
   const requests = requested || payload.requests || [];
+  const epochs = new Map(requests.map((request) => {
+    request.pc_toolkit_lookup_epoch = Number(request.pc_toolkit_lookup_epoch || 0) + 1;
+    return [request.id, request.pc_toolkit_lookup_epoch];
+  }));
+  const currentRequests = () => state.importPreview === payload
+    ? requests.filter((request) => payload.requests.includes(request)
+      && request.pc_toolkit_lookup_epoch === epochs.get(request.id)) : [];
   const missingReturnUsers = requests
     .filter((request) => importDeploymentNeedsManualReturn(request, payload))
     .map((request) => String(request.username || request.user || "").trim())
@@ -4295,10 +4327,13 @@ async function enrichImportPreview(payload = state.importPreview, { requests: re
     request.pc_toolkit = null;
   });
   if (!queries.length) {
-    payload.pc_toolkit_loading = false;
-    payload.pc_toolkit_total = 0;
-    payload.pc_toolkit_completed = 0;
-    payload.pc_toolkit_error_count = 0;
+    payload.pc_toolkit_loading = payload.requests.some((request) => request.pc_toolkit_loading);
+    if (fullRun) {
+      payload.pc_toolkit_total = 0;
+      payload.pc_toolkit_completed = 0;
+      payload.pc_toolkit_error_count = 0;
+    }
+    schedulePcToolkitImportRender(payload);
     const matched = applyReturnedSerialMatches(payload);
     if (matched) {
       renderImportPreview();
@@ -4307,8 +4342,10 @@ async function enrichImportPreview(payload = state.importPreview, { requests: re
     return;
   }
   payload.pc_toolkit_loading = true;
-  payload.pc_toolkit_total = queries.length;
-  payload.pc_toolkit_completed = 0;
+  if (fullRun) {
+    payload.pc_toolkit_total = queries.length;
+    payload.pc_toolkit_completed = 0;
+  }
   lookupRequests.forEach((request) => {
     request.pc_toolkit_loading = true;
     request.pc_toolkit_error = "";
@@ -4318,33 +4355,39 @@ async function enrichImportPreview(payload = state.importPreview, { requests: re
   const accumulatedResults = {};
   const accumulatedErrors = {};
   const onBatch = (batchResults, meta = {}) => {
-    if (state.importPreview !== payload || epoch !== state.pcToolkitEnrichmentEpoch) return;
-    payload.pc_toolkit_completed = Number(meta.completed ?? payload.pc_toolkit_completed ?? 0);
+    const active = currentRequests();
+    if (!active.length) return;
+    if (fullRun && epoch === state.pcToolkitEnrichmentEpoch) payload.pc_toolkit_completed = Number(meta.completed ?? payload.pc_toolkit_completed ?? 0);
     (meta.completedQueries || meta.queries || []).forEach((query) => completedKeys.add(pcToolkitKey(query)));
     Object.assign(accumulatedResults, batchResults || {});
     Object.keys(accumulatedErrors).forEach((key) => {
       if (!Object.prototype.hasOwnProperty.call(meta.errors || {}, key)) delete accumulatedErrors[key];
     });
     Object.assign(accumulatedErrors, meta.errors || {});
-    applyPcToolkitImportResults(payload, requests, accumulatedResults);
-    updatePcToolkitImportLookupState(requests, completedKeys, accumulatedResults, accumulatedErrors, { payload });
+    applyPcToolkitImportResults(payload, active, accumulatedResults);
+    updatePcToolkitImportLookupState(active, completedKeys, accumulatedResults, accumulatedErrors, { payload });
     schedulePcToolkitImportRender(payload);
   };
   try {
     const response = await pcToolkitEnrichImportQueries(queries, serialQueries, { fresh, onBatch });
-    if (state.importPreview !== payload || epoch !== state.pcToolkitEnrichmentEpoch) return;
+    const active = currentRequests();
+    if (!active.length) return;
     const results = response.results || {};
     Object.assign(accumulatedResults, results);
     Object.keys(accumulatedErrors).forEach((key) => delete accumulatedErrors[key]);
     Object.assign(accumulatedErrors, response.errors || {});
-    applyPcToolkitImportResults(payload, requests, accumulatedResults);
-  } catch (_) {
-    // Keep the workbook fully usable when the optional service is unavailable.
+    applyPcToolkitImportResults(payload, active, accumulatedResults);
+  } catch (error) {
+    // Optional failures need a retry action, not a permanently blank result.
+    queries.forEach((query) => {
+      if (!pcToolkitResultFor(accumulatedResults, query)) accumulatedErrors[pcToolkitKey(query)] = error.message || "PC Toolkit lookup unavailable";
+    });
   } finally {
-    if (state.importPreview === payload && epoch === state.pcToolkitEnrichmentEpoch) {
-      payload.pc_toolkit_loading = false;
-      payload.pc_toolkit_completed = payload.pc_toolkit_total;
-      updatePcToolkitImportLookupState(requests, completedKeys, accumulatedResults, accumulatedErrors, { final: true, payload });
+    const active = currentRequests();
+    if (active.length) {
+      updatePcToolkitImportLookupState(active, completedKeys, accumulatedResults, accumulatedErrors, { final: true, payload });
+      payload.pc_toolkit_loading = payload.requests.some((request) => request.pc_toolkit_loading);
+      if (fullRun && epoch === state.pcToolkitEnrichmentEpoch) payload.pc_toolkit_completed = payload.pc_toolkit_total;
       payload.pc_toolkit_error_count = (payload.requests || []).filter((request) => request.pc_toolkit_error).length;
       const matched = applyReturnedSerialMatches(payload);
       if (matched) {
@@ -4484,13 +4527,11 @@ async function findPasteLocations({ force = false, quiet = false } = {}) {
   }
   const button = $("#pairsFindLocationsButton");
   button.disabled = true;
-  $("#pairsLocationInput").innerHTML = '<option>Loading locations…</option>';
+  DeploymentComponents.selectOptions($("#pairsLocationInput"), '<option value="">Loading locations…</option>');
   try {
     const results = await fetchLocationResults(city, { force });
+    if (state.pasteLocation?.city !== city) return;
     state.pasteLocationResults = results.map((result) => ({ ...result, city }));
-    if (state.pasteLocation?.city !== city) {
-      state.pasteLocation = { city, building: "", floor: "", room: "", cabinet: "" };
-    }
     renderPasteLocationFields();
     if (!hasCompleteLocation(state.pasteLocation)) {
       $("#pairsLocation").textContent = results.length
@@ -4498,8 +4539,9 @@ async function findPasteLocations({ force = false, quiet = false } = {}) {
         : "No locations are available for the selected city.";
     }
   } catch (error) {
+    if (state.pasteLocation?.city !== city) return;
     state.pasteLocationResults = [];
-    $("#pairsLocationInput").innerHTML = '<option value="">Could not load locations</option>';
+    populateLocationPicker($("#pairsLocationInput"), state.pasteLocation, locationResults(city), "Could not load locations");
     if (!quiet) toast(error.message, "error");
   } finally {
     button.disabled = false;
@@ -5318,13 +5360,15 @@ function renderImportLocationFields() {
 
 async function fetchImportLocations(city, force = false) {
   if (!city) return;
-  $("#importLocationInput").innerHTML = '<option>Loading locations…</option>';
+  DeploymentComponents.selectOptions($("#importLocationInput"), '<option value="">Loading locations…</option>');
   try {
     const results = await fetchLocationResults(city, { force });
+    if (state.importLocation?.city !== city) return;
     state.importLocationResults = results.map((result) => ({ ...result, city }));
     renderImportLocationFields();
   } catch (error) {
-    $("#importLocationInput").innerHTML = '<option value="">Could not load locations</option>';
+    if (state.importLocation?.city !== city) return;
+    populateLocationPicker($("#importLocationInput"), state.importLocation, locationResults(city), "Could not load locations");
   }
 }
 
@@ -5480,7 +5524,7 @@ function renderImportColumnMap() {
   const saved = importColumns() || {};
   const select = (element, selected) => {
     const matching = headings.find((heading) => String(heading).trim().toLowerCase() === String(selected || "").trim().toLowerCase());
-    element.innerHTML = `<option value="">Choose a column</option>${headings.map((heading) => `<option value="${escapeHtml(heading)}" ${heading === matching ? "selected" : ""}>${escapeHtml(heading)}</option>`).join("")}`;
+    DeploymentComponents.selectOptions(element, `<option value="">Choose a column</option>${headings.map((heading) => `<option value="${escapeHtml(heading)}" ${heading === matching ? "selected" : ""}>${escapeHtml(heading)}</option>`).join("")}`);
   };
   select($("#importMapUsername"), saved.username || "Username");
   select($("#importMapDeployment"), saved.deployment_serial || "SN");
@@ -5493,6 +5537,21 @@ function renderImportColumnMap() {
   select($("#importMapNewAssetStatus"), saved.new_asset_status || "New Asset Status");
   select($("#importMapFirstName"), saved.first_name || "First Name");
   select($("#importMapLastName"), saved.last_name || "Last Name");
+  $("#importReturnLayoutInput").value = $("#importMapOldDevice").value && $("#importMapReturnCheckbox").value
+    ? "combined" : "separate";
+  updateImportReturnLayout();
+  updateImportColumnMapButton();
+}
+
+function updateImportReturnLayout() {
+  const layout = $("#importReturnLayoutInput").value;
+  $$('[data-import-layout]').forEach((label) => {
+    label.hidden = label.dataset.importLayout !== layout;
+    if (!label.hidden) return;
+    const select = label.querySelector("select");
+    if (select.tomselect) select.tomselect.setValue("", true);
+    else select.value = "";
+  });
   updateImportColumnMapButton();
 }
 
@@ -5543,6 +5602,7 @@ async function saveImportColumnPreferences(columns) {
 }
 
 async function mapWorkbookColumns({ persist = true } = {}) {
+  const token = state.importUploadToken;
   const columns = selectedImportColumns();
   const mappingError = importColumnMapError(columns);
   if (mappingError) {
@@ -5564,17 +5624,19 @@ async function mapWorkbookColumns({ persist = true } = {}) {
         columns,
       }),
     });
-    const token = state.importUploadToken;
+    if (token !== state.importUploadToken) return;
     const workbook = await waitForWorkbookImport(job.job_id, token);
     if (!workbook) return;
     if (persist) await saveImportColumnPreferences(columns);
+    if (token !== state.importUploadToken) return;
     await showImportedWorkbook(workbook);
   } catch (error) {
+    if (token !== state.importUploadToken) return;
     $("#importFileChooser").hidden = false;
     openImportColumnMapping();
     throw error;
   } finally {
-    setImportBusy(false);
+    if (token === state.importUploadToken) setImportBusy(false);
   }
 }
 
@@ -5654,7 +5716,7 @@ async function loadImportDrafts() {
 
 function importDraftPhase() {
   if (state.importPreview) return "review";
-  if (state.workbook?.needs_mapping) return "mapping";
+  if (!$("#importMapColumns").hidden || state.workbook?.needs_mapping) return "mapping";
   return "options";
 }
 
@@ -5688,7 +5750,12 @@ function saveCurrentImportDraft({ immediate = false } = {}) {
     id: state.importDraftId,
     filename: workbook.filename || "ALM Workbook",
     import_id: workbook.import_id,
-    workbook: JSON.parse(JSON.stringify(workbook)),
+    workbook: JSON.parse(JSON.stringify({
+      ...workbook,
+      // Remapping an already parsed workbook still needs its original headings.
+      ...(state.workbookInspection && state.workbookInspection !== workbook
+        ? { inspection: { ...state.workbookInspection, import_id: workbook.import_id } } : {}),
+    })),
     phase: importDraftPhase(),
     settings: importDraftSettings(),
     preview: state.importPreview ? JSON.parse(JSON.stringify(state.importPreview)) : null,
@@ -5860,8 +5927,13 @@ function restoreImportDraftMapping(settings = {}) {
   Object.entries(selectors).forEach(([key, selector]) => {
     const element = $(selector);
     const value = settings.columns?.[key] || "";
-    if ([...element.options].some((option) => option.value === value)) element.value = value;
+    if ([...element.options].some((option) => option.value === value)) {
+      if (element.tomselect) element.tomselect.setValue(value, true);
+      else element.value = value;
+    }
   });
+  $("#importReturnLayoutInput").value = settings.columns?.old_device_serial && settings.columns?.return_checkbox ? "combined" : "separate";
+  updateImportReturnLayout();
   updateImportColumnMapButton();
 }
 
@@ -5914,7 +5986,9 @@ function resumeImportDraft(id) {
   state.workbook = JSON.parse(JSON.stringify(draft.workbook));
   state.workbookInspection = state.workbook.needs_mapping
     ? state.workbook
-    : (state.workbook.inspection || null);
+    : state.workbook.inspection
+      ? { ...state.workbook.inspection, import_id: state.workbook.import_id }
+      : state.workbook;
   state.importLocation = draft.settings?.location ? JSON.parse(JSON.stringify(draft.settings.location)) : preferredImportLocation();
   if (draft.phase === "mapping" || draft.workbook.needs_mapping) {
     openImportColumnMapping();
@@ -5975,12 +6049,15 @@ function verificationStatusMarkup(stateName, message, attributes = "") {
 function verificationStatusIndicatorMarkup(stateName) {
   return stateName === "checking"
     ? '<span class="import-status-spinner" aria-hidden="true"></span>'
-    : iconMarkup(stateName === "valid" ? "circle-check" : "circle-alert");
+    : iconMarkup(stateName === "valid" ? "circle-check" : stateName === "pending" ? "clock-3" : "circle-alert");
 }
 
 function importValidationDescriptor(request) {
+  if (importQueueConflicts([request]).length) return { state: "failed", message: "Already in the request queue" };
   const cachedFields = importCachedVerificationFields(request);
-  const verifiesUser = request.kind === "user" || (request.kind === "location" && Boolean(request.returning));
+  const verifiesUser = request.kind === "location"
+    ? Boolean(request.returning && request.returning_user)
+    : Boolean(request.user || request.username);
   if (request.import_validation === "checking") {
     return { state: "checking", message: verifiesUser ? "Verifying serial and user in Helix…" : "Verifying serial in Helix…" };
   }
@@ -5994,8 +6071,8 @@ function importValidationDescriptor(request) {
     return { state: "checking", message: cachedKind === "details" ? "Verifying cached user and serial…" : cachedVerificationMessage(cachedKind) };
   }
   return request.import_validation === "valid"
-    ? { state: "valid", message: "Serial verified" }
-    : { state: "idle", message: "" };
+    ? { state: "valid", message: verifiesUser ? "Serial and user verified" : "Serial verified" }
+    : { state: "pending", message: connectionIsReady() ? "Waiting to verify…" : "Waiting for Helix connection" };
 }
 
 function patchImportValidationStatusNode(node, request) {
@@ -6074,6 +6151,11 @@ function renderImportVerificationWarnings(payload = state.importPreview) {
 function updateImportPrepareButton(payload = state.importPreview) {
   if (!payload) return;
   const button = $("#prepareImportButton");
+  if (importQueueAdding) {
+    button.disabled = true;
+    setButtonLabel(button, "Saving to queue…");
+    return;
+  }
   const hint = $("#importPrepareHint");
   const serialLabel = (request) => String(request?.serials?.[0] || request?.serial || "row").trim() || "row";
   const requestLabels = (requests, noun = "row") => {
@@ -6090,21 +6172,23 @@ function updateImportPrepareButton(payload = state.importPreview) {
   };
   if (payload.mode === "backlog") {
     const selected = payload.requests.filter((request) => request.included !== false);
+    const conflicts = importQueueConflicts(selected);
     const checking = selected.some((request) => !["valid", "failed"].includes(request.import_validation));
     const verifiedCount = selected.filter((request) => ["valid", "failed"].includes(request.import_validation)).length;
     const missingStatusRequests = selected.filter((request) => !request.status);
-    const invalidRequests = selected.filter((request) => request.import_validation !== "valid");
+    const invalidRequests = selected.filter((request) => request.import_validation === "failed");
     const missingStatus = missingStatusRequests.length > 0;
     const invalid = invalidRequests.length > 0;
-    button.disabled = !selected.length || checking || missingStatus || invalid;
+    button.disabled = !selected.length || checking || missingStatus || invalid || conflicts.length > 0;
     const reasons = [];
+    if (conflicts.length) reasons.push(`Already in the queue; exclude: ${conflicts.slice(0, 3).join(", ")}${conflicts.length > 3 ? " and more" : ""}.`);
     if (!selected.length) reasons.push("Select at least one undeployed device to add.");
-    if (checking) reasons.push(`Waiting for verification on ${selected.length - verifiedCount} device${selected.length - verifiedCount === 1 ? "" : "s"}.`);
+    if (checking) reasons.push(connectionIsReady() ? `Waiting for verification on ${selected.length - verifiedCount} device${selected.length - verifiedCount === 1 ? "" : "s"}.` : "Connect to Helix to verify selected devices.");
     if (missingStatus) reasons.push(`Choose a deployment status for: ${requestLabels(missingStatusRequests, "device")}.`);
     if (invalid) reasons.push(`Fix or exclude invalid device${invalidRequests.length === 1 ? "" : "s"}: ${requestLabels(invalidRequests, "device")}.`);
     setHint(reasons.join(" ") || `Ready to add ${selected.length} device${selected.length === 1 ? "" : "s"}.`, reasons.length ? "blocked" : "ready");
     setButtonLabel(button, checking
-      ? `Verifying ${verifiedCount}/${selected.length}…`
+      ? connectionIsReady() ? `Verifying ${verifiedCount}/${selected.length}…` : "Connect to Helix"
       : missingStatus
         ? "Choose deployment statuses"
         : invalid
@@ -6115,25 +6199,27 @@ function updateImportPrepareButton(payload = state.importPreview) {
     return;
   }
   const selected = payload.requests.filter((request) => request.included !== false);
-  const checking = selected.some((request) => request.import_validation === "checking" || !request.import_validation);
+  const conflicts = importQueueConflicts(selected);
+  const checking = selected.some((request) => !["valid", "failed"].includes(request.import_validation));
   const verifiedCount = selected.filter((request) => ["valid", "failed"].includes(request.import_validation)).length;
   const missingStatusRequests = selected.filter((request) => ALM_IMPORT_STATUS_OPTIONS[request.group] && !request.status);
   const missingStatus = missingStatusRequests.length > 0;
   const missingLocation = selected.some((request) => request.group === "Returned devices")
     && !hasCompleteLocation(state.importLocation);
-  const invalidRequests = selected.filter((request) => request.import_validation !== "valid");
+  const invalidRequests = selected.filter((request) => request.import_validation === "failed");
   const invalid = invalidRequests.length > 0;
   const valid = selected.filter((request) => request.import_validation === "valid").length;
-  button.disabled = !selected.length || checking || missingStatus || missingLocation || invalid;
+  button.disabled = !selected.length || checking || missingStatus || missingLocation || invalid || conflicts.length > 0;
   const reasons = [];
+  if (conflicts.length) reasons.push(`Already in the queue; exclude: ${conflicts.slice(0, 3).join(", ")}${conflicts.length > 3 ? " and more" : ""}.`);
   if (!selected.length) reasons.push("Select at least one row to add.");
-  if (checking) reasons.push(`Waiting for verification on ${selected.length - verifiedCount} row${selected.length - verifiedCount === 1 ? "" : "s"}.`);
+  if (checking) reasons.push(connectionIsReady() ? `Waiting for verification on ${selected.length - verifiedCount} row${selected.length - verifiedCount === 1 ? "" : "s"}.` : "Connect to Helix to verify selected requests.");
   if (missingStatus) reasons.push(`Choose a status for: ${requestLabels(missingStatusRequests)}.`);
   if (missingLocation) reasons.push("Complete the destination in Options for returned devices.");
   if (invalid) reasons.push(`Fix or exclude invalid row${invalidRequests.length === 1 ? "" : "s"}: ${requestLabels(invalidRequests)}.`);
   setHint(reasons.join(" ") || `Ready to add ${valid} request${valid === 1 ? "" : "s"}.`, reasons.length ? "blocked" : "ready");
   setButtonLabel(button, checking
-    ? `Verifying ${verifiedCount}/${selected.length}…`
+    ? connectionIsReady() ? `Verifying ${verifiedCount}/${selected.length}…` : "Connect to Helix"
     : missingStatus
       ? "Choose import statuses"
       : missingLocation
@@ -6333,6 +6419,14 @@ async function enrichManualReturnSerial(payload, source, { fresh = false, render
       : String(response.errors?.[serialKey] || "").trim();
     source.manual_return_lookup_state = result?.primary ? "ready" : "empty";
     applyManualReturnModelSuggestion(source);
+    const added = payload.requests.find((request) => request.id === source.manual_return_id);
+    if (added?.group === "Returned devices" && pcToolkitKey(added.serials?.[0]) === serialKey) {
+      added.pc_toolkit = { serial: result, user: null, enriched_at: new Date().toISOString() };
+      added.pc_toolkit_checked = true;
+      added.device_allocation = source.manual_return_model || added.device_allocation;
+      const suggested = pcToolkitSuggestedStatus(added, source.manual_return_model);
+      if (!added.status && suggested) added.status = suggested;
+    }
     return result || null;
   } catch (error) {
     if (source.manual_return_lookup_epoch !== epoch) return null;
@@ -6695,7 +6789,7 @@ function manualReturnEditorMarkup(source, payload) {
             <option value="pending_returns" ${type === "pending_returns" ? "selected" : ""}>Pending return</option>
           </select></label>
           ${statusControl}
-          <button class="button secondary compact" type="button" data-import-manual-add="${escapeHtml(source.id)}" ${lookupState === "loading" ? "disabled" : ""}>${lookupState === "loading" ? "Checking…" : "Add to review"}</button>
+          <button class="button secondary compact" type="button" data-import-manual-add="${escapeHtml(source.id)}">Add to review</button>
         </div>${error}
       </div>`;
   return `<div class="import-manual-return-entry" data-import-manual-source="${escapeHtml(source.id)}">
@@ -6765,6 +6859,10 @@ function cloneImportHistoryValue(value) {
 function importReviewSnapshot(payload = state.importPreview) {
   if (!payload) return null;
   return {
+    returned_serials_on_hand: String(payload.returned_serials_on_hand || ""),
+    missing_user_edits: (payload.warnings?.missing_username_deployments || []).map((warning) => ({
+      id: missingUsernameWarningId(warning), username_input: warning.username_input || "", error: warning.error || "",
+    })),
     requests: (payload.requests || []).map((request) => ({
       id: request.id,
       // A manually added return or username is a new request, so retain its
@@ -6792,6 +6890,8 @@ function updateImportHistoryControls() {
 }
 
 function recordImportEdit() {
+  importInputHistoryKey = null;
+  window.clearTimeout(importInputHistoryTimer);
   const snapshot = importReviewSnapshot();
   if (!snapshot) return;
   state.importUndoStack.push(snapshot);
@@ -6800,9 +6900,33 @@ function recordImportEdit() {
   updateImportHistoryControls();
 }
 
+let importInputHistoryKey = null;
+let importInputHistoryTimer = null;
+
+function recordImportInputEdit(key) {
+  if (importInputHistoryKey !== key) recordImportEdit();
+  importInputHistoryKey = key;
+  window.clearTimeout(importInputHistoryTimer);
+  importInputHistoryTimer = window.setTimeout(() => { importInputHistoryKey = null; }, 600);
+}
+
 function restoreImportReviewSnapshot(snapshot) {
   const payload = state.importPreview;
   if (!payload || !snapshot) return;
+  // A background refresh preserves an open picker, but undo must change it.
+  const activePicker = document.activeElement?.tagName === "SELECT"
+    && $("#importDialog").contains(document.activeElement) ? document.activeElement : null;
+  activePicker?.blur();
+  if (Object.prototype.hasOwnProperty.call(snapshot, "returned_serials_on_hand")) {
+    payload.returned_serials_on_hand = snapshot.returned_serials_on_hand;
+    state.importReturnedSerials = snapshot.returned_serials_on_hand;
+  }
+  if (snapshot.missing_user_edits) {
+    (payload.warnings?.missing_username_deployments || []).forEach((warning) => {
+      const edit = snapshot.missing_user_edits.find((item) => item.id === missingUsernameWarningId(warning));
+      if (edit) { warning.username_input = edit.username_input; warning.error = edit.error; }
+    });
+  }
   const currentById = new Map((payload.requests || []).map((request) => [request.id, request]));
   const restoredRequests = [];
   const snapshotIds = new Set();
@@ -6844,6 +6968,7 @@ function restoreImportReviewSnapshot(snapshot) {
   payload.requests = restoredRequests;
   state.backlogValidationIds.clear();
   renderImportPreview();
+  if (activePicker?.id) document.getElementById(activePicker.id)?.focus();
   updateImportPrepareButton(payload);
   updateImportHistoryControls();
   saveCurrentImportDraft();
@@ -6881,7 +7006,7 @@ function clearImportStatuses() {
 }
 
 function pcToolkitImportMarkup(request, { loading = false, backlog = false } = {}) {
-  if (request?.group === "Pending returns" || request?.has_pending_return_serial) return "";
+  if (request?.group === "Pending returns") return "";
   const result = request?.pc_toolkit?.serial;
   const device = result?.primary;
   const userResult = request?.pc_toolkit?.user;
@@ -7024,8 +7149,9 @@ function renderBacklogPreview(payload) {
   const visibleRequests = requests.filter((request) => importReviewMatches(request, query));
   const included = requests.filter((request) => request.included !== false);
   const maxSummary = $("#importMaxSummary");
-  maxSummary.hidden = !included.length;
-  if (included.length) maxSummary.textContent = `${included.filter((request) => request.max_portal?.helix_id).length} of ${included.length} deployments linked to an INC. Review matches before submitting; unmatched deployments can still be added.`;
+  const linked = included.filter((request) => request.max_portal?.helix_id).length;
+  maxSummary.hidden = !included.length || (!state.preferences.pc_toolkit_enabled && !linked);
+  if (included.length) maxSummary.textContent = `${linked} of ${included.length} INCs linked · INC links are optional`;
   $("#importVerificationWarnings").hidden = true;
   $("#importPreviewTitle").textContent = `${included.length} undeployed device${included.length === 1 ? "" : "s"}`;
   const backlogRange = `${payload.start_date} to ${payload.end_date}${payload.include_today ? " · including today" : ""}`;
@@ -7076,11 +7202,11 @@ function renderBacklogPreview(payload) {
       ? "No prior days matched. Include today to check today's rows."
       : "No undeployed devices were found in this range.";
   const allIncluded = requests.length > 0 && included.length === requests.length;
-  $("#importPreviewList").innerHTML = rows
+  DeploymentComponents.render($("#importPreviewList"), rows
     ? `<section class="import-preview-section"><div class="import-group-heading"><div><strong>Undeployed devices</strong><small>${query ? `${visibleRequests.length} shown · ` : ""}${included.length} of ${requests.length} selected</small></div><div class="import-group-actions"><button class="text-button" type="button" data-backlog-toggle>${iconMarkup(allIncluded ? "square-minus" : "list-checks")}<span>${allIncluded ? "Deselect all deployments" : "Select all deployments"}</span></button></div></div>${rows}</section>`
-    : `<div class="import-empty">${iconMarkup("search-x")}<strong>${escapeHtml(emptyMessage)}</strong>${query ? "" : "<small>Try a wider date range or include today.</small>"}</div>`;
+    : `<div class="import-empty">${iconMarkup("search-x")}<strong>${escapeHtml(emptyMessage)}</strong>${query ? "" : "<small>Try a wider date range or include today.</small>"}</div>`);
   bindMaxImportControls(payload);
-  $("#importPreviewList").querySelectorAll("[data-backlog-status]").forEach((select) => select.addEventListener("change", () => {
+  $("#importPreviewList").querySelectorAll("[data-backlog-status]").forEach((select) => DeploymentComponents.listen(select, "change", () => {
     const request = requests.find((item) => item.id === select.dataset.backlogStatus);
     if (request && request.status !== select.value) {
       recordImportEdit();
@@ -7090,7 +7216,7 @@ function renderBacklogPreview(payload) {
     updateImportPrepareButton(payload);
     saveCurrentImportDraft();
   }));
-  $("#importPreviewList").querySelectorAll("[data-backlog-include]").forEach((checkbox) => checkbox.addEventListener("change", () => {
+  $("#importPreviewList").querySelectorAll("[data-backlog-include]").forEach((checkbox) => DeploymentComponents.listen(checkbox, "change", () => {
     const request = requests.find((item) => item.id === checkbox.dataset.backlogInclude);
     if (!request) return;
     if (request.included !== checkbox.checked) recordImportEdit();
@@ -7118,7 +7244,7 @@ function renderBacklogPreview(payload) {
     saveCurrentImportDraft();
     if (shouldValidate) void validateBacklogPreview(payload, [request]);
   }));
-  $("#importPreviewList").querySelectorAll("[data-backlog-ignore]").forEach((button) => button.addEventListener("click", () => {
+  $("#importPreviewList").querySelectorAll("[data-backlog-ignore]").forEach((button) => DeploymentComponents.listen(button, "click", () => {
     const request = requests.find((item) => item.id === button.dataset.backlogIgnore);
     if (!request) return;
     if (request.included !== false) recordImportEdit();
@@ -7137,7 +7263,7 @@ function renderBacklogPreview(payload) {
     updateImportPrepareButton(payload);
     saveCurrentImportDraft();
   }));
-  $("#importPreviewList").querySelectorAll("[data-backlog-toggle]").forEach((button) => button.addEventListener("click", () => {
+  $("#importPreviewList").querySelectorAll("[data-backlog-toggle]").forEach((button) => DeploymentComponents.listen(button, "click", () => {
     const include = requests.some((request) => request.included === false);
     const toValidate = [];
     if (!requests.length) return;
@@ -7165,7 +7291,7 @@ function renderBacklogPreview(payload) {
     saveCurrentImportDraft();
     if (toValidate.length) void validateBacklogPreview(payload, toValidate);
   }));
-  $("#importPreviewList").querySelectorAll("[data-import-pc-use]").forEach((button) => button.addEventListener("click", () => {
+  $("#importPreviewList").querySelectorAll("[data-import-pc-use]").forEach((button) => DeploymentComponents.listen(button, "click", () => {
     const request = requests.find((item) => item.id === button.dataset.importPcUse);
     if (!request) return;
     recordImportEdit();
@@ -7174,11 +7300,11 @@ function renderBacklogPreview(payload) {
     updateImportPrepareButton(payload);
     saveCurrentImportDraft();
   }));
-  $("#importPreviewList").querySelectorAll("[data-import-pc-remember]").forEach((button) => button.addEventListener("click", () => {
+  $("#importPreviewList").querySelectorAll("[data-import-pc-remember]").forEach((button) => DeploymentComponents.listen(button, "click", () => {
     const request = requests.find((item) => item.id === button.dataset.importPcRemember);
     if (request) void rememberPcToolkitMapping({ ...request, kind: "user" });
   }));
-  $("#importPreviewList").querySelectorAll("[data-import-pc-retry]").forEach((button) => button.addEventListener("click", () => {
+  $("#importPreviewList").querySelectorAll("[data-import-pc-retry]").forEach((button) => DeploymentComponents.listen(button, "click", () => {
     const request = requests.find((item) => item.id === button.dataset.importPcRetry);
     if (request) void enrichImportPreview(payload, { requests: [request], fresh: true });
   }));
@@ -7673,6 +7799,7 @@ async function enrichMaxPortalImport(payload = state.importPreview, { requests: 
 }
 
 function maxImportMarkup(request) {
+  if (!state.preferences.pc_toolkit_enabled && !request.max_portal?.reference) return "";
   if (request.group && request.group !== "Deployments") return "";
   const candidates = request.max_portal_candidates || [];
   const selected = request.max_portal?.reference || "";
@@ -7693,7 +7820,7 @@ function maxImportMarkup(request) {
 }
 
 function bindMaxImportControls(payload) {
-  $("#importPreviewList").querySelectorAll("[data-import-max]").forEach((select) => select.addEventListener("change", () => {
+  $("#importPreviewList").querySelectorAll("[data-import-max]").forEach((select) => DeploymentComponents.listen(select, "change", () => {
     const request = payload.requests.find((item) => item.id === select.dataset.importMax);
     if (!request) return;
     recordImportEdit();
@@ -7706,14 +7833,14 @@ function bindMaxImportControls(payload) {
     renderImportPreview();
     saveCurrentImportDraft();
   }));
-  $("#importPreviewList").querySelectorAll("[data-import-max-find]").forEach((button) => button.addEventListener("click", () => {
+  $("#importPreviewList").querySelectorAll("[data-import-max-find]").forEach((button) => DeploymentComponents.listen(button, "click", () => {
     const request = payload.requests.find((item) => item.id === button.dataset.importMaxFind);
     if (!request) return;
     if (!["connected", "simulation"].includes(state.pcToolkitStatus?.state)) void connectPcToolkitFromImportReview();
     else if (request.max_portal_error) void enrichMaxPortalImport(payload, { requests: [request] });
     else openMaxPortal({ request });
   }));
-  $("#importPreviewList").querySelectorAll("[data-import-max-detail]").forEach((button) => button.addEventListener("click", () => {
+  $("#importPreviewList").querySelectorAll("[data-import-max-detail]").forEach((button) => DeploymentComponents.listen(button, "click", () => {
     const request = payload.requests.find((item) => item.id === button.dataset.importMaxDetail);
     if (request) void toggleMaxPortalDetails(request, button, { importRow: true, payload });
   }));
@@ -7735,13 +7862,13 @@ function renderImportPreview() {
   const pendingReturnCount = included.filter((request) => request.group === "Pending returns").length;
   const maxSummary = $("#importMaxSummary");
   const deployments = included.filter((request) => request.group === "Deployments");
-  maxSummary.hidden = !deployments.length;
+  maxSummary.hidden = !deployments.length || (!state.preferences.pc_toolkit_enabled && !deployments.some((request) => request.max_portal?.helix_id));
   if (deployments.length) {
     const matched = deployments.filter((request) => request.max_portal?.helix_id).length;
     const looking = deployments.filter((request) => request.max_portal_loading).length;
-    maxSummary.textContent = `${matched} of ${deployments.length} deployments linked to an INC${looking ? ` · checking ${looking}` : ""}. Review matches before submitting; unmatched deployments can still be added.`;
+    maxSummary.textContent = `${matched} of ${deployments.length} INCs linked${looking ? ` · checking ${looking}` : " · INC links are optional"}`;
   }
-  $("#importPreviewTitle").textContent = `${included.length} request${included.length === 1 ? "" : "s"} ready to add`;
+  $("#importPreviewTitle").textContent = `${included.length} selected request${included.length === 1 ? "" : "s"}`;
   const selectedDateLabels = selectedImportDateEntries().map((entry) => entry.label);
   const dateSummary = selectedDateLabels.join(", ");
   const requestSummary = [
@@ -7777,6 +7904,8 @@ function renderImportPreview() {
   const manualReturnEntries = payload.requests.filter((request) =>
     importDeploymentNeedsManualReturn(request, payload) && importReviewMatches(request, query),
   );
+  const visibleManualReturns = state.importExpandedGroups.has("Missing return details")
+    ? manualReturnEntries : manualReturnEntries.slice(0, IMPORT_PREVIEW_ROW_LIMIT);
   const returnedSerialsMarkup = showReturnedSerialsOnHand()
     ? returnedSerialEditorMarkup(payload)
     : "";
@@ -7784,10 +7913,11 @@ function renderImportPreview() {
     ? `<div class="import-manual-return-section" role="region" aria-label="Missing return details">
         <div class="import-manual-return-heading"><div><strong>Missing return details</strong><small>Review these users before adding requests to the queue. Choose a deployed device, enter a serial, or mark that no resolution is needed.</small></div><span>${manualReturnEntries.length} unresolved</span></div>
         ${returnedSerialsMarkup}
-        <div class="import-manual-return-list">${manualReturnEntries.map((request) => manualReturnEditorMarkup(request, payload)).join("")}</div>
+        <div class="import-manual-return-list">${visibleManualReturns.map((request) => manualReturnEditorMarkup(request, payload)).join("")}</div>
+        ${visibleManualReturns.length < manualReturnEntries.length ? `<button class="import-show-more" type="button" data-import-expand="Missing return details">Show ${manualReturnEntries.length - visibleManualReturns.length} more users</button>` : ""}
       </div>`
     : "";
-  $("#importPreviewList").innerHTML = manualReturnSection + (manualReturnEntries.length ? "" : returnedSerialsMarkup) + groups.map((group) => {
+  DeploymentComponents.render($("#importPreviewList"), manualReturnSection + (manualReturnEntries.length ? "" : returnedSerialsMarkup) + groups.map((group) => {
     const requests = payload.requests.filter((request) => request.group === group.key && importReviewMatches(request, query));
     const missingUsernameWarnings = group.key === "Deployments"
       ? (Array.isArray(payload.warnings?.missing_username_deployments) ? payload.warnings.missing_username_deployments : [])
@@ -7881,10 +8011,11 @@ function renderImportPreview() {
       ${rows}
       ${visibleRequests.length < requests.length ? `<button class="import-show-more" type="button" data-import-expand="${escapeHtml(group.key)}">${iconMarkup("chevron-down")}<span>Show ${requests.length - visibleRequests.length} more</span></button>` : ""}
     </section>`;
-  }).join("");
+  }).join(""));
   bindMaxImportControls(payload);
   const returnedSerialInput = $("#importPreviewList").querySelector("[data-import-returned-serials]");
-  returnedSerialInput?.addEventListener("input", () => {
+  DeploymentComponents.listen(returnedSerialInput, "input", () => {
+    recordImportInputEdit("returned-serials-on-hand");
     payload.returned_serials_on_hand = returnedSerialInput.value;
     state.importReturnedSerials = returnedSerialInput.value;
     scheduleImportDraftSave();
@@ -7921,27 +8052,28 @@ function renderImportPreview() {
     void enrichMaxPortalImport(payload, { requests: [request] });
   };
   $("#importPreviewList").querySelectorAll("[data-import-missing-user]").forEach((input) => {
-    input.addEventListener("input", () => {
+    DeploymentComponents.listen(input, "input", () => {
       const warnings = Array.isArray(payload.warnings?.missing_username_deployments)
         ? payload.warnings.missing_username_deployments
         : [];
       const warning = warnings.find((item) => missingUsernameWarningId(item) === input.dataset.importMissingUser);
       if (!warning) return;
+      recordImportInputEdit(`missing-user:${input.dataset.importMissingUser}`);
       warning.username_input = input.value;
       warning.error = "";
       input.closest("[data-import-missing-user-row]")?.querySelector(".import-missing-user-error")?.remove();
       scheduleImportDraftSave();
     });
-    input.addEventListener("keydown", (event) => {
+    DeploymentComponents.listen(input, "keydown", (event) => {
       if (event.key !== "Enter") return;
       event.preventDefault();
       addMissingUsername(input.dataset.importMissingUser);
     });
   });
-  $("#importPreviewList").querySelectorAll("[data-import-missing-user-add]").forEach((button) => button.addEventListener("click", () => {
+  $("#importPreviewList").querySelectorAll("[data-import-missing-user-add]").forEach((button) => DeploymentComponents.listen(button, "click", () => {
     addMissingUsername(button.dataset.importMissingUserAdd);
   }));
-  $("#importPreviewList").querySelectorAll("[data-match-returned-serials]").forEach((button) => button.addEventListener("click", () => {
+  $("#importPreviewList").querySelectorAll("[data-match-returned-serials]").forEach((button) => DeploymentComponents.listen(button, "click", () => {
     const possibleMatches = returnedSerialMatchCandidates(payload);
     if (!possibleMatches.length) {
       saveCurrentImportDraft();
@@ -7960,7 +8092,7 @@ function renderImportPreview() {
       ? `${added} returned device${added === 1 ? "" : "s"} matched to users.`
       : "Matches found, but choose a complete destination before adding returned devices.", added ? "success" : "error");
   }));
-  $("#importPreviewList").querySelectorAll("[data-import-manual-dismiss]").forEach((button) => button.addEventListener("click", () => {
+  $("#importPreviewList").querySelectorAll("[data-import-manual-dismiss]").forEach((button) => DeploymentComponents.listen(button, "click", () => {
     const source = payload.requests.find((request) => request.id === button.dataset.importManualDismiss);
     if (!source) return;
     recordImportEdit();
@@ -7971,7 +8103,7 @@ function renderImportPreview() {
     saveCurrentImportDraft();
   }));
   $("#importPreviewList").querySelectorAll("[data-import-status]").forEach((select) => {
-    select.addEventListener("change", () => {
+    DeploymentComponents.listen(select, "change", () => {
       const request = payload.requests.find((item) => item.id === select.dataset.importStatus);
       if (request && request.status !== select.value) {
         recordImportEdit();
@@ -7982,7 +8114,7 @@ function renderImportPreview() {
       saveCurrentImportDraft();
     });
   });
-  $("#importPreviewList").querySelectorAll("[data-import-return-serial]").forEach((input) => input.addEventListener("change", () => {
+  $("#importPreviewList").querySelectorAll("[data-import-return-serial]").forEach((input) => DeploymentComponents.listen(input, "change", () => {
     const request = payload.requests.find((item) => item.id === input.dataset.importReturnSerial);
     if (!request) return;
     const serial = input.value.trim();
@@ -8009,8 +8141,14 @@ function renderImportPreview() {
     updateImportPrepareButton(payload);
     saveCurrentImportDraft();
     if (request.included !== false) void validateImportPreview([request]);
+    void enrichImportPreview(payload, { requests: [request] });
   }));
-  $("#importPreviewList").querySelectorAll("[data-import-return-kind]").forEach((select) => select.addEventListener("change", () => {
+  $("#importPreviewList").querySelectorAll("[data-import-return-serial]").forEach((input) => DeploymentComponents.listen(input, "keydown", (event) => {
+    if (event.key !== "Enter" || event.isComposing) return;
+    event.preventDefault();
+    input.blur(); // Commit the edited serial, without submitting/closing the sheet.
+  }));
+  $("#importPreviewList").querySelectorAll("[data-import-return-kind]").forEach((select) => DeploymentComponents.listen(select, "change", () => {
     const request = payload.requests.find((item) => item.id === select.dataset.importReturnKind);
     if (!request) return;
     const returned = select.value === "returned_devices";
@@ -8050,8 +8188,9 @@ function renderImportPreview() {
     updateImportPrepareButton(payload);
     saveCurrentImportDraft();
     if (request.included !== false) void validateImportPreview([request]);
+    void enrichImportPreview(payload, { requests: [request] });
   }));
-  $("#importPreviewList").querySelectorAll("[data-import-pc-use]").forEach((button) => button.addEventListener("click", () => {
+  $("#importPreviewList").querySelectorAll("[data-import-pc-use]").forEach((button) => DeploymentComponents.listen(button, "click", () => {
     const request = payload.requests.find((item) => item.id === button.dataset.importPcUse);
     if (!request) return;
     recordImportEdit();
@@ -8060,15 +8199,15 @@ function renderImportPreview() {
     updateImportPrepareButton(payload);
     saveCurrentImportDraft();
   }));
-  $("#importPreviewList").querySelectorAll("[data-import-pc-remember]").forEach((button) => button.addEventListener("click", () => {
+  $("#importPreviewList").querySelectorAll("[data-import-pc-remember]").forEach((button) => DeploymentComponents.listen(button, "click", () => {
     const request = payload.requests.find((item) => item.id === button.dataset.importPcRemember);
     if (request) void rememberPcToolkitMapping(request);
   }));
-  $("#importPreviewList").querySelectorAll("[data-import-pc-retry]").forEach((button) => button.addEventListener("click", () => {
+  $("#importPreviewList").querySelectorAll("[data-import-pc-retry]").forEach((button) => DeploymentComponents.listen(button, "click", () => {
     const request = payload.requests.find((item) => item.id === button.dataset.importPcRetry);
     if (request) void enrichImportPreview(payload, { requests: [request], fresh: true });
   }));
-  $("#importPreviewList").querySelectorAll("[data-pc-toolkit-return-candidate]").forEach((button) => button.addEventListener("click", () => {
+  $("#importPreviewList").querySelectorAll("[data-pc-toolkit-return-candidate]").forEach((button) => DeploymentComponents.listen(button, "click", () => {
     const source = payload.requests.find((item) => item.id === button.dataset.pcToolkitReturnCandidate);
     if (!source) return;
     recordImportEdit();
@@ -8090,8 +8229,9 @@ function renderImportPreview() {
     saveCurrentImportDraft();
     if (added) void validateImportPreview([added]);
   }));
-  $("#importPreviewList").querySelectorAll("[data-import-status-all]").forEach((select) => select.addEventListener("change", () => {
+  $("#importPreviewList").querySelectorAll("[data-import-status-all]").forEach((select) => DeploymentComponents.listen(select, "change", () => {
     const status = select.value;
+    select.value = "";
     if (!status) return;
     const requests = payload.requests.filter((request) =>
       request.group === select.dataset.importStatusAll
@@ -8106,9 +8246,10 @@ function renderImportPreview() {
     saveCurrentImportDraft();
   }));
   $("#importPreviewList").querySelectorAll("[data-import-manual-serial]").forEach((input) => {
-    input.addEventListener("input", () => {
+    DeploymentComponents.listen(input, "input", () => {
       const source = payload.requests.find((request) => request.id === input.dataset.importManualSerial);
       if (!source) return;
+      recordImportInputEdit(`manual-return:${source.id}`);
       const lookupChanged = pcToolkitKey(input.value) !== pcToolkitKey(source.manual_return_lookup_serial);
       source.manual_return_serial = input.value;
       if (lookupChanged) resetManualReturnLookup(source, input.value);
@@ -8116,13 +8257,13 @@ function renderImportPreview() {
       input.closest("[data-import-manual-source]")?.querySelector(".import-manual-return-error")?.remove();
       scheduleImportDraftSave();
     });
-    input.addEventListener("keydown", (event) => {
+    DeploymentComponents.listen(input, "keydown", (event) => {
       if (event.key !== "Enter") return;
       event.preventDefault();
       input.closest("[data-import-manual-source]")?.querySelector("[data-import-manual-add]")?.click();
     });
   });
-  $("#importPreviewList").querySelectorAll("[data-import-manual-type]").forEach((select) => select.addEventListener("change", () => {
+  $("#importPreviewList").querySelectorAll("[data-import-manual-type]").forEach((select) => DeploymentComponents.listen(select, "change", () => {
     const source = payload.requests.find((request) => request.id === select.dataset.importManualType);
     if (!source) return;
     recordImportEdit();
@@ -8135,7 +8276,7 @@ function renderImportPreview() {
     updateImportPrepareButton(payload);
     saveCurrentImportDraft();
   }));
-  $("#importPreviewList").querySelectorAll("[data-import-manual-status]").forEach((select) => select.addEventListener("change", () => {
+  $("#importPreviewList").querySelectorAll("[data-import-manual-status]").forEach((select) => DeploymentComponents.listen(select, "change", () => {
     const source = payload.requests.find((request) => request.id === select.dataset.importManualStatus);
     if (!source) return;
     recordImportEdit();
@@ -8144,7 +8285,7 @@ function renderImportPreview() {
     source.manual_return_error = "";
     saveCurrentImportDraft();
   }));
-  $("#importPreviewList").querySelectorAll("[data-import-manual-add]").forEach((button) => button.addEventListener("click", async () => {
+  $("#importPreviewList").querySelectorAll("[data-import-manual-add]").forEach((button) => DeploymentComponents.listen(button, "click", async () => {
     const source = payload.requests.find((request) => request.id === button.dataset.importManualAdd);
     if (!source) return;
     const entry = button.closest("[data-import-manual-source]");
@@ -8155,16 +8296,18 @@ function renderImportPreview() {
       : "";
     const alreadyAdded = Boolean(source.manual_return_id);
     if (!alreadyAdded) recordImportEdit();
-    if (!alreadyAdded && manualReturnSerialIsValid(source.manual_return_serial)) {
-      await enrichManualReturnSerial(payload, source);
-    }
-    const added = alreadyAdded ? null : addManualReturnToReview(payload, source);
+    // Optional model enrichment runs after adding; it must not delay Helix
+    // verification or leave this button unusable while PC Toolkit is slow.
+    const added = alreadyAdded ? null : addManualReturnToReview(payload, source, { requireStatus: false });
     renderImportPreview();
     updateImportPrepareButton(payload);
     saveCurrentImportDraft();
-    if (added) void validateImportPreview([added]);
+    if (added) {
+      void validateImportPreview([added]);
+      if (added.group === "Returned devices") void enrichManualReturnSerial(payload, source);
+    }
   }));
-  $("#importPreviewList").querySelectorAll("[data-import-manual-remove]").forEach((button) => button.addEventListener("click", () => {
+  $("#importPreviewList").querySelectorAll("[data-import-manual-remove]").forEach((button) => DeploymentComponents.listen(button, "click", () => {
     const source = payload.requests.find((request) => request.id === button.dataset.importManualRemove);
     if (!source || !source.manual_return_id) return;
     const index = payload.requests.findIndex((request) => request.id === source.manual_return_id);
@@ -8187,7 +8330,7 @@ function renderImportPreview() {
     saveCurrentImportDraft();
   }));
   $("#importPreviewList").querySelectorAll("[data-import-include]").forEach((checkbox) => {
-    checkbox.addEventListener("change", () => {
+    DeploymentComponents.listen(checkbox, "change", () => {
       const request = payload.requests.find((item) => item.id === checkbox.dataset.importInclude);
       if (!request) return;
       if (request.included !== checkbox.checked) recordImportEdit();
@@ -8209,7 +8352,7 @@ function renderImportPreview() {
     });
   });
   $("#importPreviewList").querySelectorAll("[data-import-group-toggle]").forEach((button) => {
-    button.addEventListener("click", () => {
+    DeploymentComponents.listen(button, "click", () => {
       const groupRequests = payload.requests.filter((request) => request.group === button.dataset.importGroupToggle);
       const included = groupRequests.some((request) => request.included === false);
       if (!groupRequests.length) return;
@@ -8239,12 +8382,36 @@ function renderImportPreview() {
     });
   });
   $("#importPreviewList").querySelectorAll("[data-import-expand]").forEach((button) => {
-    button.addEventListener("click", () => {
+    DeploymentComponents.listen(button, "click", () => {
       state.importExpandedGroups.add(button.dataset.importExpand);
       renderImportPreview();
     });
   });
-  $("#importPreviewList").querySelectorAll("[data-import-retry]").forEach((button) => button.addEventListener("click", () => {
+  $("#importPreviewList").querySelectorAll("[data-import-serial], [data-import-user]").forEach((input) => DeploymentComponents.listen(input, "input", () => {
+    const id = input.dataset.importSerial || input.dataset.importUser;
+    const request = payload.requests.find((item) => item.id === id);
+    if (!request) return;
+    recordImportInputEdit(`correction:${id}:${input.dataset.importSerial ? "serial" : "user"}`);
+    request.import_validation_epoch = Number(request.import_validation_epoch || 0) + 1;
+    const value = input.value.trim();
+    if (input.dataset.importSerial) {
+      request.serials = [value];
+      request.serial_info = null;
+      request.serial_validation = "pending";
+      request.pc_toolkit = null;
+    } else if (request.kind === "location") {
+      request.returning_user = value;
+      request.returning_user_info = null;
+    } else {
+      request.user = value;
+      request.user_info = null;
+      request.max_portal = null;
+      request.max_portal_candidates = [];
+    }
+    // Keep it failed until the user retries, but persist the correction now.
+    scheduleImportDraftSave();
+  }));
+  $("#importPreviewList").querySelectorAll("[data-import-retry]").forEach((button) => DeploymentComponents.listen(button, "click", () => {
     const request = payload.requests.find((item) => item.id === button.dataset.importRetry);
     if (!request) return;
     recordImportEdit();
@@ -8268,6 +8435,7 @@ function renderImportPreview() {
     request.user_info = null;
     request.returning_user_info = null;
     void validateImportPreview([request]);
+    if (serial) void enrichImportPreview(payload, { requests: [request] });
     if (user && request.kind === "user") void enrichMaxPortalImport(payload, { requests: [request] });
   }));
   refreshIcons($("#importPreviewList"));
@@ -8655,7 +8823,79 @@ function backToImportSelection() {
   saveCurrentImportDraft();
 }
 
+let importQueueAdding = false;
+
+function importQueueConflicts(requests) {
+  const selectedIds = new Set(requests.map((request) => request.id));
+  const serials = new Set(state.queue.filter((request) => !selectedIds.has(request.id))
+    .flatMap((request) => request.serials || []).map(pcToolkitKey));
+  const conflicts = [];
+  requests.forEach((request) => {
+    (request.serials?.length ? request.serials : [request.serial]).filter(Boolean).forEach((serial) => {
+      const key = pcToolkitKey(serial);
+      if (serials.has(key)) conflicts.push(serial);
+      serials.add(key);
+    });
+  });
+  return [...new Set(conflicts)];
+}
+
+async function addImportRequestsToQueue(requests) {
+  if (importQueueAdding) return false;
+  const conflicts = importQueueConflicts(requests);
+  if (conflicts.length) {
+    toast(`Already in the queue: ${conflicts.slice(0, 3).join(", ")}. Exclude those devices first.`, "error");
+    updateImportPrepareButton();
+    return false;
+  }
+  importQueueAdding = true;
+  const review = state.importPreview;
+  updateImportPrepareButton();
+  const previousIds = new Set(state.queue.map((request) => request.id));
+  let complete = false;
+  try {
+    recordAppEdit();
+    state.queue.push(...requests.filter((request) => !previousIds.has(request.id)));
+    await persistQueueNow({ throwOnError: true });
+    const saved = JSON.parse(state.persistedQueueSnapshot || "[]");
+    const savedIds = new Set(saved.map((request) => request.id));
+    if (!requests.every((request) => savedIds.has(request.id))) {
+      // Another window may have queued the same serial during the handoff.
+      // Keep the review/draft, and exclude only requests that were safely saved.
+      review.requests.forEach((request) => {
+        if (savedIds.has(request.id)) request.included = false;
+      });
+      if (state.importPreview === review) {
+        renderImportPreview();
+        await saveCurrentImportDraft({ immediate: true });
+      }
+      toast("Some devices are already in the shared queue. Review the remaining items; your import is saved.", "info");
+      return false;
+    }
+    complete = true;
+    if (state.importPreview === review) $("#importError").hidden = true;
+    return true;
+  } catch (error) {
+    const newIds = new Set(requests.filter((request) => !previousIds.has(request.id)).map((request) => request.id));
+    state.queue = state.queue.filter((request) => !newIds.has(request.id));
+    if (state.importPreview === review) {
+      $("#importError").textContent = "Could not save these requests to the queue. Your import has been kept; try again.";
+      $("#importError").hidden = false;
+      await saveCurrentImportDraft({ immediate: true });
+    }
+    return false;
+  } finally {
+    if (!complete) {
+      importQueueAdding = false;
+      updateImportPrepareButton();
+    }
+  }
+}
+
 async function prepareImport() {
+  if (importQueueAdding) return;
+  const token = state.importUploadToken;
+  const draftId = state.importDraftId;
   const button = $("#prepareImportButton");
   if (state.importPreview) {
     if (state.importPreview.mode === "backlog") {
@@ -8701,12 +8941,17 @@ async function prepareImport() {
         user_validation: "valid",
         user_info: request.user_info || null,
       }));
-      recordAppEdit();
-      state.queue.push(...requests);
+      if (!await addImportRequestsToQueue(requests)) return;
       state.selectedId = requests[0]?.id || state.selectedId;
-      await deleteImportDraft(state.importDraftId);
+      await deleteImportDraft(draftId);
+      if (token !== state.importUploadToken) {
+        importQueueAdding = false;
+        renderAll();
+        return;
+      }
       state.importDraftId = null;
       $("#importDialog").close();
+      importQueueAdding = false;
       renderAll();
       toast(`${requests.length} backlog request${requests.length === 1 ? "" : "s"} added.`, "success");
       return;
@@ -8748,12 +8993,17 @@ async function prepareImport() {
       $("#importError").hidden = false;
       return;
     }
-    recordAppEdit();
-    state.queue.push(...requests);
+    if (!await addImportRequestsToQueue(requests)) return;
     state.selectedId = requests[0]?.id || state.selectedId;
-    await deleteImportDraft(state.importDraftId);
+    await deleteImportDraft(draftId);
+    if (token !== state.importUploadToken) {
+      importQueueAdding = false;
+      renderAll();
+      return;
+    }
     state.importDraftId = null;
     $("#importDialog").close();
+    importQueueAdding = false;
     renderAll();
     toast(`${requests.length} request${requests.length === 1 ? "" : "s"} added.`, "success");
     return;
@@ -8776,6 +9026,7 @@ async function prepareImport() {
           include_today: $("#almBacklogIncludeToday").checked,
         }),
       });
+      if (token !== state.importUploadToken) return;
       payload.requests = (payload.candidates || []).map((candidate) => ({
         ...candidate,
         import_validation: candidate.included === false ? "idle" : "checking",
@@ -8821,6 +9072,7 @@ async function prepareImport() {
         group_selections: groupSelections,
       }),
     });
+    if (token !== state.importUploadToken) return;
     payload.returned_serials_on_hand = String(state.importReturnedSerials || $("#importReturnedSerialsInput")?.value || "");
     payload.requests.forEach((request) => {
       request.included = true;
@@ -8841,9 +9093,11 @@ async function prepareImport() {
     void enrichImportPreview(payload);
     void enrichMaxPortalImport(payload);
   } catch (error) {
+    if (token !== state.importUploadToken) return;
     $("#importError").textContent = error.message;
     $("#importError").hidden = false;
   } finally {
+    if (token !== state.importUploadToken) return;
     if (state.importPreview) {
       updateImportPrepareButton(state.importPreview);
     } else {
@@ -9380,8 +9634,8 @@ function scheduleJobPoll(jobId, delay) {
 function showProgressDialog() {
   const dialog = $("#progressDialog");
   if (!state.submissionStarting && !state.currentJob) return;
-  if (state.currentJob) renderProgress(state.currentJob);
   if (!dialog.open) dialog.showModal();
+  if (state.currentJob) renderProgress(state.currentJob);
 }
 
 function finalizeCurrentSubmission() {
@@ -9955,6 +10209,10 @@ function bindEvents() {
   $("#changeMappedFileButton").addEventListener("click", () => resetImportDialog());
   $("#changeColumnsButton").addEventListener("click", openImportColumnMapping);
   $("#importMapSheet").addEventListener("change", renderImportColumnMap);
+  $("#importReturnLayoutInput").addEventListener("change", () => {
+    updateImportReturnLayout();
+    saveCurrentImportDraft();
+  });
   [
     "#importMapUsername",
     "#importMapDeployment",
@@ -9967,7 +10225,10 @@ function bindEvents() {
     "#importMapNewAssetStatus",
     "#importMapFirstName",
     "#importMapLastName",
-  ].forEach((selector) => $(selector).addEventListener("change", updateImportColumnMapButton));
+  ].forEach((selector) => $(selector).addEventListener("change", () => {
+    updateImportColumnMapButton();
+    saveCurrentImportDraft();
+  }));
   $("#sheetInput").addEventListener("change", () => {
     updateImportDates();
   });
@@ -9998,7 +10259,14 @@ function bindEvents() {
     updateImportCounts();
   });
   $("#importLocationInput").addEventListener("change", () => {
-    const result = state.importLocationResults[Number($("#importLocationInput").value)];
+    const value = $("#importLocationInput").value;
+    if (value === "current") return;
+    if (!value) {
+      state.importLocation = { city: $("#importCityInput").value, building: "", floor: "", room: "", cabinet: "" };
+      updateImportCounts();
+      return;
+    }
+    const result = state.importLocationResults[Number(value)];
     if (!result) return;
     const [building = "", floor = "", room = "", cabinet = ""] = result.columns;
     state.importLocation = { city: $("#importCityInput").value, building, floor, room, cabinet };
@@ -10171,14 +10439,20 @@ function bindEvents() {
     if (!request) return;
     recordAppEdit();
     request.location = { city: elements.cityInput.value, building: "", floor: "", room: "", cabinet: "" };
-    elements.locationInput.innerHTML = '<option value="">Loading locations…</option>';
+    DeploymentComponents.selectOptions(elements.locationInput, '<option value="">Loading locations…</option>');
     elements.locationDetail.textContent = "";
     renderQueue();
     loadLocations({ quiet: true });
   });
   elements.locationInput.addEventListener("change", () => {
     const request = selectedRequest();
-    if (!request || elements.locationInput.value === "current" || !elements.locationInput.value) return;
+    if (!request || elements.locationInput.value === "current") return;
+    if (!elements.locationInput.value) {
+      recordAppEdit();
+      request.location = { city: elements.cityInput.value, building: "", floor: "", room: "", cabinet: "" };
+      renderQueue();
+      return;
+    }
     const results = JSON.parse(elements.locationInput.dataset.results || "[]");
     const result = results[Number(elements.locationInput.value)];
     if (!result) return;
@@ -10409,8 +10683,8 @@ async function init() {
     if (spreadsheetSettings) spreadsheetSettings.hidden = !spreadsheetEnabled;
     configureConcurrency(state.config.concurrency);
     bindEvents();
-    await window.autoAnimateReady;
-    setupOptionalListAnimation();
+    // Optional decoration must not hold the workspace behind its splash.
+    void window.autoAnimateReady?.then(setupOptionalListAnimation);
     renderAll();
     void revealWorkspace();
     await restoreSubmissionFromHistory();

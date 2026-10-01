@@ -388,6 +388,29 @@ class RelationalStateDatabaseTests(unittest.TestCase):
         finally:
             connection.close()
 
+    def test_mapping_draft_preserves_inspection_headings_and_import_identifier(self) -> None:
+        workbook = {
+            "import_id": "mapping-import", "filename": "alm.csv", "format": "csv",
+            "has_sheets": False, "supports_formatting": False, "default_sheet": "Inventory",
+            "sheets": [{"name": "Inventory", "dates": []}],
+            "inspection": {
+                "default_sheet": "Inventory",
+                "sheets": [{"name": "Inventory", "headings": ["Username", "SN", "Old serial", "Returned"]}],
+            },
+        }
+        self.database.save_alm_workbook("mapping-import", "alm.csv", b"Username,SN\n", {})
+        self.database.save_alm_draft({
+            "id": "mapping-draft", "import_id": "mapping-import", "phase": "mapping",
+            "workbook": workbook,
+            "settings": {"columns": {"old_device_serial": "Old serial", "return_checkbox": "Returned"}},
+        })
+        restored = self.database.load_alm_drafts()[0]
+        self.assertEqual(restored["phase"], "mapping")
+        self.assertEqual(restored["workbook"]["inspection"]["import_id"], "mapping-import")
+        self.assertEqual(restored["workbook"]["inspection"]["sheets"][0]["headings"],
+                         ["Username", "SN", "Old serial", "Returned"])
+        self.assertEqual(restored["settings"]["columns"]["old_device_serial"], "Old serial")
+
     def test_history_is_a_job_with_relational_request_entries(self) -> None:
         job = {
             "job_id": "job-1", "state": "finished", "created_at": "2026-09-27T10:00:00",

@@ -20,8 +20,11 @@
       }
     } catch (_) {}
   </script>
+  <link rel="stylesheet" href="/vendor/tom-select.css">
   <link rel="stylesheet" href="/app.css">
   <link rel="stylesheet" href="/vendor/tippy.css">
+  <link rel="stylesheet" href="/vendor/tippy-shift-away.css">
+  <link rel="stylesheet" href="/components.css">
 </head>
 <body class="app-initializing">
   <div class="boot-splash" role="status" aria-label="Deployments is starting">
@@ -464,10 +467,16 @@
                 <label>Username <em>Required</em><select id="importMapUsername"></select></label>
                 <label>Deployment serial <em>Required</em><select id="importMapDeployment"></select></label>
                 <p class="column-map-note">Choose either separate return columns, or an old-device serial and its return checkbox.</p>
-                <label>Returned-device serial <small>Original layout</small><select id="importMapReturned"></select></label>
-                <label>Pending-return serial <small>Original layout</small><select id="importMapPending"></select></label>
-                <label>Old-device serial <small>New layout</small><select id="importMapOldDevice"></select></label>
-                <label>Return checkbox <small>New layout</small><select id="importMapReturnCheckbox"></select></label>
+                <label class="column-map-sheet">Return columns
+                  <select id="importReturnLayoutInput">
+                    <option value="separate">Separate returned and pending-return serials</option>
+                    <option value="combined">Old-device serial and return checkbox</option>
+                  </select>
+                </label>
+                <label data-import-layout="separate">Returned-device serial<select id="importMapReturned"></select></label>
+                <label data-import-layout="separate">Pending-return serial<select id="importMapPending"></select></label>
+                <label data-import-layout="combined">Old-device serial<select id="importMapOldDevice"></select></label>
+                <label data-import-layout="combined">Return checkbox<select id="importMapReturnCheckbox"></select></label>
                 <label>TRUE/FALSE <small>Optional</small><select id="importMapEnabled"></select></label>
                 <label>Device allocation <small>Optional</small><select id="importMapDeviceAllocation"></select></label>
                 <label>New asset status <small>Optional for normal imports</small><select id="importMapNewAssetStatus"></select></label>
@@ -816,6 +825,11 @@
   <script src="/vendor/lucide.min.js" defer></script>
   <script src="/vendor/canvas-confetti.js" defer></script>
   <script src="/vendor/sortable.min.js" defer></script>
+  <script src="/vendor/popper.min.js" defer></script>
+  <script src="/vendor/tippy-bundle.umd.min.js" defer></script>
+  <script src="/vendor/idiomorph.min.js" defer></script>
+  <script src="/vendor/tom-select.min.js" defer></script>
+  <script src="/components.js" defer></script>
   <script src="/vendor/auto-animate-loader.js" defer></script>
   <script src="/app.js" defer></script>
 </body>
