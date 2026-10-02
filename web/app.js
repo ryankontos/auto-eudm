@@ -3158,12 +3158,18 @@ function renderConnectionSheet(status = state.connection) {
     : stateName === "connecting" ? "Helix authentication in progress"
     : ready ? "Authenticated with Helix" : "Helix is not authenticated";
   renderPcToolkitHeaderStatus();
+  const reconnectFailedButton = $("#reconnectFailedButton");
+  if (reconnectFailedButton) reconnectFailedButton.disabled = connecting;
   renderAlmPcToolkitNotice();
 }
 
 function updateConnection(status) {
   const previousState = state.connection?.state;
   state.connection = status;
+  if (status.state === "connected" && state.pollStatusMessage.startsWith("Reconnect Helix")) {
+    state.pollStatusMessage = "Helix reconnected. Retry the failed deployments when ready.";
+    if ($("#progressDialog").open && state.currentJob) renderProgress(state.currentJob);
+  }
   // Location choices are safe to reuse and are especially useful when Helix
   // will not load the location table until a serial has been entered.
   if (status.state === "connected" && previousState && previousState !== "connected") state.locationLoading.clear();
@@ -9322,7 +9328,8 @@ function launchProgressConfetti() {
 function renderSubmissionNotice(job = state.currentJob) {
   if (!elements.submissionNotice) return;
   if ($("#progressDialog").open) return;
-  const visible = state.submissionStarting || Boolean(job);
+  const queuedFailures = state.queue.filter((request) => request.result_state === "failed").length;
+  const visible = state.submissionStarting || Boolean(job) || queuedFailures > 0;
   elements.submissionNotice.hidden = !visible;
   if (!visible) return;
   const finished = job?.state === "finished";
@@ -9330,18 +9337,26 @@ function renderSubmissionNotice(job = state.currentJob) {
   const done = Number(counts.succeeded || 0) + Number(counts.failed || 0);
   const total = Number(counts.total || state.queue.length || 0);
   const failures = Number(counts.failed || 0);
+  const hasFailures = failures > 0 || queuedFailures > 0;
   elements.submissionNotice.classList.toggle("finished", finished);
-  elements.submissionNotice.classList.toggle("has-failures", finished && failures > 0);
-  elements.submissionNoticeState.innerHTML = finished
-    ? iconMarkup(failures ? "circle-alert" : "circle-check")
+  elements.submissionNotice.classList.toggle("has-failures", hasFailures);
+  elements.submissionNoticeState.innerHTML = finished || hasFailures
+    ? iconMarkup(hasFailures ? "circle-alert" : "circle-check")
     : '<span class="activity-spinner" aria-hidden="true"></span>';
   refreshIcons(elements.submissionNoticeState);
   elements.submissionNoticeTitle.textContent = state.submissionStarting
     ? "Starting submission"
-    : finished && !failures ? "All requests submitted" : finished ? "Submission finished" : "Submitting requests";
+    : finished && !failures && queuedFailures ? "This run succeeded; failures remain in the queue"
+      : finished && !failures ? "All requests submitted"
+      : finished ? "Submission finished"
+        : !job && queuedFailures ? "Failed deployments are still in the queue" : "Submitting requests";
   elements.submissionNoticeDetail.textContent = state.pollStatusMessage
     || (state.submissionStarting
       ? "Preparing the request run…"
+      : !job && queuedFailures
+        ? `${queuedFailures} failed request${queuedFailures === 1 ? "" : "s"} remain available to retry.`
+      : finished && !failures && queuedFailures
+        ? `${done} request${done === 1 ? "" : "s"} submitted. ${queuedFailures} earlier failed request${queuedFailures === 1 ? "" : "s"} remain available to retry.`
       : finished
         ? failures
           ? `${counts.succeeded || 0} submitted · ${failures} failed`
@@ -9349,7 +9364,12 @@ function renderSubmissionNotice(job = state.currentJob) {
         : `${done} of ${total} complete${counts.running ? ` · ${counts.running} active` : ""}`);
   const viewButton = $("#viewSubmissionButton");
   const viewLabel = viewButton?.querySelector("span");
-  if (viewLabel) viewLabel.textContent = finished ? "View results" : "View progress";
+  if (viewLabel) viewLabel.textContent = !job && queuedFailures
+    ? `Retry failed (${queuedFailures})` : finished ? "View results" : "View progress";
+  if (viewButton) viewButton.disabled = state.submissionStarting;
+  const reconnectButton = $("#reconnectSubmissionNoticeButton");
+  if (reconnectButton) reconnectButton.hidden = !hasFailures || state.connection?.state === "simulation";
+  if (reconnectButton) reconnectButton.disabled = state.connection?.state === "connecting";
 }
 
 function resetProgressView() {
@@ -9430,9 +9450,20 @@ function renderProgress(job) {
     ? `${iconMarkup(fullySuccessful ? "circle-check" : "circle-alert")}<span>${escapeHtml(progressHeading)}</span>`
     : `<span>${escapeHtml(progressHeading)}</span>`;
   $("#progressActions").hidden = !finished;
+  const failedCount = Number(job.counts?.failed || 0);
+  const retryButton = $("#retryFailedButton");
+  retryButton.hidden = !finished || failedCount === 0;
+  retryButton.disabled = state.submissionStarting;
+  retryButton.querySelector("span").textContent = failedCount > 0
+    ? `Retry failed (${failedCount})` : "Retry failed";
+  const reconnectButton = $("#reconnectFailedButton");
+  reconnectButton.hidden = !finished || failedCount === 0 || state.connection?.state === "simulation";
+  reconnectButton.disabled = state.connection?.state === "connecting";
+  reconnectButton.title = "Reset the Helix API client and reconnect in Chrome";
   $("#exportIncMatchesButton").hidden = !(job.entries || []).some((entry) => entry.max_portal?.helix_id);
   $("#closeProgressButton").title = finished ? "Hide results" : "Continue in the background";
   $("#downloadResultsLink").href = `/api/jobs/${job.job_id}/results.txt`;
+  $("#downloadResultsLink").hidden = Boolean(job.ephemeral);
   renderSubmissionNotice(job);
   refreshIcons($("#progressDialog"));
 }
@@ -9668,6 +9699,100 @@ function finalizeCurrentSubmission() {
   void refreshServiceStatus();
 }
 
+async function retryFailedDeployments() {
+  if (state.submissionStarting) return;
+  let job = state.currentJob;
+  if (!job) {
+    const failedRequests = state.queue.filter((request) => request.result_state === "failed");
+    if (!failedRequests.length) return;
+    const entries = failedRequests.map((request) => ({
+      ...structuredClone(request),
+      state: "failed",
+      message: request.result_message || "Request failed. Retry this deployment.",
+      destination: destinationLabel(request),
+    }));
+    job = {
+      job_id: "queued-failures",
+      ephemeral: true,
+      state: "finished",
+      counts: { queued: 0, running: 0, succeeded: 0, failed: entries.length, total: entries.length,
+        devices: entries.reduce((sum, entry) => sum + (entry.serials || []).length, 0) },
+      entries,
+    };
+    state.currentJob = job;
+  }
+  if (job.state !== "finished") return;
+  const failedEntries = (job.entries || []).filter((entry) => entry.state === "failed");
+  if (!failedEntries.length) return;
+
+  const requestsById = new Map(state.queue.map((request) => [request.id, request]));
+  const retryPairs = failedEntries
+    .map((entry) => ({ entry, request: requestsById.get(entry.id) }))
+    .filter(({ request }) => request);
+  if (!retryPairs.length) {
+    toast("The failed requests are no longer in the queue. Re-add them from request history.", "error");
+    return;
+  }
+
+  // Give each retry a fresh client ID so the server can retain the failed
+  // attempt in history while accepting the same deployment again.
+  const previousQueue = structuredClone(state.queue);
+  const previousSelection = state.selectedId;
+  const previousJob = structuredClone(job);
+  const replacements = new Map();
+  retryPairs.forEach(({ entry, request }) => {
+    const retry = structuredClone(request);
+    const retryId = uid();
+    clearRequestSubmissionMetadata(retry);
+    retry.id = retryId;
+    replacements.set(request.id, { retryId, retry });
+  });
+  const succeededIds = new Set((job.entries || [])
+    .filter((entry) => entry.state === "succeeded").map((entry) => entry.id));
+  state.queue = state.queue.flatMap((request) => {
+    if (succeededIds.has(request.id)) return [];
+    const replacement = replacements.get(request.id);
+    return replacement ? [replacement.retry] : [request];
+  });
+  const selectionReplacement = replacements.get(state.selectedId);
+  if (selectionReplacement) state.selectedId = selectionReplacement.retryId;
+  else if (succeededIds.has(state.selectedId)) state.selectedId = state.queue[0]?.id || null;
+
+  state.currentJob = null;
+  stopJobPolling();
+  renderAll();
+  try {
+    await persistQueueNow({ throwOnError: true });
+  } catch (error) {
+    state.queue = previousQueue;
+    state.selectedId = previousSelection;
+    state.currentJob = job;
+    renderAll();
+    if ($("#progressDialog").open) renderProgress(job);
+    toast(`Could not save the retry to the queue: ${error.message}`, "error");
+    return;
+  }
+
+  const persistedRetryIds = new Set(state.queue.map((request) => request.id));
+  const expectedRetryIds = new Set([...replacements.values()].map((replacement) => replacement.retryId));
+  const retryRequests = state.queue.filter((request) => expectedRetryIds.has(request.id));
+  if (!retryRequests.length) {
+    state.currentJob = null;
+    $("#progressDialog").close();
+    toast("These failed devices are already represented in the shared queue.", "info");
+    return;
+  }
+  const replacementByOldId = new Map(
+    [...replacements.entries()]
+      .filter(([, replacement]) => persistedRetryIds.has(replacement.retryId))
+      .map(([oldId, replacement]) => [oldId, replacement.retryId]),
+  );
+  if (retryRequests.length < retryPairs.length) {
+    toast("Some failed devices were already in the shared queue; retrying the remaining devices.", "info");
+  }
+  await submitQueue(retryRequests, { previousJob, replacementByOldId });
+}
+
 async function restoreSubmissionFromHistory() {
   if (!state.queue.length) return;
   try {
@@ -9753,31 +9878,77 @@ async function pollJob(jobId) {
   }
 }
 
-async function submitQueue() {
+async function submitQueue(requests = state.queue, retryContext = null) {
   if (submissionBusy()) {
     showProgressDialog();
     return;
   }
   const button = $("#submitQueueButton");
   button.disabled = true;
-  state.queue.forEach(clearRequestSubmissionMetadata);
+  requests.forEach(clearRequestSubmissionMetadata);
   state.submissionStarting = true;
   state.pollFailures = 0;
   state.pollStatusMessage = "";
   resetProgressView();
-  $("#reviewDialog").close();
-  $("#progressDialog").showModal();
+  if ($("#reviewDialog").open) $("#reviewDialog").close();
+  if (!$("#progressDialog").open) $("#progressDialog").showModal();
   let job;
   try {
     job = await api("/api/jobs", {
       method: "POST",
       body: JSON.stringify({
-        requests: state.queue,
+        requests,
         concurrency: Number(elements.concurrency.value),
       }),
     });
   } catch (error) {
     state.submissionStarting = false;
+    if (retryContext) {
+      const previous = retryContext.previousJob;
+      const failedEntries = (previous.entries || [])
+        .filter((entry) => entry.state === "failed" && retryContext.replacementByOldId.has(entry.id))
+        .map((entry) => ({
+          ...entry,
+          id: retryContext.replacementByOldId.get(entry.id),
+          message: `Retry could not start: ${error.message}`,
+        }));
+      const expectedIds = new Set(failedEntries.map((entry) => entry.id));
+      try {
+        const active = await api("/api/jobs/active");
+        let accepted = (active.runs || []).find((run) => {
+          const ids = (run.entries || []).map((entry) => entry.id);
+          return ids.length === expectedIds.size && ids.every((id) => expectedIds.has(id));
+        });
+        if (!accepted) {
+          const history = await api("/api/history");
+          accepted = (history.runs || []).find((run) => {
+            const ids = (run.entries || []).map((entry) => entry.id);
+            return ids.length === expectedIds.size && ids.every((id) => expectedIds.has(id));
+          });
+        }
+        if (accepted) {
+          state.currentJob = accepted;
+          state.pollStatusMessage = "";
+          renderProgress(accepted);
+          void pollJob(accepted.job_id);
+          return;
+        }
+      } catch (_) {
+        // Keep the failed devices queued; status can be checked again later.
+      }
+      state.currentJob = {
+        ...previous,
+        state: "finished",
+        entries: failedEntries,
+        counts: { queued: 0, running: 0, succeeded: 0, failed: failedEntries.length, total: failedEntries.length,
+          devices: failedEntries.reduce((sum, entry) => sum + (entry.serials || []).length, 0) },
+      };
+      state.pollStatusMessage = "Reconnect Helix or review the failed requests, then retry.";
+      if (!$("#progressDialog").open) $("#progressDialog").showModal();
+      renderProgress(state.currentJob);
+      toast(error.message, "error");
+      return;
+    }
     renderQueue();
     const progressWasOpen = $("#progressDialog").open;
     if (progressWasOpen) $("#progressDialog").close();
@@ -10568,8 +10739,17 @@ function bindEvents() {
     finishSubmissionOnClose = true;
     $("#progressDialog").close();
   });
+  $("#retryFailedButton").addEventListener("click", () => { void retryFailedDeployments(); });
+  $("#reconnectFailedButton").addEventListener("click", () => { void connect(); });
   $("#closeProgressButton").addEventListener("click", () => $("#progressDialog").close());
-  $("#viewSubmissionButton").addEventListener("click", showProgressDialog);
+  $("#viewSubmissionButton").addEventListener("click", () => {
+    if (!state.currentJob && state.queue.some((request) => request.result_state === "failed")) {
+      void retryFailedDeployments();
+      return;
+    }
+    showProgressDialog();
+  });
+  $("#reconnectSubmissionNoticeButton").addEventListener("click", () => { void connect(); });
   $("#progressDialog").addEventListener("close", () => {
     if (finishSubmissionOnClose) {
       finishSubmissionOnClose = false;

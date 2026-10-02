@@ -123,7 +123,10 @@
       <div id="submissionNotice" class="submission-notice" role="status" aria-live="polite" hidden>
         <span class="submission-notice-state" aria-hidden="true"></span>
         <span class="submission-notice-copy"><strong id="submissionNoticeTitle">Submitting requests</strong><small id="submissionNoticeDetail"></small></span>
-        <button id="viewSubmissionButton" class="button secondary compact" type="button"><i data-lucide="activity"></i><span data-button-label>View progress</span></button>
+        <div class="submission-notice-actions">
+          <button id="viewSubmissionButton" class="button secondary compact" type="button"><i data-lucide="activity"></i><span data-button-label>View progress</span></button>
+          <button id="reconnectSubmissionNoticeButton" class="button quiet compact" type="button" hidden><i data-lucide="plug-zap"></i><span data-button-label>Reset &amp; reconnect Helix</span></button>
+        </div>
       </div>
 
       <div id="queueEmpty" class="empty-state">
@@ -766,6 +769,8 @@
       </div>
       <div id="progressList" class="progress-list"></div>
       <div id="progressActions" class="modal-actions" hidden>
+        <button id="retryFailedButton" class="button primary" type="button" hidden><i data-lucide="rotate-ccw"></i><span>Retry failed</span></button>
+        <button id="reconnectFailedButton" class="button secondary" type="button" hidden><i data-lucide="plug-zap"></i><span>Reset &amp; reconnect Helix</span></button>
         <button id="exportIncMatchesButton" class="button secondary" type="button">Export INC matches</button>
         <a id="downloadResultsLink" class="button secondary" href="#"><i data-lucide="download"></i><span>Download summary</span></a>
         <button id="doneButton" class="button primary" type="button"><i data-lucide="check"></i><span>Done</span></button>

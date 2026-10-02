@@ -586,16 +586,24 @@ class ClientManager:
             }
 
     def connect_async(self, *, headless: bool | None = None) -> None:
-        with self.lock:
-            if self.state in {"connecting", "simulation"}:
-                return
-            if self.state == "connected":
+        with self.health_lock:
+            with self.lock:
+                if self.state in {"connecting", "simulation"}:
+                    return
+                # A visible retry is a full client reset even after an error or
+                # expired session. Do not let a stale API client/probe survive a
+                # failed submission and get reused by the next request.
                 self.client = None
                 self.probe = None
                 self.fresh_probes = []
                 self.fresh_probe_cursor = 0
-            self.state = "connecting"
-            self.message = "Opening the saved Helix session…"
+                self.connected_at = None
+                self.last_checked_at = None
+                self.health_failures = 0
+                self.request_for = self.config.request_for or ""
+                self.request_for_source = "environment" if self.config.request_for else "pending"
+                self.state = "connecting"
+                self.message = "Resetting the Helix client and opening Chrome…"
         use_headless = (
             self.headless_auth_enabled or self.config.browser_headless
             if headless is None else headless

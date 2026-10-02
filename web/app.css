@@ -676,6 +676,7 @@ input:hover, select:hover, textarea:hover { border-color: #99a8b5; }
 .submission-notice-copy small { display: block; overflow-wrap: anywhere; }
 .submission-notice-copy strong { font-size: 12px; }
 .submission-notice-copy small { margin-top: 2px; color: var(--muted); font-size: 10px; }
+.submission-notice-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
 
 .diagnostics-settings { align-items: center; gap: 14px; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
 .diagnostics-settings > div:first-child { min-width: 0; }
@@ -2645,7 +2646,7 @@ input:hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var
   .history-entry a { display: inline-block; margin-top: 2px; }
   .history-entry-actions { justify-content: flex-start; }
   .submission-notice { grid-template-columns: 20px minmax(0, 1fr); padding-inline: 12px; }
-  .submission-notice .button { grid-column: 2; justify-self: start; }
+  .submission-notice-actions { grid-column: 2; justify-content: flex-start; }
   .toast-region { left: 10px; right: 10px; bottom: 10px; }
   .toast { min-width: 0; max-width: none; }
   .bulk-serial-mode { width: 100%; }
